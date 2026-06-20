@@ -1,0 +1,11 @@
+{
+  "_comment": "SAMPLE data for CoinRollHunter — fictional, for demos/tests only. Real holdings are user-supplied and never committed.",
+  "spot_reference": {"gold_usd_per_ozt": 4000.00, "silver_usd_per_ozt": 60.00, "as_of": "2026-01-01"},
+  "content_constants": {"us_90pct_dime_ozt": 0.07234, "us_90pct_quarter_ozt": 0.18084, "us_90pct_half_ozt": 0.36169, "us_40pct_half_ozt": 0.1479},
+  "lots": [
+    {"id": "B1-eagle", "acquired": "2025-01-15", "source": "Sample Dealer", "product": "1 oz American Gold Eagle", "category": "bullion", "metal": "gold", "fineness": "22k .9167", "qty": 1, "fine_oz_each": 1.0, "basis_usd": 3950.00, "face_value_usd": 50},
+    {"id": "B2-dimes90", "acquired": "2025-02-01", "source": "Sample Dealer", "product": "$10 face 90% silver dimes", "category": "junk", "metal": "silver", "fineness": "90%", "qty": 1, "fine_oz_each": 7.234, "basis_usd": 520.00, "face_value_usd": 10.0},
+    {"id": "FIND1-half40", "acquired": "2025-03-10", "source": "Sample Bank (CRH)", "product": "Kennedy 40% silver halves", "category": "junk", "metal": "silver", "fineness": "40%", "qty": 8, "fine_oz_each": 0.1479, "basis_usd": 4.00, "face_value_usd": 4.00},
+    {"id": "FIND2-quarter90", "acquired": "2025-03-22", "source": "Sample Bank (CRH)", "product": "Washington 90% silver quarter", "category": "junk", "metal": "silver", "fineness": "90%", "qty": 1, "fine_oz_each": 0.18084, "basis_usd": 0.25, "face_value_usd": 0.25}
+  ]
+}

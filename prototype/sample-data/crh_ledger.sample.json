@@ -1,0 +1,22 @@
+{
+  "_comment": "SAMPLE CRH ledger for CoinRollHunter — fictional, for demos/tests only.",
+  "as_of": "2026-01-01",
+  "settings": {
+    "value_time": false, "hourly_rate_usd": 25.00, "irs_mileage_rate_usd_per_mile": 0.70,
+    "silver_buyback_factor_90pct": 0.90, "silver_buyback_factor_40pct": 0.80,
+    "box_face_usd": {"halves": 500, "quarters": 500, "dimes": 250, "nickels": 100, "cents": 25}
+  },
+  "roll_transactions": [
+    {"date": "2025-03-08", "bank": "Sample Bank", "action": "buy", "cash_usd": 500.00, "denom": "halves", "boxes": 1, "notes": ""},
+    {"date": "2025-03-20", "bank": "Sample Bank", "action": "buy", "cash_usd": 500.00, "denom": "quarters", "boxes": 1, "notes": ""},
+    {"date": "2025-03-12", "bank": "Sample Bank", "action": "return", "cash_usd": 496.00, "denom": "", "notes": "searched culls redeposited"},
+    {"date": "2025-03-24", "bank": "Sample Bank", "action": "return", "cash_usd": 499.75, "denom": "", "notes": "searched culls redeposited"}
+  ],
+  "trips": [
+    {"date": "2025-03-08", "bank": "Sample Bank", "miles": 6, "hours": 0.5}
+  ],
+  "supplies": [
+    {"date": "2025-03-01", "item": "coin tubes", "cost_usd": 8.00}
+  ],
+  "keepers_clad": {"halves_count": 12, "halves_face_usd": 6.00, "quarters_count": 20, "quarters_face_usd": 5.00}
+}

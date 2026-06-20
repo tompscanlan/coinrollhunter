@@ -1,0 +1,30 @@
+# Personal data — never commit. Users bring their own.
+pm_holdings.json
+crh_ledger.json
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Secrets
+.env
+.env.local
+
+# Build output
+web/dist/
+node_modules/
+/coinrollhunter
+/coinrollhunter.exe
+dist/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.xlsx
+.idea/
+.vscode/
