@@ -51,13 +51,27 @@ Fine oz is *derived* (asw_oz, else gross_weight×purity). `calc` reads a flat re
 (`model.Lot` via `model.Resolve`), so the math is blind to the split. Other tables per ADR-001:
 roll_txns, trips, supplies, keepers, spot, settings.
 
-## Next steps (Phase 0–1 from ADR-001/003)
+## Next steps
 1. [done] `go mod init`; layout `/cmd`, `/internal/{model,store,calc}`, `/web`.
 2. [done] Port portfolio.py math to `internal/calc` (invariant + worked-example tests).
-3. SQLite schema + migrations (item_type + lots + the ADR-001 tables).
-4. `migrate` command: prototype JSON → SQLite (synthesize item_types; FIND*→activity=crh).
-5. REST API (CRUD for all tables; spot get/set; summary) + `go:embed` the Svelte build.
-6. Svelte UI: dashboard (cards/verdict/reconciliation/chart) + editable grids.
-7. goreleaser + GitHub Actions for per-OS binaries.
+3. [done] SQLite schema + migrations (item_type + lots + the ADR-001 tables).
+4. [done] `migrate` command: prototype JSON → SQLite (synthesize item_types; FIND*→activity=crh).
+5. [done] REST API (CRUD for all tables; spot get/set; summary) + `go:embed` the Svelte build.
+6. [done] Svelte UI: dashboard (verdict/cards/tables/reconciliation/throughput + inline spot) and
+   spreadsheet-style **TanStack editable grids** for all data tables (Holdings flat-edits the
+   ADR-003 split via find-or-create item_type). Stack: Svelte 5 + Vite + Tailwind v4 +
+   shadcn-style components in `web/app`; built to `web/dist` (committed) and embedded.
+7. [done] Cross-platform binaries: `scripts/release.sh` + `Makefile release` cross-compile
+   linux/windows/darwin × amd64/arm64 (pure-Go, CGO_ENABLED=0); `.github/workflows/release.yml`
+   publishes on tag; `.goreleaser.yaml` as an alternative.
+
+Remaining polish (not yet done): live spot-price feed behind the `SpotProvider` interface,
+per-find/per-bank success tracking (the brief's "finds per coins searched" idea), a `--demo`
+seed dataset, and merchant-of-record monetization wiring. Chart for spot history (ADR-002
+mentions LayerCake/uPlot) is deferred.
+
+Build notes: `make build` (UI then Go). In this container, Go needs a writable cache —
+`go env -w GOCACHE=/go/cache`. The UI build needs Node 22 + npm registry access. `web/dist`
+is committed so `go build`/`go install` work without Node.
 
 The `prototype/` reference is the source of truth for behavior and exact formulas.
