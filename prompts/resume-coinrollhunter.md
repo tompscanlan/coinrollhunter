@@ -33,15 +33,14 @@ Then begin **Phase 0–1** from ADR-001:
 3. Write a `migrate` command that imports a user's existing `pm_holdings.json` + `crh_ledger.json`
    into SQLite (use the prototype JSON shapes; do NOT commit any real data).
 4. Port the profitability math from `prototype/portfolio.py` into `internal/calc` with unit tests.
-   **Pin these expected values** (from the owner's real data, used only as test fixtures — recreate
-   them as a fixture file, do not embed personal holdings in the repo):
-   - CRH net (cash, realizable) = **$103.81**
-   - bullion unrealized = **−$1,546.43**
-   - to-redeposit = **$163.50**
-   - boxes searched = **3.1** (2.1 halves + 1 quarters)
+   **Use the committed fictional `sample-data/` as the only fixture — no personal numbers.** Two
+   test layers: change-proof *invariant* tests (accounting identities below) plus a *worked-example*
+   test whose expected values are derived inline from the sample set, so the math can evolve
+   deliberately instead of being pinned to an external oracle.
    - buyback haircuts: 40% silver **0.80**, 90% silver **0.90**
    - CRH net = finds_realizable − face_cost − gas − supplies
    - cash-in: to_redeposit = bought − returned − kept(finds + clad)
+   - box throughput is derived from normalized face (face / box_face[denom]), not an input
 5. Build the REST API (CRUD for all tables; spot get/set; summary endpoint) and `go:embed` the
    built Svelte app from `web/dist`.
 
