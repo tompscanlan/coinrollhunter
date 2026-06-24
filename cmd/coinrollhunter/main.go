@@ -24,6 +24,9 @@ import (
 	"github.com/tompscanlan/coinrollhunter/web"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=…".
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -40,6 +43,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "serve:", err)
 			os.Exit(1)
 		}
+	case "version", "-v", "--version":
+		fmt.Printf("coinrollhunter %s\n", version)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -57,6 +62,8 @@ usage:
       Import the prototype JSON (pm_holdings.json + crh_ledger.json) into SQLite.
   coinrollhunter serve [--db crh.db] [--addr 127.0.0.1:8787]
       Serve the REST API + embedded web UI on localhost.
+  coinrollhunter version
+      Print the build version.
 `)
 }
 

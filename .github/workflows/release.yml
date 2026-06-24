@@ -1,0 +1,39 @@
+name: release
+
+# Tag a release to build cross-platform binaries and publish them:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, for `git describe`
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build + package all platforms
+        run: ./scripts/release.sh
+        env:
+          VERSION: ${{ github.ref_name }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/coinrollhunter_*.tar.gz
+            dist/coinrollhunter_*.zip
+            dist/checksums.txt
