@@ -10,12 +10,12 @@ data/
 .env
 .env.local
 
-# Build output
-web/dist/
+# Build output. web/dist IS committed — it's the embedded UI, so `go build`
+# and `go install` work without Node. node_modules and release artifacts aren't.
 node_modules/
 /coinrollhunter
 /coinrollhunter.exe
-dist/
+/dist/
 
 # Python
 __pycache__/

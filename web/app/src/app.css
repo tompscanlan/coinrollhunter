@@ -1,0 +1,116 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+/* Design tokens — shadcn-style CSS variables with a coin/bullion palette:
+   deep navy primary (echoes the prototype's #1F3864) plus semantic
+   positive/negative/warning colors for the P&L figures. */
+:root {
+  --radius: 0.625rem;
+
+  --background: hsl(210 20% 98%);
+  --foreground: hsl(222 47% 11%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(222 47% 11%);
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(222 47% 11%);
+
+  --primary: hsl(222 54% 26%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(220 18% 93%);
+  --secondary-foreground: hsl(222 47% 22%);
+  --muted: hsl(220 16% 95%);
+  --muted-foreground: hsl(220 9% 46%);
+  --accent: hsl(220 18% 93%);
+  --accent-foreground: hsl(222 47% 22%);
+  --destructive: hsl(0 72% 45%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --border: hsl(220 16% 88%);
+  --input: hsl(220 16% 84%);
+  --ring: hsl(222 54% 40%);
+
+  --positive: hsl(142 64% 30%);
+  --negative: hsl(0 72% 45%);
+  --warning: hsl(38 92% 38%);
+  --gold: hsl(43 74% 42%);
+}
+
+.dark {
+  --background: hsl(222 30% 9%);
+  --foreground: hsl(210 20% 96%);
+  --card: hsl(222 28% 12%);
+  --card-foreground: hsl(210 20% 96%);
+  --popover: hsl(222 28% 12%);
+  --popover-foreground: hsl(210 20% 96%);
+
+  --primary: hsl(213 70% 66%);
+  --primary-foreground: hsl(222 47% 14%);
+  --secondary: hsl(222 22% 18%);
+  --secondary-foreground: hsl(210 20% 92%);
+  --muted: hsl(222 22% 16%);
+  --muted-foreground: hsl(220 12% 62%);
+  --accent: hsl(222 22% 18%);
+  --accent-foreground: hsl(210 20% 92%);
+  --destructive: hsl(0 62% 52%);
+  --destructive-foreground: hsl(0 0% 100%);
+
+  --border: hsl(222 18% 22%);
+  --input: hsl(222 18% 26%);
+  --ring: hsl(213 70% 60%);
+
+  --positive: hsl(142 58% 52%);
+  --negative: hsl(0 70% 64%);
+  --warning: hsl(38 92% 56%);
+  --gold: hsl(43 74% 58%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
+  --color-gold: var(--gold);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    font-family:
+      system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  }
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+  }
+  /* Tabular figures so money/oz columns line up. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"path"
 	"strconv"
+	"strings"
 
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
 	"github.com/tompscanlan/coinrollhunter/internal/model"
@@ -104,11 +106,34 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 		list: s.ListKeepers, create: s.InsertKeeper, update: s.UpdateKeeper, del: s.DeleteKeeper,
 	})
 
-	// Static UI at the root (when embedded).
+	// Static UI at the root (when embedded), with an SPA fallback to index.html.
 	if webFS != nil {
-		mux.Handle("/", http.FileServer(http.FS(webFS)))
+		mux.Handle("/", spaHandler(webFS))
 	}
 	return mux
+}
+
+// spaHandler serves embedded static files and falls back to index.html for any
+// path that isn't a real asset, so the single-page app survives a deep-link or
+// refresh. /api/* is matched by more specific routes and never reaches here.
+func spaHandler(webFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(webFS))
+	index, _ := fs.ReadFile(webFS, "index.html")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if p != "" {
+			if f, err := webFS.Open(p); err == nil {
+				f.Close()
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		} else {
+			fileServer.ServeHTTP(w, r) // "/" -> index.html
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(index)
+	})
 }
 
 // resource bundles the store ops for one CRUD table.
