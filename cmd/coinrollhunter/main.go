@@ -3,18 +3,25 @@
 //
 //	coinrollhunter migrate --holdings pm_holdings.json --crh crh_ledger.json [--db crh.db]
 //	    import the prototype's JSON files into a SQLite database.
-//
-// More subcommands (serve) land as Phase 1 progresses.
+//	coinrollhunter serve [--db crh.db] [--addr 127.0.0.1:8787]
+//	    serve the REST API + embedded web UI on localhost.
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
+	"time"
 
+	"github.com/tompscanlan/coinrollhunter/internal/api"
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
 	"github.com/tompscanlan/coinrollhunter/internal/legacy"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
+	"github.com/tompscanlan/coinrollhunter/web"
 )
 
 func main() {
@@ -26,6 +33,11 @@ func main() {
 	case "migrate":
 		if err := runMigrate(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "migrate:", err)
+			os.Exit(1)
+		}
+	case "serve":
+		if err := runServe(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "serve:", err)
 			os.Exit(1)
 		}
 	case "-h", "--help", "help":
@@ -43,6 +55,8 @@ func usage() {
 usage:
   coinrollhunter migrate --holdings FILE --crh FILE [--db crh.db]
       Import the prototype JSON (pm_holdings.json + crh_ledger.json) into SQLite.
+  coinrollhunter serve [--db crh.db] [--addr 127.0.0.1:8787]
+      Serve the REST API + embedded web UI on localhost.
 `)
 }
 
@@ -90,4 +104,47 @@ func runMigrate(args []string) error {
 	fmt.Printf("  CRH net (cash): $%.2f  -> %s\n", r.CRHNetReal, r.Verdict())
 	fmt.Printf("  to redeposit:  $%.2f\n", r.ToRedeposit)
 	return nil
+}
+
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	dbPath := fs.String("db", "crh.db", "path to the SQLite database")
+	addr := fs.String("addr", "127.0.0.1:8787", "address to listen on (localhost only by default)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	s, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           api.Handler(s, web.FS()),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	// Graceful shutdown on Ctrl-C / SIGTERM.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	errc := make(chan error, 1)
+	go func() {
+		fmt.Printf("coinrollhunter serving on http://%s  (db: %s)\n", *addr, *dbPath)
+		errc <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errc:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		fmt.Println("\nshutting down…")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	}
 }
