@@ -12,10 +12,12 @@
     suppliesGrid,
     keepersGrid,
   } from '$lib/grids'
-  import { Moon, Sun, RefreshCw } from 'lucide-svelte'
+  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2 } from 'lucide-svelte'
 
+  type View = 'overview' | 'entry'
   type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers'
 
+  let view = $state<View>('overview')
   let dataTab = $state<DataTab>('holdings')
   let report = $state<Report | null>(null)
   let loading = $state(true)
@@ -68,40 +70,67 @@
     </div>
   </header>
 
-  <main class="mt-6 space-y-8">
+  <!-- view toggle: one place, instant switch between the numbers and entry -->
+  {#if !error && !(loading && !report)}
+    <div class="mt-5 flex justify-center">
+      <div class="inline-flex rounded-lg border bg-muted/40 p-0.5 text-sm font-medium">
+        <button
+          class={cn(
+            'flex items-center gap-1.5 rounded-md px-4 py-1.5 transition-colors',
+            view === 'overview' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+          )}
+          onclick={() => (view = 'overview')}
+        >
+          <LayoutDashboard class="size-4" /> Overview
+        </button>
+        <button
+          class={cn(
+            'flex items-center gap-1.5 rounded-md px-4 py-1.5 transition-colors',
+            view === 'entry' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+          )}
+          onclick={() => (view = 'entry')}
+        >
+          <Table2 class="size-4" /> Entry
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  <main class="mt-6">
     {#if error}
       <div class="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
         Couldn't reach the API: {error}
       </div>
     {:else if loading && !report}
       <p class="text-sm text-muted-foreground">Loading…</p>
-    {:else}
-      <!-- overview: live numbers + composition snapshot -->
+    {:else if view === 'overview'}
       {#if report}
         <Dashboard {report} onRefresh={refresh} />
       {/if}
-
-      <!-- data entry: same page, edits flow straight into the overview above -->
-      <section class="space-y-4 border-t pt-6">
-        <div>
-          <h2 class="text-lg font-semibold text-foreground">Data entry</h2>
-          <p class="text-sm text-muted-foreground">Edits recompute the overview above instantly.</p>
-        </div>
-
-        <div class="flex flex-wrap gap-1.5">
-          {#each dataTabs as t (t.id)}
-            <button
-              class={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                dataTab === t.id
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-accent',
-              )}
-              onclick={() => (dataTab = t.id)}
-            >
-              {t.label}
-            </button>
-          {/each}
+    {:else}
+      <section class="space-y-4">
+        <div class="flex items-center justify-between gap-3">
+          <div class="flex flex-wrap gap-1.5">
+            {#each dataTabs as t (t.id)}
+              <button
+                class={cn(
+                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                  dataTab === t.id
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-secondary text-secondary-foreground hover:bg-accent',
+                )}
+                onclick={() => (dataTab = t.id)}
+              >
+                {t.label}
+              </button>
+            {/each}
+          </div>
+          <button
+            class="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            onclick={() => (view = 'overview')}
+          >
+            edits save instantly · see impact in Overview →
+          </button>
         </div>
 
         {#if dataTab === 'holdings'}
