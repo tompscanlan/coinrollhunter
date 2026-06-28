@@ -30,7 +30,7 @@ var ErrNotFound = fmt.Errorf("not found")
 // --- item_type ---------------------------------------------------------------
 
 func (s *Store) ListItemTypes() ([]model.ItemType, error) {
-	rows, err := s.db.Query(`SELECT id, kind, name, metal, asw_oz, fineness, year, mint, mintmark, refs FROM item_type ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs FROM item_type ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list item_type: %w", err)
 	}
@@ -39,7 +39,7 @@ func (s *Store) ListItemTypes() ([]model.ItemType, error) {
 	for rows.Next() {
 		var t model.ItemType
 		var fineness, year, mint, mintmark, refs sql.NullString
-		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.Metal, &t.ASWOz, &fineness, &year, &mint, &mintmark, &refs); err != nil {
+		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.Metal, &t.FineOzEach, &fineness, &year, &mint, &mintmark, &refs); err != nil {
 			return nil, err
 		}
 		t.Fineness, t.Year, t.Mint, t.Mintmark, t.References = fineness.String, year.String, mint.String, mintmark.String, refs.String
@@ -50,8 +50,8 @@ func (s *Store) ListItemTypes() ([]model.ItemType, error) {
 
 func (s *Store) UpdateItemType(id int64, t model.ItemType) error {
 	res, err := s.db.Exec(
-		`UPDATE item_type SET kind=?, name=?, metal=?, asw_oz=?, fineness=?, year=?, mint=?, mintmark=?, refs=? WHERE id=?`,
-		t.Kind, t.Name, t.Metal, t.ASWOz, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References, id)
+		`UPDATE item_type SET kind=?, name=?, metal=?, fine_oz_each=?, fineness=?, year=?, mint=?, mintmark=?, refs=? WHERE id=?`,
+		t.Kind, t.Name, t.Metal, t.FineOzEach, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References, id)
 	return affected(res, err, "update item_type")
 }
 

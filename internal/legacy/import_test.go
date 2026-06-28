@@ -62,7 +62,7 @@ func TestImportSampleEndToEnd(t *testing.T) {
 	}
 
 	// Catalog/specimen split: 4 prototype lots -> 4 holdings, but the two 90%
-	// silver types differ by product/asw so we expect 4 distinct item_types here.
+	// silver types differ by product/fine-oz so we expect 4 distinct item_types here.
 	var nTypes, nLots int
 	if err := s.DB().QueryRow(`SELECT count(*) FROM item_type`).Scan(&nTypes); err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestImportSampleEndToEnd(t *testing.T) {
 		t.Errorf("lots = %d, want 4", nLots)
 	}
 	if nTypes != 4 {
-		t.Errorf("item_types = %d, want 4 (one per distinct product/metal/fineness/asw)", nTypes)
+		t.Errorf("item_types = %d, want 4 (one per distinct product/metal/fineness/fine-oz)", nTypes)
 	}
 }
 

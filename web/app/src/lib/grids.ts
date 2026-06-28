@@ -24,9 +24,9 @@ const distinct = (xs: (string | undefined)[]) =>
 function productAutofill(value: string): Partial<FlatHolding> | undefined {
   const v = norm(value)
   const t = catalog.find((c) => norm(c.name) === v)
-  if (t) return { metal: t.metal, fineness: t.fineness, asw_oz: t.asw_oz }
+  if (t) return { metal: t.metal, fineness: t.fineness, fine_oz_each: t.fine_oz_each }
   const p = SILVER_PRESETS.find((p) => norm(p.label) === v)
-  if (p) return { metal: 'silver', fineness: p.fineness, asw_oz: p.asw_oz }
+  if (p) return { metal: 'silver', fineness: p.fineness, fine_oz_each: p.fine_oz_each }
   return undefined
 }
 
@@ -62,7 +62,7 @@ export interface FlatHolding {
   product: string
   metal: string
   fineness: string
-  asw_oz: number
+  fine_oz_each: number
   qty: number
   basis_usd: number
   face_value_usd: number
@@ -73,7 +73,7 @@ export interface FlatHolding {
 const norm = (s: string) => (s ?? '').trim().toLowerCase()
 
 /** Find an item_type matching name+metal+fineness, else create one. Updates the
-    catalog's asw_oz if it drifted. Returns the type id. */
+    catalog's fine_oz_each if it drifted. Returns the type id. */
 async function ensureItemType(row: Omit<FlatHolding, 'id'>): Promise<number> {
   const types = await api.itemTypes.list()
   const match = types.find(
@@ -83,8 +83,8 @@ async function ensureItemType(row: Omit<FlatHolding, 'id'>): Promise<number> {
       norm(t.fineness) === norm(row.fineness),
   )
   if (match) {
-    if (Math.abs((match.asw_oz ?? 0) - (row.asw_oz ?? 0)) > 1e-9) {
-      await api.itemTypes.update(match.id, { ...match, asw_oz: row.asw_oz } as Omit<ItemType, 'id'>)
+    if (Math.abs((match.fine_oz_each ?? 0) - (row.fine_oz_each ?? 0)) > 1e-9) {
+      await api.itemTypes.update(match.id, { ...match, fine_oz_each: row.fine_oz_each } as Omit<ItemType, 'id'>)
     }
     return match.id
   }
@@ -93,7 +93,7 @@ async function ensureItemType(row: Omit<FlatHolding, 'id'>): Promise<number> {
     kind,
     name: row.product || 'Unnamed',
     metal: row.metal,
-    asw_oz: row.asw_oz,
+    fine_oz_each: row.fine_oz_each,
     fineness: row.fineness,
   } as Omit<ItemType, 'id'>)
 }
@@ -130,7 +130,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     },
     { accessorKey: 'metal', header: 'Metal', meta: { editor: 'select', options: METALS, width: '110px' } },
     { accessorKey: 'fineness', header: 'Fineness', meta: { editor: 'text', width: '100px', placeholder: '.9999' } },
-    { accessorKey: 'asw_oz', header: 'Fine oz / unit', meta: { editor: 'number', step: 0.0001, align: 'right', width: '120px' } },
+    { accessorKey: 'fine_oz_each', header: 'Fine oz / unit', meta: { editor: 'number', step: 0.0001, align: 'right', width: '120px' } },
     { accessorKey: 'qty', header: 'Qty', meta: { editor: 'number', step: 1, align: 'right', width: '80px' } },
     { accessorKey: 'basis_usd', header: 'Basis $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'face_value_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px' } },
@@ -150,7 +150,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         product: t?.name ?? '',
         metal: t?.metal ?? '',
         fineness: t?.fineness ?? '',
-        asw_oz: t?.asw_oz ?? 0,
+        fine_oz_each: t?.fine_oz_each ?? 0,
         qty: h.qty,
         basis_usd: h.basis_usd,
         face_value_usd: h.face_value_usd,
@@ -173,7 +173,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     product: '',
     metal: 'silver',
     fineness: '',
-    asw_oz: 0,
+    fine_oz_each: 0,
     qty: 1,
     basis_usd: 0,
     face_value_usd: 0,

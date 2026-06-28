@@ -5,15 +5,15 @@
 export interface SilverPreset {
   label: string
   fineness: string // "40%" | "90%" | "35%"
-  asw_oz: number // actual silver weight per coin
+  fine_oz_each: number // fine metal oz per coin (troy)
 }
 
 export const SILVER_PRESETS: SilverPreset[] = [
-  { label: '40% Kennedy half (1965–70)', fineness: '40%', asw_oz: 0.1479 },
-  { label: '90% half (1964 & earlier)', fineness: '90%', asw_oz: 0.36169 },
-  { label: '90% quarter (pre-1965)', fineness: '90%', asw_oz: 0.18084 },
-  { label: '90% dime (pre-1965)', fineness: '90%', asw_oz: 0.07234 },
-  { label: '35% war nickel (1942–45)', fineness: '35%', asw_oz: 0.05626 },
+  { label: '40% Kennedy half (1965–70)', fineness: '40%', fine_oz_each: 0.1479 },
+  { label: '90% half (1964 & earlier)', fineness: '90%', fine_oz_each: 0.36169 },
+  { label: '90% quarter (pre-1965)', fineness: '90%', fine_oz_each: 0.18084 },
+  { label: '90% dime (pre-1965)', fineness: '90%', fine_oz_each: 0.07234 },
+  { label: '35% war nickel (1942–45)', fineness: '35%', fine_oz_each: 0.05626 },
 ]
 
 /** Face dollars in one bank box, by denomination — for box→face auto-fill. */

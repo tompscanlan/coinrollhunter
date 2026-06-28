@@ -13,7 +13,7 @@ export interface ItemType {
   kind: string // coin|round|bar|junk|jewelry|other
   name: string
   metal: string // gold|silver|platinum|palladium
-  asw_oz: number // metal oz per unit (0 => derived from gross*purity)
+  fine_oz_each: number // fine metal oz per unit, troy (0 => derived from gross*purity)
   fineness: string
   year?: string
   mint?: string

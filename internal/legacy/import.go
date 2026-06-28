@@ -126,11 +126,11 @@ func Import(s *store.Store, holdingsJSON, crhJSON []byte) error {
 		typeID, ok := typeIDs[key]
 		if !ok {
 			id, err := s.InsertItemType(model.ItemType{
-				Kind:     kindFor(l.Category),
-				Name:     l.Product,
-				Metal:    l.Metal,
-				ASWOz:    l.FineOzEach, // standardized per-unit metal weight
-				Fineness: l.Fineness,
+				Kind:       kindFor(l.Category),
+				Name:       l.Product,
+				Metal:      l.Metal,
+				FineOzEach: l.FineOzEach, // standardized per-unit metal weight (troy oz)
+				Fineness:   l.Fineness,
 			})
 			if err != nil {
 				return err

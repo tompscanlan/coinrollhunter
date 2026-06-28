@@ -15,7 +15,7 @@ type ItemType struct {
 	Kind       string  `json:"kind"`           // coin|round|bar|junk|jewelry|other
 	Name       string  `json:"name"`           // "1 oz American Gold Eagle"
 	Metal      string  `json:"metal"`          // gold|silver|platinum|palladium
-	ASWOz      float64 `json:"asw_oz"`         // actual metal weight per unit (0 if derived from gross*purity)
+	FineOzEach float64 `json:"fine_oz_each"`   // fine metal oz per unit, troy (0 if derived from gross*purity)
 	Fineness   string  `json:"fineness"`       // "90%", "22k .9167", ".9999"
 	Year       string  `json:"year,omitempty"` // optional mint year
 	Mint       string  `json:"mint,omitempty"` // optional mint/maker
@@ -30,7 +30,7 @@ type Holding struct {
 	ItemTypeID   int64   `json:"item_type_id"`
 	Activity     string  `json:"activity"` // "bullion" | "crh"
 	Qty          float64 `json:"qty"`
-	GrossWeight  float64 `json:"gross_weight,omitempty"` // per unit; with Purity derives fine oz when ASWOz==0
+	GrossWeight  float64 `json:"gross_weight,omitempty"` // per unit; with Purity derives fine oz when FineOzEach==0
 	Purity       float64 `json:"purity,omitempty"`       // 0..1
 	WeightUnit   string  `json:"weight_unit,omitempty"`  // "ozt" | "g" | "kg"
 	BasisUSD     float64 `json:"basis_usd"`              // total paid (face for CRH finds)
@@ -56,7 +56,7 @@ type Lot struct {
 	Metal        string  `json:"metal"`    // from ItemType.Metal
 	Fineness     string  `json:"fineness"` // from ItemType.Fineness
 	Qty          float64 `json:"qty"`
-	FineOzEach   float64 `json:"fine_oz_each"` // resolved: ASWOz, else GrossWeight*Purity
+	FineOzEach   float64 `json:"fine_oz_each"` // resolved: ItemType.FineOzEach, else GrossWeight*Purity
 	BasisUSD     float64 `json:"basis_usd"`
 	FaceValueUSD float64 `json:"face_value_usd"`
 	Acquired     string  `json:"acquired"`
@@ -67,10 +67,10 @@ type Lot struct {
 func (l Lot) IsFind() bool { return l.Activity == "crh" }
 
 // Resolve joins a holding to its item type to produce the flat engine view.
-// Fine ounces per unit come from the catalog's ASWOz when set, otherwise from the
-// specimen's gross weight * purity (bars, generic rounds, jewelry).
+// Fine ounces per unit come from the catalog's FineOzEach when set, otherwise from
+// the specimen's gross weight * purity (bars, generic rounds, jewelry).
 func Resolve(h Holding, t ItemType) Lot {
-	fineEach := t.ASWOz
+	fineEach := t.FineOzEach
 	if fineEach == 0 {
 		fineEach = h.GrossWeight * h.Purity
 	}

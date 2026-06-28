@@ -14,9 +14,9 @@ import (
 // InsertItemType inserts a catalog row and returns its new id.
 func (s *Store) InsertItemType(t model.ItemType) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO item_type (kind, name, metal, asw_oz, fineness, year, mint, mintmark, refs)
+		`INSERT INTO item_type (kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs)
 		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		t.Kind, t.Name, t.Metal, t.ASWOz, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References)
+		t.Kind, t.Name, t.Metal, t.FineOzEach, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References)
 	if err != nil {
 		return 0, fmt.Errorf("insert item_type: %w", err)
 	}
@@ -179,14 +179,14 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 
 	// item_type catalog, indexed by id, for resolving holdings.
 	types := map[int64]model.ItemType{}
-	rows, err := s.db.Query(`SELECT id, kind, name, metal, asw_oz, fineness FROM item_type`)
+	rows, err := s.db.Query(`SELECT id, kind, name, metal, fine_oz_each, fineness FROM item_type`)
 	if err != nil {
 		return d, fmt.Errorf("load item_type: %w", err)
 	}
 	for rows.Next() {
 		var t model.ItemType
 		var fineness sql.NullString
-		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.Metal, &t.ASWOz, &fineness); err != nil {
+		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.Metal, &t.FineOzEach, &fineness); err != nil {
 			rows.Close()
 			return d, err
 		}
