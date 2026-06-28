@@ -108,6 +108,11 @@ func buybackFactor(l model.Lot, s model.Settings) float64 {
 	switch {
 	case strings.HasPrefix(l.Fineness, "40"):
 		return s.SilverBuyback40pct
+	case strings.HasPrefix(l.Fineness, "35"):
+		// War nickels (1942–45) are low-grade junk; dealers haircut them at
+		// least as hard as 40%. The prototype left these at 1.0 (no haircut),
+		// which overstates realizable value — lump them with 40% instead.
+		return s.SilverBuyback40pct
 	case strings.HasPrefix(l.Fineness, "90"):
 		return s.SilverBuyback90pct
 	default:

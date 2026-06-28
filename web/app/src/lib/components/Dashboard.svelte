@@ -7,6 +7,7 @@
   import Button from '$lib/components/ui/Button.svelte'
   import Badge from '$lib/components/ui/Badge.svelte'
   import StatCard from './StatCard.svelte'
+  import Composition from './Composition.svelte'
   import { cn } from '$lib/utils'
   import { Check, TriangleAlert } from 'lucide-svelte'
 
@@ -98,6 +99,9 @@
     />
     <StatCard label="CRH net (cash)" value={money(r.crh_net_real)} sub="finds minus costs" tone={crhTone} />
   </div>
+
+  <!-- live composition snapshot -->
+  <Composition {report} />
 
   <!-- bullion -->
   <section class="space-y-2">

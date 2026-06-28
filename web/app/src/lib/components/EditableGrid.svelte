@@ -3,7 +3,7 @@
 
   /** Per-column editing metadata, carried on ColumnDef.meta. */
   export interface EditMeta<T> {
-    editor?: 'text' | 'number' | 'date' | 'select'
+    editor?: 'text' | 'number' | 'date' | 'select' | 'autocomplete'
     options?: readonly string[]
     step?: number
     min?: number
@@ -13,6 +13,13 @@
     /** Read-only computed display (e.g. a derived/joined column). */
     display?: (row: T) => string
     readOnly?: boolean
+    /** For editor:'autocomplete' — suggestion list (a function so it can reflect
+        freshly-loaded data each render). Renders an HTML <datalist>. */
+    suggestions?: () => readonly string[]
+    /** Given the committed cell value, return sibling fields to merge into the
+        row — e.g. picking a Product fills metal/fineness/fine-oz. Returns
+        undefined for an unrecognized value (so novel entries aren't clobbered). */
+    autofill?: (value: string) => Partial<T> | undefined
   }
 
   export type GridColumn<T> = ColumnDef<T> & {
@@ -164,6 +171,18 @@
     return (col.meta ?? {}) as EditMeta<T>
   }
   const align = (m: EditMeta<T>) => (m.align === 'right' ? 'text-right' : 'text-left')
+
+  // datalist ids must be unique on the page; scope by grid title + column key.
+  const dlId = (key: PropertyKey) =>
+    `dl-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${String(key)}`
+
+  // Merge sibling fields when an autocomplete value is recognized. Mutating the
+  // $state proxy (draft or a data[] row) is deeply reactive, so dependent inputs
+  // update in place.
+  function applyAutofill(m: EditMeta<T>, target: Record<string, unknown>, value: unknown) {
+    const patch = m.autofill?.(String(value ?? ''))
+    if (patch) Object.assign(target, patch)
+  }
 </script>
 
 <section class="space-y-3">
@@ -184,6 +203,16 @@
       {error}
     </div>
   {/if}
+
+  <!-- one shared datalist per autocomplete column (referenced by all row inputs) -->
+  {#each columns as col (col.accessorKey)}
+    {@const m = meta(col)}
+    {#if m.editor === 'autocomplete'}
+      <datalist id={dlId(col.accessorKey as PropertyKey)}>
+        {#each m.suggestions?.() ?? [] as opt (opt)}<option value={opt}></option>{/each}
+      </datalist>
+    {/if}
+  {/each}
 
   <div class="overflow-x-auto rounded-xl border bg-card shadow-sm">
     <table class="w-full border-collapse text-sm tnum">
@@ -246,6 +275,21 @@
                       <option value={opt}>{opt}</option>
                     {/each}
                   </select>
+                {:else if m.editor === 'autocomplete'}
+                  <input
+                    type="text"
+                    list={dlId(key as PropertyKey)}
+                    placeholder={m.placeholder}
+                    class={cn(
+                      'w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 hover:border-input focus:border-ring focus:bg-card focus:outline-none',
+                      align(m),
+                    )}
+                    bind:value={row.original[key]}
+                    onchange={() => {
+                      applyAutofill(m, row.original as Record<string, unknown>, row.original[key])
+                      saveRow(row.original)
+                    }}
+                  />
                 {:else}
                   <input
                     type={m.editor === 'number' ? 'number' : m.editor === 'date' ? 'date' : 'text'}
@@ -292,6 +336,16 @@
                     <option value={opt}>{opt}</option>
                   {/each}
                 </select>
+              {:else if m.editor === 'autocomplete'}
+                <input
+                  type="text"
+                  list={dlId(key as PropertyKey)}
+                  placeholder={m.placeholder ?? col.header?.toString()}
+                  class={cn('w-full rounded-md border border-input bg-card px-1.5 py-1 focus:border-ring focus:outline-none', align(m))}
+                  bind:value={draft[key]}
+                  oninput={() => applyAutofill(m, draft as Record<string, unknown>, draft[key])}
+                  onkeydown={(e) => e.key === 'Enter' && addRow()}
+                />
               {:else}
                 <input
                   type={m.editor === 'number' ? 'number' : m.editor === 'date' ? 'date' : 'text'}

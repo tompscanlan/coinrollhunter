@@ -5,9 +5,42 @@
 // split (find-or-create an item_type, then attach the holding).
 import { api } from './api'
 import { today } from './format'
-import { DENOMS, ROLL_UNITS, METALS } from './presets'
+import { DENOMS, ROLL_UNITS, METALS, SILVER_PRESETS } from './presets'
 import type { GridColumn } from './components/EditableGrid.svelte'
 import type { ItemType, Holding, RollTxn, Trip, Supply, Keeper } from './types'
+
+// --- Autocomplete caches -----------------------------------------------------
+// Refreshed by each grid's load(); the column suggestion/autofill closures read
+// these so typing offers your own existing entries (plus the built-in presets).
+let catalog: ItemType[] = [] // item_types — powers Product autocomplete + autofill
+let holdingSources: string[] = [] // distinct dealer/source names from holdings
+let banks: string[] = [] // distinct bank names, unioned across roll txns + trips
+
+const distinct = (xs: (string | undefined)[]) =>
+  [...new Set(xs.map((s) => (s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+
+/** Map a Product value (existing item_type name OR a silver-preset label) to the
+    metal/fineness/fine-oz it implies. Catalog entries win over presets on name. */
+function productAutofill(value: string): Partial<FlatHolding> | undefined {
+  const v = norm(value)
+  const t = catalog.find((c) => norm(c.name) === v)
+  if (t) return { metal: t.metal, fineness: t.fineness, asw_oz: t.asw_oz }
+  const p = SILVER_PRESETS.find((p) => norm(p.label) === v)
+  if (p) return { metal: 'silver', fineness: p.fineness, asw_oz: p.asw_oz }
+  return undefined
+}
+
+/** Suggestion list for the Product field: your catalog names + preset labels. */
+const productSuggestions = () =>
+  distinct([...catalog.map((c) => c.name), ...SILVER_PRESETS.map((p) => p.label)])
+
+/** Load a bank-bearing table and fold its bank names into the shared cache, so
+    the Bank field on roll txns and trips suggests every bank you've used. */
+async function loadCachingBanks<T extends { bank: string }>(list: () => Promise<T[]>): Promise<T[]> {
+  const rows = await list()
+  banks = distinct([...banks, ...rows.map((r) => r.bank)])
+  return rows
+}
 
 export interface GridConfig<T extends { id: number }> {
   title: string
@@ -84,7 +117,17 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     'Bullion lots and CRH silver finds. Type the product, metal, fineness and metal-oz; we keep the catalog tidy for you.',
   columns: [
     { accessorKey: 'activity', header: 'Activity', meta: { editor: 'select', options: ['bullion', 'crh'], width: '110px' } },
-    { accessorKey: 'product', header: 'Product', meta: { editor: 'text', placeholder: '1 oz Gold Eagle' } },
+    {
+      accessorKey: 'product',
+      header: 'Product',
+      meta: {
+        editor: 'autocomplete',
+        width: '240px',
+        placeholder: '1 oz Gold Eagle',
+        suggestions: productSuggestions,
+        autofill: productAutofill,
+      },
+    },
     { accessorKey: 'metal', header: 'Metal', meta: { editor: 'select', options: METALS, width: '110px' } },
     { accessorKey: 'fineness', header: 'Fineness', meta: { editor: 'text', width: '100px', placeholder: '.9999' } },
     { accessorKey: 'asw_oz', header: 'Fine oz / unit', meta: { editor: 'number', step: 0.0001, align: 'right', width: '120px' } },
@@ -92,10 +135,12 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'basis_usd', header: 'Basis $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'face_value_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px' } },
     { accessorKey: 'acquired', header: 'Acquired', meta: { editor: 'date', width: '150px' } },
-    { accessorKey: 'source', header: 'Source', meta: { editor: 'text', placeholder: 'APMEX' } },
+    { accessorKey: 'source', header: 'Source', meta: { editor: 'autocomplete', placeholder: 'APMEX', suggestions: () => holdingSources } },
   ],
   load: async () => {
     const [types, holdings] = await Promise.all([api.itemTypes.list(), api.holdings.list()])
+    catalog = types
+    holdingSources = distinct(holdings.map((h) => h.source))
     const byId = new Map<number, ItemType>(types.map((t) => [t.id, t]))
     return holdings.map((h) => {
       const t = byId.get(h.item_type_id)
@@ -144,7 +189,7 @@ export const rollTxnsGrid: GridConfig<RollTxn> = {
   description: 'Boxes/rolls bought and culls returned. face_usd is the source of truth; box throughput is derived from it.',
   columns: [
     { accessorKey: 'date', header: 'Date', meta: { editor: 'date', width: '150px' } },
-    { accessorKey: 'bank', header: 'Bank', meta: { editor: 'text', placeholder: 'Stock Yards' } },
+    { accessorKey: 'bank', header: 'Bank', meta: { editor: 'autocomplete', placeholder: 'Stock Yards', suggestions: () => banks } },
     { accessorKey: 'action', header: 'Action', meta: { editor: 'select', options: ['buy', 'return'], width: '100px' } },
     { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '110px' } },
     { accessorKey: 'unit', header: 'Unit', meta: { editor: 'select', options: ROLL_UNITS, width: '90px' } },
@@ -152,7 +197,7 @@ export const rollTxnsGrid: GridConfig<RollTxn> = {
     { accessorKey: 'face_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'notes', header: 'Notes', meta: { editor: 'text' } },
   ],
-  load: api.rollTxns.list,
+  load: () => loadCachingBanks(api.rollTxns.list),
   create: api.rollTxns.create,
   update: api.rollTxns.update,
   remove: api.rollTxns.remove,
@@ -164,11 +209,11 @@ export const tripsGrid: GridConfig<Trip> = {
   description: 'Sourcing runs. Miles drive the mileage-based gas cost — the real CRH expense.',
   columns: [
     { accessorKey: 'date', header: 'Date', meta: { editor: 'date', width: '150px' } },
-    { accessorKey: 'bank', header: 'Bank', meta: { editor: 'text', placeholder: 'Commonwealth' } },
+    { accessorKey: 'bank', header: 'Bank', meta: { editor: 'autocomplete', placeholder: 'Commonwealth', suggestions: () => banks } },
     { accessorKey: 'miles', header: 'Round-trip miles', meta: { editor: 'number', step: 0.1, align: 'right', width: '150px' } },
     { accessorKey: 'hours', header: 'Hours', meta: { editor: 'number', step: 0.25, align: 'right', width: '110px' } },
   ],
-  load: api.trips.list,
+  load: () => loadCachingBanks(api.trips.list),
   create: api.trips.create,
   update: api.trips.update,
   remove: api.trips.remove,

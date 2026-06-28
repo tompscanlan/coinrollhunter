@@ -12,12 +12,10 @@
     suppliesGrid,
     keepersGrid,
   } from '$lib/grids'
-  import { LayoutDashboard, Table2, Moon, Sun, RefreshCw } from 'lucide-svelte'
+  import { Moon, Sun, RefreshCw } from 'lucide-svelte'
 
-  type Tab = 'dashboard' | 'data'
   type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers'
 
-  let tab = $state<Tab>('dashboard')
   let dataTab = $state<DataTab>('holdings')
   let report = $state<Report | null>(null)
   let loading = $state(true)
@@ -70,44 +68,26 @@
     </div>
   </header>
 
-  <!-- top tabs -->
-  <nav class="mt-5 flex gap-1 border-b">
-    <button
-      class={cn(
-        'flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium transition-colors',
-        tab === 'dashboard'
-          ? 'border-primary text-primary'
-          : 'border-transparent text-muted-foreground hover:text-foreground',
-      )}
-      onclick={() => (tab = 'dashboard')}
-    >
-      <LayoutDashboard class="size-4" /> Dashboard
-    </button>
-    <button
-      class={cn(
-        'flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium transition-colors',
-        tab === 'data'
-          ? 'border-primary text-primary'
-          : 'border-transparent text-muted-foreground hover:text-foreground',
-      )}
-      onclick={() => (tab = 'data')}
-    >
-      <Table2 class="size-4" /> Data
-    </button>
-  </nav>
-
-  <main class="mt-6">
+  <main class="mt-6 space-y-8">
     {#if error}
       <div class="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
         Couldn't reach the API: {error}
       </div>
     {:else if loading && !report}
       <p class="text-sm text-muted-foreground">Loading…</p>
-    {:else if tab === 'dashboard' && report}
-      <Dashboard {report} onRefresh={refresh} />
-    {:else if tab === 'data'}
-      <div class="space-y-5">
-        <!-- data sub-tabs -->
+    {:else}
+      <!-- overview: live numbers + composition snapshot -->
+      {#if report}
+        <Dashboard {report} onRefresh={refresh} />
+      {/if}
+
+      <!-- data entry: same page, edits flow straight into the overview above -->
+      <section class="space-y-4 border-t pt-6">
+        <div>
+          <h2 class="text-lg font-semibold text-foreground">Data entry</h2>
+          <p class="text-sm text-muted-foreground">Edits recompute the overview above instantly.</p>
+        </div>
+
         <div class="flex flex-wrap gap-1.5">
           {#each dataTabs as t (t.id)}
             <button
@@ -135,7 +115,7 @@
         {:else if dataTab === 'keepers'}
           <EditableGrid {...keepersGrid} onChanged={refresh} />
         {/if}
-      </div>
+      </section>
     {/if}
   </main>
 </div>

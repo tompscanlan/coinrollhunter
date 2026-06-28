@@ -1,8 +1,8 @@
 # CoinRollHunter — context for Claude Code / CLI sessions
 
 You are continuing work on **CoinRollHunter**, a local-first tracker for coin roll
-hunting (CRH) and precious-metals bullion. Read this first, then `docs/ADR-001` and
-`docs/ADR-002` for the full decisions.
+hunting (CRH) and precious-metals bullion. Read this first, then `docs/ADR-*` for the
+full decisions.
 
 ## Goal
 Turn a working prototype into a shippable, share-ready app: super easy to run,
