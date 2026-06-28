@@ -8,6 +8,7 @@
   import Badge from '$lib/components/ui/Badge.svelte'
   import StatCard from './StatCard.svelte'
   import Composition from './Composition.svelte'
+  import StackByType from './StackByType.svelte'
   import { cn } from '$lib/utils'
   import { Check, TriangleAlert } from 'lucide-svelte'
 
@@ -102,6 +103,9 @@
 
   <!-- live composition snapshot -->
   <Composition {report} />
+
+  <!-- unified inventory: stack by coin type (bought + found combined) -->
+  <StackByType {report} />
 
   <!-- bullion -->
   <section class="space-y-2">
