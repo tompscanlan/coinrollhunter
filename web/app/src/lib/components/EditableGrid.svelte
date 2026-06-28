@@ -90,16 +90,25 @@
       },
     },
     onSortingChange: (u) => (sorting = typeof u === 'function' ? u(sorting) : u),
-    onStateChange: () => {}, // sorting is the only state we drive; no-op the rest
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     renderFallbackValue: undefined,
   })
 
+  // table-core builds a full default state (columnPinning, columnSizing, …) at
+  // construction; getHeaderGroups() reads columnPinning.left/right, so the state
+  // we feed must carry those defaults — controlling only `sorting` leaves them
+  // undefined and getHeaderGroups() throws "reading 'left'".
+  const defaultState = table.initialState
+
   // setOptions inside the derived keeps the instance in lock-step with $state,
   // and reading data/sorting registers them as deps — order-safe.
   const view = $derived.by(() => {
-    table.setOptions((prev) => ({ ...prev, data, state: { ...prev.state, sorting } }))
+    table.setOptions((prev) => ({
+      ...prev,
+      data,
+      state: { ...defaultState, ...prev.state, sorting },
+    }))
     return { rows: table.getRowModel().rows, headerGroups: table.getHeaderGroups() }
   })
 
