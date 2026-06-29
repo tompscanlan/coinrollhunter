@@ -33,9 +33,12 @@ Every row has an id so the UI can edit/delete.
 
 ## Profitability math (port from prototype/portfolio.py)
 Core formulas: CRH net = finds_realizable - face_cost - gas - supplies. Cash-in:
-to_redeposit = bought - returned - kept(finds+clad). Buyback haircuts: 40% silver 0.80,
-90% silver 0.90. Box throughput is *derived* from normalized face (face / box_face[denom]),
-not an input (ADR-001 R7).
+to_redeposit = bought - returned - kept(finds+clad). Buyback haircuts: 40% (and 35% war
+nickels) silver 0.80, 90% silver 0.90 — prefix-matched on the fineness string. Box throughput
+is *derived* from normalized face (face / box_face[denom]), not an input (ADR-001 R7).
+**Realized P&L:** sold lots (`disposed`/`disposed_usd`) are excluded from live valuation;
+realized gain = proceeds − basis. **Per-box yield:** CRH finds link to their buy txn
+(`lots.roll_txn_id`) → find realizable vs face searched, per box/bank.
 
 **Tests use the committed fictional `sample-data/`, not personal numbers.** `internal/calc`
 has two layers: change-proof *invariant* tests (accounting identities that hold for any
@@ -44,10 +47,12 @@ fixture. The math is free to evolve — update the worked example deliberately; 
 to an external oracle. (The owner's real holdings stay out of the repo entirely.)
 
 ## Data model — catalog/specimen split (ADR-003)
-Storage splits into an `item_type` catalog (reference data: kind/name/metal/asw_oz/fineness/
-year/mint/refs, entered once) and `lots` holdings (specimens that point at a type:
-qty/gross_weight/purity/basis/premium/location/insured_value/attributes JSON/disposed).
-Fine oz is *derived* (asw_oz, else gross_weight×purity). `calc` reads a flat resolved view
+Storage splits into an `item_type` catalog (reference data: kind/name/metal/`fine_oz_each`/
+fineness/year/mint/refs, entered once) and `lots` holdings (specimens that point at a type:
+qty/gross_weight/purity/basis/premium/location/insured_value/attributes JSON/disposed, plus
+`roll_txn_id` linking a CRH find to its box). Fine oz is *derived* (`fine_oz_each`, else
+gross_weight×purity). (The catalog column was renamed `asw_oz`→`fine_oz_each` — metal-neutral;
+"ASW" is silver-specific. Migrations run 0001→0004.) `calc` reads a flat resolved view
 (`model.Lot` via `model.Resolve`), so the math is blind to the split. Other tables per ADR-001:
 roll_txns, trips, supplies, keepers, spot, settings.
 
@@ -65,10 +70,17 @@ roll_txns, trips, supplies, keepers, spot, settings.
    linux/windows/darwin × amd64/arm64 (pure-Go, CGO_ENABLED=0); `.github/workflows/release.yml`
    publishes on tag; `.goreleaser.yaml` as an alternative.
 
-Remaining polish (not yet done): live spot-price feed behind the `SpotProvider` interface,
-per-find/per-bank success tracking (the brief's "finds per coins searched" idea), a `--demo`
-seed dataset, and merchant-of-record monetization wiring. Chart for spot history (ADR-002
-mentions LayerCake/uPlot) is deferred.
+Added 2026-06-29 (UX + record-keeping pass): catalog/preset **autofill** on the Holdings grid;
+segmented **Overview/Entry** toggle; **Stack by coin type** (unified inventory); **Pt/Pd** spot
+(migration 0003); **Sell / realized P&L** (partial sales split the lot; `POST /api/lots/{id}/sell`);
+**per-find/per-bank/per-box yield** via `lots.roll_txn_id` (migration 0004) — the brief's "finds
+per coins searched / which banks pay off" idea.
+
+Remaining polish (not yet done): live spot-price feed behind the `SpotProvider` interface, a
+**settings editor UI** (buyback/mileage/box-face/hourly are API-only), **junk-by-face** entry,
+**bars by gross-weight×purity** in the UI, **numismatic/collectible value**, a `--demo` seed
+dataset, and merchant-of-record monetization wiring. **ADR-004** — stack-over-time vs indexes
+(gold:silver, S&P, CPI) — is deferred; the box-link + appended spot history are the data foundation.
 
 Build notes: `make build` (UI then Go). In this container, Go needs a writable cache —
 `go env -w GOCACHE=/go/cache`. The UI build needs Node 22 + npm registry access. `web/dist`
