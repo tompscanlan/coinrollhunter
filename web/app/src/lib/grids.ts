@@ -42,6 +42,12 @@ async function loadCachingBanks<T extends { bank: string }>(list: () => Promise<
   return rows
 }
 
+// Box picker for CRH finds: the buy roll-txns you can attribute a find to.
+let boxOpts: { value: string; label: string }[] = [{ value: '', label: '— (none)' }]
+const fmtBox = (t: RollTxn) =>
+  [`#${t.id}`, t.bank, t.denom, (t.date || '').slice(5)].filter(Boolean).join(' · ')
+const boxOptions = () => boxOpts
+
 export interface GridConfig<T extends { id: number }> {
   title: string
   description: string
@@ -68,6 +74,7 @@ export interface FlatHolding {
   face_value_usd: number
   acquired: string
   source: string
+  from_box: string // roll_txn id (as string) this CRH find came from; '' = none
 }
 
 const norm = (s: string) => (s ?? '').trim().toLowerCase()
@@ -101,6 +108,7 @@ async function ensureItemType(row: Omit<FlatHolding, 'id'>): Promise<number> {
 function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Holding, 'id'> {
   return {
     item_type_id,
+    roll_txn_id: Number(row.from_box) || 0,
     activity: row.activity,
     qty: Number(row.qty) || 0,
     basis_usd: Number(row.basis_usd) || 0,
@@ -136,11 +144,20 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'face_value_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px' } },
     { accessorKey: 'acquired', header: 'Acquired', meta: { editor: 'date', width: '150px' } },
     { accessorKey: 'source', header: 'Source', meta: { editor: 'autocomplete', placeholder: 'APMEX', suggestions: () => holdingSources } },
+    { accessorKey: 'from_box', header: 'From box (CRH)', meta: { editor: 'select', optionsFn: boxOptions, width: '190px' } },
   ],
   load: async () => {
-    const [types, holdings] = await Promise.all([api.itemTypes.list(), api.holdings.list()])
+    const [types, holdings, rolls] = await Promise.all([
+      api.itemTypes.list(),
+      api.holdings.list(),
+      api.rollTxns.list(),
+    ])
     catalog = types
     holdingSources = distinct(holdings.map((h) => h.source))
+    boxOpts = [
+      { value: '', label: '— (none)' },
+      ...rolls.filter((r) => r.action === 'buy').map((r) => ({ value: String(r.id), label: fmtBox(r) })),
+    ]
     const byId = new Map<number, ItemType>(types.map((t) => [t.id, t]))
     return holdings.map((h) => {
       const t = byId.get(h.item_type_id)
@@ -156,6 +173,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         face_value_usd: h.face_value_usd,
         acquired: h.acquired,
         source: h.source,
+        from_box: h.roll_txn_id ? String(h.roll_txn_id) : '',
       } satisfies FlatHolding
     })
   },
@@ -179,6 +197,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     face_value_usd: 0,
     acquired: today(),
     source: '',
+    from_box: '',
   }),
 }
 

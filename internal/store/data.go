@@ -26,11 +26,11 @@ func (s *Store) InsertItemType(t model.ItemType) (int64, error) {
 // InsertHolding inserts a specimen row and returns its new id.
 func (s *Store) InsertHolding(h model.Holding) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO lots (item_type_id, activity, qty, gross_weight, purity, weight_unit,
+		`INSERT INTO lots (item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		h.ItemTypeID, h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		h.ItemTypeID, nullID(h.RollTxnID), h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location, h.InsuredValue,
 		h.Attributes, h.Notes, h.Disposed, h.DisposedUSD)
 	if err != nil {
@@ -100,13 +100,14 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	defer tx.Rollback()
 
 	var h model.Holding
+	var rtid sql.NullInt64
 	var wu, src, loc, attr, notes, disp sql.NullString
 	err = tx.QueryRow(
-		`SELECT item_type_id, activity, qty, gross_weight, purity, weight_unit,
+		`SELECT item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, disposed, disposed_usd
 		 FROM lots WHERE id=?`, id).Scan(
-		&h.ItemTypeID, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity, &wu,
+		&h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity, &wu,
 		&h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc, &h.InsuredValue,
 		&attr, &notes, &disp, &h.DisposedUSD)
 	if err == sql.ErrNoRows {
@@ -133,11 +134,11 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	soldPremium := h.PremiumUSD * frac
 	soldFace := h.FaceValueUSD * frac
 	if _, err := tx.Exec(
-		`INSERT INTO lots (item_type_id, activity, qty, gross_weight, purity, weight_unit,
+		`INSERT INTO lots (item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		h.ItemTypeID, h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		h.ItemTypeID, nullID(rtid.Int64), h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
 		soldBasis, soldPremium, soldFace, h.Acquired, src.String, loc.String, 0,
 		attr.String, notes.String, date, proceeds); err != nil {
 		return err
@@ -271,7 +272,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 
 	// holdings -> resolved lots
 	rows, err = s.db.Query(
-		`SELECT id, item_type_id, activity, qty, gross_weight, purity, basis_usd,
+		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, basis_usd,
 		   face_value_usd, acquired, source
 		 FROM lots WHERE disposed IS NULL OR disposed = '' ORDER BY id`)
 	if err != nil {
@@ -279,12 +280,14 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	}
 	for rows.Next() {
 		var h model.Holding
+		var rtid sql.NullInt64
 		var source sql.NullString
-		if err := rows.Scan(&h.ID, &h.ItemTypeID, &h.Activity, &h.Qty, &h.GrossWeight,
+		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight,
 			&h.Purity, &h.BasisUSD, &h.FaceValueUSD, &h.Acquired, &source); err != nil {
 			rows.Close()
 			return d, err
 		}
+		h.RollTxnID = rtid.Int64
 		h.Source = source.String
 		d.Lots = append(d.Lots, model.Resolve(h, types[h.ItemTypeID]))
 	}

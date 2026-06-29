@@ -9,6 +9,7 @@
   import StatCard from './StatCard.svelte'
   import Composition from './Composition.svelte'
   import StackByType from './StackByType.svelte'
+  import HuntYield from './HuntYield.svelte'
   import { cn } from '$lib/utils'
   import { Check, TriangleAlert } from 'lucide-svelte'
 
@@ -238,6 +239,11 @@
       />
     </div>
   </section>
+
+  <!-- hunt yield by bank & box -->
+  {#if r.box_yields.length}
+    <HuntYield {report} />
+  {/if}
 
   <!-- realized (sold) -->
   {#if r.realized.length}

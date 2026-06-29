@@ -5,6 +5,9 @@
   export interface EditMeta<T> {
     editor?: 'text' | 'number' | 'date' | 'select' | 'autocomplete'
     options?: readonly string[]
+    /** For editor:'select' — dynamic value/label options (e.g. pick a box).
+        Takes precedence over `options`; a function so it reflects loaded data. */
+    optionsFn?: () => readonly (string | { value: string; label: string })[]
     step?: number
     min?: number
     placeholder?: string
@@ -181,6 +184,13 @@
   }
   const align = (m: EditMeta<T>) => (m.align === 'right' ? 'text-right' : 'text-left')
 
+  // Normalize select options to {value,label}; optionsFn (dynamic) wins over the
+  // static string list, so existing string-option selects keep working.
+  function selectOptions(m: EditMeta<T>): { value: string; label: string }[] {
+    const raw = m.optionsFn ? m.optionsFn() : (m.options ?? [])
+    return raw.map((o) => (typeof o === 'string' ? { value: o, label: o } : o))
+  }
+
   // datalist ids must be unique on the page; scope by grid title + column key.
   const dlId = (key: PropertyKey) =>
     `dl-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${String(key)}`
@@ -280,8 +290,8 @@
                     bind:value={row.original[key]}
                     onchange={() => saveRow(row.original)}
                   >
-                    {#each m.options ?? [] as opt (opt)}
-                      <option value={opt}>{opt}</option>
+                    {#each selectOptions(m) as opt (opt.value)}
+                      <option value={opt.value}>{opt.label}</option>
                     {/each}
                   </select>
                 {:else if m.editor === 'autocomplete'}
@@ -353,8 +363,8 @@
                   class="w-full rounded-md border border-input bg-card px-1.5 py-1 focus:border-ring focus:outline-none"
                   bind:value={draft[key]}
                 >
-                  {#each m.options ?? [] as opt (opt)}
-                    <option value={opt}>{opt}</option>
+                  {#each selectOptions(m) as opt (opt.value)}
+                    <option value={opt.value}>{opt.label}</option>
                   {/each}
                 </select>
               {:else if m.editor === 'autocomplete'}

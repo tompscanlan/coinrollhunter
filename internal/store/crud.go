@@ -61,7 +61,7 @@ func (s *Store) DeleteItemType(id int64) error { return s.deleteByID("item_type"
 
 func (s *Store) ListHoldings() ([]model.Holding, error) {
 	rows, err := s.db.Query(
-		`SELECT id, item_type_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
+		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
 		   premium_usd, face_value_usd, acquired, source, location, insured_value, attributes,
 		   notes, disposed, disposed_usd
 		 FROM lots ORDER BY id`)
@@ -72,12 +72,14 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 	var out []model.Holding
 	for rows.Next() {
 		var h model.Holding
+		var rtid sql.NullInt64
 		var wu, src, loc, attr, notes, disp sql.NullString
-		if err := rows.Scan(&h.ID, &h.ItemTypeID, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity,
+		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity,
 			&wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc,
 			&h.InsuredValue, &attr, &notes, &disp, &h.DisposedUSD); err != nil {
 			return nil, err
 		}
+		h.RollTxnID = rtid.Int64
 		h.WeightUnit, h.Source, h.Location = wu.String, src.String, loc.String
 		h.Attributes, h.Notes, h.Disposed = attr.String, notes.String, disp.String
 		out = append(out, h)
@@ -87,16 +89,24 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 
 func (s *Store) UpdateHolding(id int64, h model.Holding) error {
 	res, err := s.db.Exec(
-		`UPDATE lots SET item_type_id=?, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
+		`UPDATE lots SET item_type_id=?, roll_txn_id=?, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
 		   basis_usd=?, premium_usd=?, face_value_usd=?, acquired=?, source=?, location=?,
 		   insured_value=?, attributes=?, notes=?, disposed=?, disposed_usd=? WHERE id=?`,
-		h.ItemTypeID, h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
+		h.ItemTypeID, nullID(h.RollTxnID), h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location,
 		h.InsuredValue, h.Attributes, h.Notes, h.Disposed, h.DisposedUSD, id)
 	return affected(res, err, "update holding")
 }
 
 func (s *Store) DeleteHolding(id int64) error { return s.deleteByID("lots", id) }
+
+// nullID maps a 0 id to SQL NULL (for the optional roll_txn_id link), else the id.
+func nullID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
 
 // --- roll_txns ---------------------------------------------------------------
 

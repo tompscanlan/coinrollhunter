@@ -60,6 +60,7 @@ type Report struct {
 	BoxesByDenom map[string]float64 `json:"boxes_by_denom"`
 	TotalBoxes   float64            `json:"total_boxes"`
 	FaceSearched float64            `json:"face_searched"`
+	BoxYields    []BoxYield         `json:"box_yields"` // per-box find attribution
 
 	// CRH net
 	CRHNetMelt float64 `json:"crh_net_melt"`
@@ -83,6 +84,20 @@ type Report struct {
 type RealizedLot struct {
 	model.DisposedLot
 	GainUSD float64 `json:"gain_usd"`
+}
+
+// BoxYield attributes CRH finds to the box (roll txn) they were pulled from, so
+// you can see which banks/boxes actually produce silver. One per buy txn.
+type BoxYield struct {
+	RollTxnID    int64   `json:"roll_txn_id"`
+	Date         string  `json:"date"`
+	Bank         string  `json:"bank"`
+	Denom        string  `json:"denom"`
+	FaceUSD      float64 `json:"face_usd"`
+	FindCount    int     `json:"find_count"`
+	FindOz       float64 `json:"find_oz"`
+	FindValueUSD float64 `json:"find_value_usd"` // realizable (after dealer haircut)
+	YieldPct     float64 `json:"yield_pct"`      // find_value / face * 100
 }
 
 // spotFor returns the spot price for a metal; any metal without a price column
@@ -231,6 +246,36 @@ func Compute(d model.Dataset) Report {
 	crhNetReal := fRealizable - fCost - opCost
 	crhNetTime := crhNetReal - hours*s.HourlyRateUSD
 
+	// --- per-box yield (which boxes/banks actually produced silver) ---
+	boxByID := map[int64]*BoxYield{}
+	for _, t := range d.RollTxns {
+		if t.Action != "buy" {
+			continue
+		}
+		boxByID[t.ID] = &BoxYield{RollTxnID: t.ID, Date: t.Date, Bank: t.Bank, Denom: t.Denom, FaceUSD: t.FaceUSD}
+	}
+	for _, l := range finds {
+		if l.RollTxnID == 0 {
+			continue
+		}
+		if by, ok := boxByID[l.RollTxnID]; ok {
+			by.FindValueUSD += l.MarketUSD * buybackFactor(l.Lot, s)
+			by.FindOz += l.FineOz
+			by.FindCount++
+		}
+	}
+	var boxYields []BoxYield
+	for _, t := range d.RollTxns {
+		if t.Action != "buy" {
+			continue
+		}
+		by := boxByID[t.ID]
+		if by.FaceUSD != 0 {
+			by.YieldPct = by.FindValueUSD / by.FaceUSD * 100
+		}
+		boxYields = append(boxYields, *by)
+	}
+
 	// --- realized (sold holdings) ---
 	realized := make([]RealizedLot, len(d.Disposed))
 	var rProceeds, rBasis float64
@@ -281,6 +326,7 @@ func Compute(d model.Dataset) Report {
 		BoxesByDenom: boxesByDenom,
 		TotalBoxes:   totalBoxes,
 		FaceSearched: buys,
+		BoxYields:    boxYields,
 
 		CRHNetMelt: crhNetMelt,
 		CRHNetReal: crhNetReal,

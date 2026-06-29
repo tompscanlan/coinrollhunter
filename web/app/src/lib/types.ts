@@ -26,6 +26,7 @@ export interface ItemType {
 export interface Holding {
   id: number
   item_type_id: number
+  roll_txn_id?: number // box this find came from (0/absent = none)
   activity: 'bullion' | 'crh'
   qty: number
   gross_weight?: number
@@ -118,6 +119,19 @@ export interface RealizedLot {
   gain_usd: number
 }
 
+/** Per-box find attribution — which banks/boxes actually produced silver. */
+export interface BoxYield {
+  roll_txn_id: number
+  date: string
+  bank: string
+  denom: string
+  face_usd: number
+  find_count: number
+  find_oz: number
+  find_value_usd: number
+  yield_pct: number
+}
+
 /** The computed summary from GET /api/summary (calc.Report). */
 export interface Report {
   spot: Spot
@@ -151,6 +165,7 @@ export interface Report {
   boxes_by_denom: Record<string, number>
   total_boxes: number
   face_searched: number
+  box_yields: BoxYield[]
 
   crh_net_melt: number
   crh_net_real: number

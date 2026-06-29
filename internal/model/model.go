@@ -28,7 +28,8 @@ type ItemType struct {
 type Holding struct {
 	ID           int64   `json:"id"`
 	ItemTypeID   int64   `json:"item_type_id"`
-	Activity     string  `json:"activity"` // "bullion" | "crh"
+	RollTxnID    int64   `json:"roll_txn_id,omitempty"` // box this find came from (0 = none)
+	Activity     string  `json:"activity"`              // "bullion" | "crh"
 	Qty          float64 `json:"qty"`
 	GrossWeight  float64 `json:"gross_weight,omitempty"` // per unit; with Purity derives fine oz when FineOzEach==0
 	Purity       float64 `json:"purity,omitempty"`       // 0..1
@@ -51,8 +52,9 @@ type Holding struct {
 // so the ported math is unchanged.
 type Lot struct {
 	ID           int64   `json:"id"`
-	Activity     string  `json:"activity"` // "bullion" | "crh"
-	Product      string  `json:"product"`  // from ItemType.Name
+	RollTxnID    int64   `json:"roll_txn_id,omitempty"` // box this find came from (0 = none)
+	Activity     string  `json:"activity"`              // "bullion" | "crh"
+	Product      string  `json:"product"`               // from ItemType.Name
 	Metal        string  `json:"metal"`    // from ItemType.Metal
 	Fineness     string  `json:"fineness"` // from ItemType.Fineness
 	Qty          float64 `json:"qty"`
@@ -76,6 +78,7 @@ func Resolve(h Holding, t ItemType) Lot {
 	}
 	return Lot{
 		ID:           h.ID,
+		RollTxnID:    h.RollTxnID,
 		Activity:     h.Activity,
 		Product:      t.Name,
 		Metal:        t.Metal,
