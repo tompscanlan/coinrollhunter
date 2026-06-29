@@ -10,16 +10,25 @@
   const r = $derived(report)
 
   type Seg = { label: string; value: number; color: string }
-  // Where your value sits: gold bullion / silver bullion / CRH silver finds.
-  const segs = $derived(
-    (
-      [
-        { label: 'Gold bullion', value: r.gold_market, color: '#f59e0b' },
-        { label: 'Silver bullion', value: Math.max(0, r.bullion_market - r.gold_market), color: '#94a3b8' },
-        { label: 'CRH silver finds', value: r.find_realizable, color: '#10b981' },
-      ] as Seg[]
-    ).filter((s) => s.value > 0),
-  )
+  const METAL_COLORS: Record<string, string> = {
+    gold: '#f59e0b', silver: '#94a3b8', platinum: '#38bdf8', palladium: '#a78bfa',
+  }
+  const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s)
+  // Where your value sits: bullion bucketed by actual metal (so Pt/Pd show too),
+  // plus CRH silver finds at their haircut-adjusted realizable value.
+  const segs = $derived.by(() => {
+    const byMetal = new Map<string, number>()
+    for (const l of r.lots) {
+      if (l.activity === 'crh') continue
+      byMetal.set(l.metal, (byMetal.get(l.metal) ?? 0) + l.market_usd)
+    }
+    const out: Seg[] = []
+    for (const [metal, value] of byMetal) {
+      out.push({ label: `${cap(metal)} bullion`, value, color: METAL_COLORS[metal] ?? '#64748b' })
+    }
+    if (r.find_realizable > 0) out.push({ label: 'CRH silver finds', value: r.find_realizable, color: '#10b981' })
+    return out.filter((s) => s.value > 0).sort((a, b) => b.value - a.value)
+  })
   const total = $derived(segs.reduce((t, s) => t + s.value, 0))
   const share = (v: number) => (total > 0 ? (v / total) * 100 : 0)
 

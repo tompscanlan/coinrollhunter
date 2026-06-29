@@ -84,10 +84,12 @@ func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
 // PutSpot upserts a spot observation keyed by as_of.
 func (s *Store) PutSpot(sp model.Spot) error {
 	_, err := s.db.Exec(
-		`INSERT INTO spot (as_of, gold_usd, silver_usd, source) VALUES (?,?,?,?)
+		`INSERT INTO spot (as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source)
+		 VALUES (?,?,?,?,?,?)
 		 ON CONFLICT(as_of) DO UPDATE SET gold_usd=excluded.gold_usd,
-		   silver_usd=excluded.silver_usd, source=excluded.source`,
-		sp.AsOf, sp.GoldUSD, sp.SilverUSD, sp.Source)
+		   silver_usd=excluded.silver_usd, platinum_usd=excluded.platinum_usd,
+		   palladium_usd=excluded.palladium_usd, source=excluded.source`,
+		sp.AsOf, sp.GoldUSD, sp.SilverUSD, sp.PlatinumUSD, sp.PalladiumUSD, sp.Source)
 	if err != nil {
 		return fmt.Errorf("put spot: %w", err)
 	}
@@ -163,8 +165,8 @@ func (s *Store) LatestSpot() (model.Spot, error) {
 	var sp model.Spot
 	var src sql.NullString
 	err := s.db.QueryRow(
-		`SELECT as_of, gold_usd, silver_usd, source FROM spot ORDER BY as_of DESC LIMIT 1`).
-		Scan(&sp.AsOf, &sp.GoldUSD, &sp.SilverUSD, &src)
+		`SELECT as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source FROM spot ORDER BY as_of DESC LIMIT 1`).
+		Scan(&sp.AsOf, &sp.GoldUSD, &sp.SilverUSD, &sp.PlatinumUSD, &sp.PalladiumUSD, &src)
 	if err == sql.ErrNoRows {
 		return model.Spot{}, nil
 	}

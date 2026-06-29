@@ -132,10 +132,12 @@ type Keeper struct {
 
 // Spot is a metals price observation; every fetch is appended so we keep history.
 type Spot struct {
-	AsOf      string  `json:"as_of"`
-	GoldUSD   float64 `json:"gold_usd"`
-	SilverUSD float64 `json:"silver_usd"`
-	Source    string  `json:"source"`
+	AsOf         string  `json:"as_of"`
+	GoldUSD      float64 `json:"gold_usd"`
+	SilverUSD    float64 `json:"silver_usd"`
+	PlatinumUSD  float64 `json:"platinum_usd"`
+	PalladiumUSD float64 `json:"palladium_usd"`
+	Source       string  `json:"source"`
 }
 
 // Dataset is the full resolved in-memory store the calc engine operates on.

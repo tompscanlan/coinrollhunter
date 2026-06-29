@@ -32,12 +32,16 @@
   // Inline spot editor.
   let spotGold = $state(0)
   let spotSilver = $state(0)
+  let spotPlat = $state(0)
+  let spotPall = $state(0)
   let spotDate = $state('')
   let spotBusy = $state(false)
   let spotErr = $state('')
   $effect(() => {
     spotGold = r.spot.gold_usd
     spotSilver = r.spot.silver_usd
+    spotPlat = r.spot.platinum_usd
+    spotPall = r.spot.palladium_usd
     spotDate = r.spot.as_of || today()
   })
 
@@ -49,6 +53,8 @@
         as_of: spotDate || today(),
         gold_usd: Number(spotGold) || 0,
         silver_usd: Number(spotSilver) || 0,
+        platinum_usd: Number(spotPlat) || 0,
+        palladium_usd: Number(spotPall) || 0,
         source: 'manual',
       }
       await api.putSpot(s)
@@ -65,7 +71,8 @@
   <!-- meta line -->
   <p class="text-sm text-muted-foreground">
     As of <span class="font-medium text-foreground">{r.spot.as_of || '—'}</span>
-    &nbsp;·&nbsp; Spot: Au {money(r.spot.gold_usd)} · Ag {money(r.spot.silver_usd)} / ozt
+    &nbsp;·&nbsp; Spot: Au {money(r.spot.gold_usd)} · Ag {money(r.spot.silver_usd)}{#if r.spot.platinum_usd}
+      · Pt {money(r.spot.platinum_usd)}{/if}{#if r.spot.palladium_usd} · Pd {money(r.spot.palladium_usd)}{/if} / ozt
   </p>
 
   <!-- verdict -->
@@ -251,6 +258,24 @@
           type="number"
           step="0.01"
           bind:value={spotSilver}
+          class="w-32 rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
+        />
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+        Platinum $/ozt
+        <input
+          type="number"
+          step="0.01"
+          bind:value={spotPlat}
+          class="w-32 rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
+        />
+      </label>
+      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+        Palladium $/ozt
+        <input
+          type="number"
+          step="0.01"
+          bind:value={spotPall}
           class="w-32 rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
         />
       </label>

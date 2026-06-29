@@ -150,7 +150,7 @@ func (s *Store) DeleteKeeper(id int64) error { return s.deleteByID("keepers", id
 // --- spot history ------------------------------------------------------------
 
 func (s *Store) ListSpot() ([]model.Spot, error) {
-	rows, err := s.db.Query(`SELECT as_of, gold_usd, silver_usd, source FROM spot ORDER BY as_of`)
+	rows, err := s.db.Query(`SELECT as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source FROM spot ORDER BY as_of`)
 	if err != nil {
 		return nil, fmt.Errorf("list spot: %w", err)
 	}
@@ -159,7 +159,7 @@ func (s *Store) ListSpot() ([]model.Spot, error) {
 	for rows.Next() {
 		var sp model.Spot
 		var src sql.NullString
-		if err := rows.Scan(&sp.AsOf, &sp.GoldUSD, &sp.SilverUSD, &src); err != nil {
+		if err := rows.Scan(&sp.AsOf, &sp.GoldUSD, &sp.SilverUSD, &sp.PlatinumUSD, &sp.PalladiumUSD, &src); err != nil {
 			return nil, err
 		}
 		sp.Source = src.String

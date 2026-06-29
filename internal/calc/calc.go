@@ -73,14 +73,18 @@ type Report struct {
 	TotalUnreal float64 `json:"total_unreal"`
 }
 
-// spotFor returns the spot price for a metal; unpriced metals (e.g. platinum
-// before a price source is added) contribute 0.
+// spotFor returns the spot price for a metal; any metal without a price column
+// contributes 0.
 func spotFor(s model.Spot, metal string) float64 {
 	switch metal {
 	case "gold":
 		return s.GoldUSD
 	case "silver":
 		return s.SilverUSD
+	case "platinum":
+		return s.PlatinumUSD
+	case "palladium":
+		return s.PalladiumUSD
 	default:
 		return 0
 	}

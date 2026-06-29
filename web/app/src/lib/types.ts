@@ -5,6 +5,8 @@ export interface Spot {
   as_of: string
   gold_usd: number
   silver_usd: number
+  platinum_usd: number
+  palladium_usd: number
   source: string
 }
 
