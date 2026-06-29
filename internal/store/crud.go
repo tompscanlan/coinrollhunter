@@ -63,7 +63,7 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 	rows, err := s.db.Query(
 		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
 		   premium_usd, face_value_usd, acquired, source, location, insured_value, attributes,
-		   notes, disposed, disposed_usd
+		   notes, category, subcategory, trophy, disposed, disposed_usd
 		 FROM lots ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list lots: %w", err)
@@ -73,15 +73,17 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 	for rows.Next() {
 		var h model.Holding
 		var rtid sql.NullInt64
-		var wu, src, loc, attr, notes, disp sql.NullString
+		var wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
+		var trophy int64
 		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity,
 			&wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc,
-			&h.InsuredValue, &attr, &notes, &disp, &h.DisposedUSD); err != nil {
+			&h.InsuredValue, &attr, &notes, &cat, &subcat, &trophy, &disp, &h.DisposedUSD); err != nil {
 			return nil, err
 		}
 		h.RollTxnID = rtid.Int64
 		h.WeightUnit, h.Source, h.Location = wu.String, src.String, loc.String
 		h.Attributes, h.Notes, h.Disposed = attr.String, notes.String, disp.String
+		h.Category, h.Subcategory, h.Trophy = cat.String, subcat.String, trophy != 0
 		out = append(out, h)
 	}
 	return out, rows.Err()
@@ -91,10 +93,10 @@ func (s *Store) UpdateHolding(id int64, h model.Holding) error {
 	res, err := s.db.Exec(
 		`UPDATE lots SET item_type_id=?, roll_txn_id=?, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
 		   basis_usd=?, premium_usd=?, face_value_usd=?, acquired=?, source=?, location=?,
-		   insured_value=?, attributes=?, notes=?, disposed=?, disposed_usd=? WHERE id=?`,
+		   insured_value=?, attributes=?, notes=?, category=?, subcategory=?, trophy=?, disposed=?, disposed_usd=? WHERE id=?`,
 		h.ItemTypeID, nullID(h.RollTxnID), h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location,
-		h.InsuredValue, h.Attributes, h.Notes, h.Disposed, h.DisposedUSD, id)
+		h.InsuredValue, h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), h.Disposed, h.DisposedUSD, id)
 	return affected(res, err, "update holding")
 }
 
@@ -108,14 +110,22 @@ func nullID(id int64) any {
 	return id
 }
 
+// b2i maps a bool to SQLite's 0/1 integer form (used for the lots.trophy flag).
+func b2i(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // --- roll_txns ---------------------------------------------------------------
 
 func (s *Store) ListRollTxns() ([]model.RollTxn, error) { return s.loadRollTxns() }
 
 func (s *Store) UpdateRollTxn(id int64, t model.RollTxn) error {
 	res, err := s.db.Exec(
-		`UPDATE roll_txns SET date=?, bank=?, action=?, denom=?, unit=?, amount=?, face_usd=?, notes=? WHERE id=?`,
-		t.Date, t.Bank, t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.Notes, id)
+		`UPDATE roll_txns SET date=?, bank=?, action=?, denom=?, unit=?, amount=?, face_usd=?, source_type=?, notes=? WHERE id=?`,
+		t.Date, t.Bank, t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes, id)
 	return affected(res, err, "update roll_txn")
 }
 

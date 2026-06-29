@@ -34,6 +34,16 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 		writeJSON(w, http.StatusOK, calc.Compute(d))
 	})
 
+	// finds-report: the "1 per face $" hit-rate view, per denom × category × source (ADR-006).
+	mux.HandleFunc("GET /api/finds-report", func(w http.ResponseWriter, r *http.Request) {
+		d, err := s.ResolveDataset()
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, calc.ComputeFindsReport(d))
+	})
+
 	// spot: GET history, GET latest, POST append/upsert
 	mux.HandleFunc("GET /api/spot", func(w http.ResponseWriter, r *http.Request) {
 		list, err := s.ListSpot()

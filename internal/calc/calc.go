@@ -61,6 +61,11 @@ type Report struct {
 	ToRedeposit float64 `json:"to_redeposit"`
 	Reconciled  bool    `json:"reconciled"`
 
+	// Activity KPIs (ADR-006): coarse "how much hunting" stats over buy txns.
+	BuyCount    int     `json:"buy_count"`    // number of buy roll-txns
+	BranchCount int     `json:"branch_count"` // distinct non-empty bank strings among buys
+	AvgBuyUSD   float64 `json:"avg_buy_usd"`  // mean face per buy (0 if no buys)
+
 	// Box throughput
 	BoxesByDenom map[string]float64 `json:"boxes_by_denom"`
 	TotalBoxes   float64            `json:"total_boxes"`
@@ -212,15 +217,25 @@ func Compute(d model.Dataset) Report {
 	}
 	opCost := gas + supplies
 
-	// --- float, kept, cash-in reconciliation ---
+	// --- float, kept, cash-in reconciliation (+ activity KPIs, ADR-006) ---
 	var buys, returns float64
+	var buyCount int
+	branches := map[string]bool{}
 	for _, t := range d.RollTxns {
 		switch t.Action {
 		case "buy":
 			buys += t.FaceUSD
+			buyCount++
+			if t.Bank != "" {
+				branches[t.Bank] = true
+			}
 		case "return":
 			returns += t.FaceUSD
 		}
+	}
+	avgBuy := 0.0
+	if buyCount > 0 {
+		avgBuy = buys / float64(buyCount)
 	}
 	var cladFace float64
 	for _, k := range d.Keepers {
@@ -337,6 +352,10 @@ func Compute(d model.Dataset) Report {
 		KeptFace:    keptFace,
 		ToRedeposit: toRedeposit,
 		Reconciled:  reconciled,
+
+		BuyCount:    buyCount,
+		BranchCount: len(branches),
+		AvgBuyUSD:   avgBuy,
 
 		BoxesByDenom: boxesByDenom,
 		TotalBoxes:   totalBoxes,

@@ -28,11 +28,11 @@ func (s *Store) InsertHolding(h model.Holding) (int64, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO lots (item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
-		   attributes, notes, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		h.ItemTypeID, nullID(h.RollTxnID), h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location, h.InsuredValue,
-		h.Attributes, h.Notes, h.Disposed, h.DisposedUSD)
+		h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), h.Disposed, h.DisposedUSD)
 	if err != nil {
 		return 0, fmt.Errorf("insert holding: %w", err)
 	}
@@ -42,9 +42,9 @@ func (s *Store) InsertHolding(h model.Holding) (int64, error) {
 // InsertRollTxn inserts a roll transaction and returns its new id.
 func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO roll_txns (date, bank, action, denom, unit, amount, face_usd, notes)
-		 VALUES (?,?,?,?,?,?,?,?)`,
-		t.Date, t.Bank, t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.Notes)
+		`INSERT INTO roll_txns (date, bank, action, denom, unit, amount, face_usd, source_type, notes)
+		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		t.Date, t.Bank, t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
 	if err != nil {
 		return 0, fmt.Errorf("insert roll_txn: %w", err)
 	}
@@ -111,15 +111,16 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 
 	var h model.Holding
 	var rtid sql.NullInt64
-	var wu, src, loc, attr, notes, disp sql.NullString
+	var wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
+	var trophy int64
 	err = tx.QueryRow(
 		`SELECT item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
-		   attributes, notes, disposed, disposed_usd
+		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd
 		 FROM lots WHERE id=?`, id).Scan(
 		&h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity, &wu,
 		&h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc, &h.InsuredValue,
-		&attr, &notes, &disp, &h.DisposedUSD)
+		&attr, &notes, &cat, &subcat, &trophy, &disp, &h.DisposedUSD)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
@@ -146,11 +147,11 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	if _, err := tx.Exec(
 		`INSERT INTO lots (item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
-		   attributes, notes, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		h.ItemTypeID, nullID(rtid.Int64), h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
 		soldBasis, soldPremium, soldFace, h.Acquired, src.String, loc.String, 0,
-		attr.String, notes.String, date, proceeds); err != nil {
+		attr.String, notes.String, cat.String, subcat.String, trophy, date, proceeds); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
@@ -283,7 +284,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	// holdings -> resolved lots
 	rows, err = s.db.Query(
 		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, basis_usd,
-		   face_value_usd, acquired, source
+		   face_value_usd, acquired, source, category, subcategory, trophy
 		 FROM lots WHERE disposed IS NULL OR disposed = '' ORDER BY id`)
 	if err != nil {
 		return d, fmt.Errorf("load lots: %w", err)
@@ -291,14 +292,16 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	for rows.Next() {
 		var h model.Holding
 		var rtid sql.NullInt64
-		var source sql.NullString
+		var source, cat, subcat sql.NullString
+		var trophy int64
 		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight,
-			&h.Purity, &h.BasisUSD, &h.FaceValueUSD, &h.Acquired, &source); err != nil {
+			&h.Purity, &h.BasisUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy); err != nil {
 			rows.Close()
 			return d, err
 		}
 		h.RollTxnID = rtid.Int64
 		h.Source = source.String
+		h.Category, h.Subcategory, h.Trophy = cat.String, subcat.String, trophy != 0
 		d.Lots = append(d.Lots, model.Resolve(h, types[h.ItemTypeID]))
 	}
 	rows.Close()
@@ -308,7 +311,8 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 
 	// disposed holdings -> realized P&L (resolved name/metal via the catalog)
 	drows, err := s.db.Query(
-		`SELECT id, item_type_id, activity, qty, basis_usd, disposed_usd, disposed
+		`SELECT id, item_type_id, roll_txn_id, activity, qty, basis_usd, disposed_usd, disposed,
+		   category, subcategory
 		 FROM lots WHERE disposed IS NOT NULL AND disposed != '' ORDER BY disposed, id`)
 	if err != nil {
 		return d, fmt.Errorf("load disposed lots: %w", err)
@@ -316,14 +320,17 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	for drows.Next() {
 		var itemTypeID int64
 		var dl model.DisposedLot
-		var disposed sql.NullString
-		if err := drows.Scan(&dl.ID, &itemTypeID, &dl.Activity, &dl.Qty, &dl.BasisUSD,
-			&dl.ProceedsUSD, &disposed); err != nil {
+		var rtid sql.NullInt64
+		var disposed, cat, subcat sql.NullString
+		if err := drows.Scan(&dl.ID, &itemTypeID, &rtid, &dl.Activity, &dl.Qty, &dl.BasisUSD,
+			&dl.ProceedsUSD, &disposed, &cat, &subcat); err != nil {
 			drows.Close()
 			return d, err
 		}
 		t := types[itemTypeID]
+		dl.RollTxnID = rtid.Int64
 		dl.Product, dl.Metal, dl.Disposed = t.Name, t.Metal, disposed.String
+		dl.Category, dl.Subcategory = cat.String, subcat.String
 		d.Disposed = append(d.Disposed, dl)
 	}
 	drows.Close()
@@ -356,7 +363,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 }
 
 func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
-	rows, err := s.db.Query(`SELECT id, date, bank, action, denom, unit, amount, face_usd, notes FROM roll_txns ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, date, bank, action, denom, unit, amount, face_usd, source_type, notes FROM roll_txns ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load roll_txns: %w", err)
 	}
@@ -364,12 +371,12 @@ func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
 	var out []model.RollTxn
 	for rows.Next() {
 		var t model.RollTxn
-		var bank, denom, unit, notes sql.NullString
+		var bank, denom, unit, st, notes sql.NullString
 		var amount sql.NullFloat64
-		if err := rows.Scan(&t.ID, &t.Date, &bank, &t.Action, &denom, &unit, &amount, &t.FaceUSD, &notes); err != nil {
+		if err := rows.Scan(&t.ID, &t.Date, &bank, &t.Action, &denom, &unit, &amount, &t.FaceUSD, &st, &notes); err != nil {
 			return nil, err
 		}
-		t.Bank, t.Denom, t.Unit, t.Notes, t.Amount = bank.String, denom.String, unit.String, notes.String, amount.Float64
+		t.Bank, t.Denom, t.Unit, t.SourceType, t.Notes, t.Amount = bank.String, denom.String, unit.String, st.String, notes.String, amount.Float64
 		out = append(out, t)
 	}
 	return out, rows.Err()

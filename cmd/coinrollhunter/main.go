@@ -20,6 +20,7 @@ import (
 	"github.com/tompscanlan/coinrollhunter/internal/api"
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
 	"github.com/tompscanlan/coinrollhunter/internal/legacy"
+	"github.com/tompscanlan/coinrollhunter/internal/spot"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
 	"github.com/tompscanlan/coinrollhunter/web"
 )
@@ -117,6 +118,10 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fs.String("db", "crh.db", "path to the SQLite database")
 	addr := fs.String("addr", "127.0.0.1:8787", "address to listen on (localhost only by default)")
+	spotProvider := fs.String("spot-provider", envOr("CRH_SPOT_PROVIDER", "gold-api"),
+		"spot price provider id, or 'none' to disable background polling (env CRH_SPOT_PROVIDER)")
+	spotInterval := fs.Duration("spot-interval", envDur("CRH_SPOT_INTERVAL", 6*time.Hour),
+		"spot poll cadence, e.g. 6h (env CRH_SPOT_INTERVAL)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -136,6 +141,17 @@ func runServe(args []string) error {
 	// Graceful shutdown on Ctrl-C / SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	// Background spot polling (ADR-007): keep valuations fresh while we run. Opt out with
+	// --spot-provider=none; any fetch failure is logged and skipped (manual entry remains).
+	if !spot.Disabled(*spotProvider) {
+		if prov, err := spot.ByName(*spotProvider, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "spot:", err, "— polling disabled")
+		} else {
+			go spot.NewPoller(prov, s, *spotInterval).Run(ctx)
+		}
+	}
+
 	errc := make(chan error, 1)
 	go func() {
 		fmt.Printf("coinrollhunter serving on http://%s  (db: %s)\n", *addr, *dbPath)
@@ -154,4 +170,22 @@ func runServe(args []string) error {
 		defer cancel()
 		return srv.Shutdown(shutCtx)
 	}
+}
+
+// envOr returns the environment value for key, or def if it is unset/empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// envDur parses a duration (e.g. "6h") from the environment, falling back to def.
+func envDur(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
 }

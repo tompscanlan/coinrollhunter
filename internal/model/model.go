@@ -43,8 +43,13 @@ type Holding struct {
 	InsuredValue float64 `json:"insured_value,omitempty"`
 	Attributes   string  `json:"attributes,omitempty"` // JSON escape hatch (grade, cert#, gemstone, hallmark)
 	Notes        string  `json:"notes"`
-	Disposed     string  `json:"disposed,omitempty"` // ISO date if sold
-	DisposedUSD  float64 `json:"disposed_usd,omitempty"`
+	// CRH find taxonomy (ADR-006): denom-scoped rollup buckets, open vocabulary. Trophy
+	// flags a notable find for the highlights feed.
+	Category    string  `json:"category,omitempty"`    // e.g. "Silver" | "PMD" | "Error" | "2009"
+	Subcategory string  `json:"subcategory,omitempty"` // e.g. "Mercury" | "parking lot" | "major"
+	Trophy      bool    `json:"trophy,omitempty"`
+	Disposed    string  `json:"disposed,omitempty"` // ISO date if sold
+	DisposedUSD float64 `json:"disposed_usd,omitempty"`
 }
 
 // Lot is the flat, resolved engine view of a holding (Holding joined to its
@@ -55,14 +60,17 @@ type Lot struct {
 	RollTxnID    int64   `json:"roll_txn_id,omitempty"` // box this find came from (0 = none)
 	Activity     string  `json:"activity"`              // "bullion" | "crh"
 	Product      string  `json:"product"`               // from ItemType.Name
-	Metal        string  `json:"metal"`    // from ItemType.Metal
-	Fineness     string  `json:"fineness"` // from ItemType.Fineness
+	Metal        string  `json:"metal"`                 // from ItemType.Metal
+	Fineness     string  `json:"fineness"`              // from ItemType.Fineness
 	Qty          float64 `json:"qty"`
 	FineOzEach   float64 `json:"fine_oz_each"` // resolved: ItemType.FineOzEach, else GrossWeight*Purity
 	BasisUSD     float64 `json:"basis_usd"`
 	FaceValueUSD float64 `json:"face_value_usd"`
 	Acquired     string  `json:"acquired"`
 	Source       string  `json:"source"`
+	Category     string  `json:"category,omitempty"`    // CRH find taxonomy (ADR-006)
+	Subcategory  string  `json:"subcategory,omitempty"` // CRH find taxonomy (ADR-006)
+	Trophy       bool    `json:"trophy,omitempty"`
 }
 
 // IsFind reports whether the lot is a coin-roll-hunting find (vs. bullion).
@@ -89,6 +97,9 @@ func Resolve(h Holding, t ItemType) Lot {
 		FaceValueUSD: h.FaceValueUSD,
 		Acquired:     h.Acquired,
 		Source:       h.Source,
+		Category:     h.Category,
+		Subcategory:  h.Subcategory,
+		Trophy:       h.Trophy,
 	}
 }
 
@@ -101,10 +112,13 @@ type RollTxn struct {
 	Bank    string  `json:"bank"`
 	Action  string  `json:"action"` // "buy" | "return"
 	Denom   string  `json:"denom"`  // halves|quarters|dimes|nickels|cents
-	Unit    string  `json:"unit"`   // "box" | "roll" | "face" | "coin"
+	Unit    string  `json:"unit"`   // "box" | "roll" | "bag" | "face" | "coin"
 	Amount  float64 `json:"amount"` // quantity in that unit
 	FaceUSD float64 `json:"face_usd"`
-	Notes   string  `json:"notes"`
+	// SourceType is how the coin was wrapped/acquired — the high-signal yield axis from
+	// ADR-006, orthogonal to Unit: machine_roll|customer_roll|box|bag|loose ("" = unknown).
+	SourceType string `json:"source_type,omitempty"`
+	Notes      string `json:"notes"`
 }
 
 // Trip is a sourcing run; Miles drives the mileage-based gas cost.
@@ -161,13 +175,16 @@ type Spot struct {
 // valuation; their realized gain is proceeds - basis of the sold portion.
 type DisposedLot struct {
 	ID          int64   `json:"id"`
+	RollTxnID   int64   `json:"roll_txn_id,omitempty"` // buy this find came from (for source attribution)
 	Activity    string  `json:"activity"`
 	Product     string  `json:"product"`
 	Metal       string  `json:"metal"`
 	Qty         float64 `json:"qty"`
 	BasisUSD    float64 `json:"basis_usd"`
 	ProceedsUSD float64 `json:"proceeds_usd"`
-	Disposed    string  `json:"disposed"` // ISO date sold
+	Disposed    string  `json:"disposed"`              // ISO date sold
+	Category    string  `json:"category,omitempty"`    // CRH find taxonomy (ADR-006) — a sold find still counts
+	Subcategory string  `json:"subcategory,omitempty"` // toward lifetime hit-rate (survivorship)
 }
 
 // Dataset is the full resolved in-memory store the calc engine operates on.

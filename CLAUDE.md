@@ -52,9 +52,13 @@ fineness/year/mint/refs, entered once) and `lots` holdings (specimens that point
 qty/gross_weight/purity/basis/premium/location/insured_value/attributes JSON/disposed, plus
 `roll_txn_id` linking a CRH find to its box). Fine oz is *derived* (`fine_oz_each`, else
 gross_weight×purity). (The catalog column was renamed `asw_oz`→`fine_oz_each` — metal-neutral;
-"ASW" is silver-specific. Migrations run 0001→0004.) `calc` reads a flat resolved view
+"ASW" is silver-specific. Migrations run 0001→0006.) `calc` reads a flat resolved view
 (`model.Lot` via `model.Resolve`), so the math is blind to the split. Other tables per ADR-001:
-roll_txns, trips, supplies, keepers, spot, settings.
+roll_txns, trips, supplies, keepers, spot, settings. **ADR-006 (migration 0006)** adds a find
+taxonomy + an acquisition dimension: `roll_txns.source_type` (machine_roll/customer_roll/box/bag/
+loose — orthogonal to `unit`), and `lots.category`/`subcategory`/`trophy` for CRH finds. These
+feed `calc.ComputeFindsReport` (the "1 per face $" hit-rate view, `GET /api/finds-report`) and
+the summary KPIs (`buy_count`/`branch_count`/`avg_buy_usd`).
 
 ## Next steps
 1. [done] `go mod init`; layout `/cmd`, `/internal/{model,store,calc}`, `/web`.
@@ -76,8 +80,19 @@ segmented **Overview/Entry** toggle; **Stack by coin type** (unified inventory);
 **per-find/per-bank/per-box yield** via `lots.roll_txn_id` (migration 0004) — the brief's "finds
 per coins searched / which banks pay off" idea.
 
-Remaining polish (not yet done): live spot-price feed behind the `SpotProvider` interface, a
-**settings editor UI** (buyback/mileage/box-face/hourly are API-only), **junk-by-face** entry,
+Added 2026-06-29 (ADR-006 + ADR-007, backend pass): a real hunter's CRH dataset (OKF
+`projects/coinrollhunter/crh-field-data-dimes.md`) motivated **ADR-006** — acquisition
+**source-type** on buys, a denom-scoped **find taxonomy** (`category`/`subcategory`), a **trophy**
+flag (migration 0006), the **"1 per face $" hit-rate report** (`calc.ComputeFindsReport` →
+`GET /api/finds-report`) with a low-confidence/sample-size signal and disposed-find survivorship,
+and summary **KPIs**. **ADR-007** implements ADR-002's `SpotProvider` (`internal/spot`): a
+keyless gold-api.com provider + a staleness-gated background **poller** started by `serve`
+(`--spot-provider`/`--spot-interval`, opt-out with `none`; failures log + skip). UI surfacing of
+these is the next pass (data model + calc + API + tests landed; grids/dashboards not yet wired).
+
+Remaining polish (not yet done): **UI for the above** (source-type + category/trophy entry, the
+hit-rate grid, KPI cards), a **settings editor UI** (buyback/mileage/box-face/hourly are API-only),
+**junk-by-face** entry,
 **bars by gross-weight×purity** in the UI, **numismatic/collectible value**, a `--demo` seed
 dataset, and merchant-of-record monetization wiring. **ADR-004** — stack-over-time vs indexes
 (gold:silver, S&P, CPI) — is deferred; the box-link + appended spot history are the data foundation.
