@@ -188,6 +188,25 @@
   }
   const align = (m: EditMeta<T>) => (m.align === 'right' ? 'text-right' : 'text-left')
 
+  // Column sizing. The table uses fixed layout so each column honors its width
+  // instead of being squeezed to fit the container; the wrapper then scrolls
+  // horizontally when the columns total more than the viewport. Columns without
+  // an explicit width fall back to a sensible default (e.g. free-text Source,
+  // Notes, Bank), and the table's min-width is the sum so nothing collapses.
+  const DEFAULT_COL_PX = 170
+  const ACTIONS_COL_PX = 84
+  function widthPx(m: EditMeta<T>): number {
+    const w = m.width
+    if (w && w.endsWith('px')) {
+      const n = parseFloat(w)
+      if (!Number.isNaN(n)) return n
+    }
+    return DEFAULT_COL_PX
+  }
+  const tableMinWidth = $derived(
+    columns.reduce((sum, c) => sum + widthPx(meta(c)), 0) + ACTIONS_COL_PX,
+  )
+
   // Normalize select options to {value,label}; optionsFn (dynamic) wins over the
   // static string list, so existing string-option selects keep working.
   function selectOptions(m: EditMeta<T>): { value: string; label: string }[] {
@@ -238,7 +257,7 @@
   {/each}
 
   <div class="overflow-x-auto rounded-xl border bg-card shadow-sm">
-    <table class="w-full border-collapse text-sm tnum">
+    <table class="table-fixed border-collapse text-sm tnum" style={`min-width:max(100%, ${tableMinWidth}px)`}>
       <thead>
         {#each view.headerGroups as hg (hg.id)}
           <tr class="border-b bg-muted/40">
@@ -246,7 +265,7 @@
               {@const col = header.column.columnDef as GridColumn<T>}
               {@const m = meta(col)}
               <th
-                style={m.width ? `width:${m.width}` : ''}
+                style={`width:${widthPx(m)}px`}
                 class={cn(
                   'px-3 py-2 font-medium text-muted-foreground select-none',
                   align(m),
@@ -270,7 +289,7 @@
                 </span>
               </th>
             {/each}
-            <th class="px-2"></th>
+            <th class="px-2" style={`width:${ACTIONS_COL_PX}px`}></th>
           </tr>
         {/each}
       </thead>
@@ -303,6 +322,7 @@
                     type="text"
                     list={dlId(key as PropertyKey)}
                     placeholder={m.placeholder}
+                    title={String(row.original[key] ?? '')}
                     class={cn(
                       'w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 hover:border-input focus:border-ring focus:bg-card focus:outline-none',
                       align(m),

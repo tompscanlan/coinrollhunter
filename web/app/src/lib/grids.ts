@@ -130,7 +130,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
       header: 'Product',
       meta: {
         editor: 'autocomplete',
-        width: '240px',
+        width: '430px',
         placeholder: '1 oz Gold Eagle',
         suggestions: productSuggestions,
         autofill: productAutofill,
@@ -255,7 +255,7 @@ export const suppliesGrid: GridConfig<Supply> = {
 }
 
 export const keepersGrid: GridConfig<Keeper> = {
-  title: 'Clad keepers',
+  title: 'Keepers',
   description: 'Non-silver coins pulled at face. Recoverable, not a loss — kept out of the redeposit float.',
   columns: [
     { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '130px' } },

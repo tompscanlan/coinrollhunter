@@ -1,0 +1,125 @@
+<script lang="ts">
+  // The "Do" tab — a quick-action home built around the verbs of the hobby
+  // ("what did you just do?") rather than raw tables. Each action is a focused
+  // workflow over the same REST endpoints the Edit grids use; the grids stay as
+  // the correction/backstop layer. Prototype scope: "Return to bank" is wired
+  // end-to-end; the others are placeholders to show the shape.
+  import type { Report } from '$lib/types'
+  import { money } from '$lib/format'
+  import Card from '$lib/components/ui/Card.svelte'
+  import ReturnToBank from './workflows/ReturnToBank.svelte'
+  import { Boxes, Search, Landmark, Coins, HandCoins } from 'lucide-svelte'
+  import { cn } from '$lib/utils'
+
+  let { report, onChanged }: { report: Report; onChanged: () => void } = $props()
+
+  type WorkflowId = 'buy' | 'finds' | 'return' | 'purchase' | 'sell'
+  let active = $state<WorkflowId | null>(null)
+
+  const outstanding = $derived(Math.max(0, report.to_redeposit))
+
+  // Action tiles. `hint` is a live, data-aware nudge; only `return` is enabled here.
+  type Action = {
+    id: WorkflowId
+    title: string
+    sub: string
+    icon: typeof Landmark
+    enabled: boolean
+    hint?: string
+  }
+  const actions = $derived<Action[]>([
+    {
+      id: 'buy',
+      title: 'Bought a box / rolls',
+      sub: 'Log coin picked up from a bank',
+      icon: Boxes,
+      enabled: false,
+    },
+    {
+      id: 'finds',
+      title: 'Logged finds',
+      sub: 'Silver finds + keepers from a box',
+      icon: Search,
+      enabled: false,
+    },
+    {
+      id: 'return',
+      title: 'Returned to bank',
+      sub: 'Redeposit searched culls',
+      icon: Landmark,
+      enabled: true,
+      hint: outstanding > 0 ? `${money(outstanding)} outstanding` : 'all cashed in',
+    },
+    {
+      id: 'purchase',
+      title: 'New coin / bullion',
+      sub: 'A purchase for the stack',
+      icon: Coins,
+      enabled: false,
+    },
+    {
+      id: 'sell',
+      title: 'Sold something',
+      sub: 'Record a sale + realized P&L',
+      icon: HandCoins,
+      enabled: false,
+    },
+  ])
+</script>
+
+{#if active === 'return'}
+  <ReturnToBank {report} {onChanged} onClose={() => (active = null)} />
+{:else}
+  <div class="space-y-4">
+    <div class="text-center">
+      <h2 class="text-lg font-semibold">What did you do?</h2>
+      <p class="text-sm text-muted-foreground">
+        Pick an action — it records the right rows for you. Need to fix something? Use the Edit tab.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {#each actions as a (a.id)}
+        <button
+          type="button"
+          disabled={!a.enabled}
+          onclick={() => a.enabled && (active = a.id)}
+          class={cn(
+            'group text-left',
+            a.enabled ? 'cursor-pointer' : 'cursor-not-allowed',
+          )}
+        >
+          <Card
+            class={cn(
+              'flex h-full items-start gap-3 p-4 transition-colors',
+              a.enabled ? 'hover:border-primary/50 hover:bg-accent/40' : 'opacity-60',
+            )}
+          >
+            <span
+              class={cn(
+                'flex size-10 shrink-0 items-center justify-center rounded-lg',
+                a.enabled ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground',
+              )}
+            >
+              <a.icon class="size-5" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-foreground">{a.title}</span>
+                {#if !a.enabled}
+                  <span class="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                    soon
+                  </span>
+                {/if}
+              </div>
+              <p class="text-sm text-muted-foreground">{a.sub}</p>
+              {#if a.enabled && a.hint}
+                <p class="mt-1 text-xs font-medium text-primary tnum">{a.hint}</p>
+              {/if}
+            </div>
+          </Card>
+        </button>
+      {/each}
+    </div>
+  </div>
+{/if}

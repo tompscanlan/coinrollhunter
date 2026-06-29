@@ -3,6 +3,7 @@
   import type { Report } from '$lib/types'
   import { today } from '$lib/format'
   import Dashboard from '$lib/components/Dashboard.svelte'
+  import Do from '$lib/components/Do.svelte'
   import EditableGrid from '$lib/components/EditableGrid.svelte'
   import Button from '$lib/components/ui/Button.svelte'
   import { cn } from '$lib/utils'
@@ -14,9 +15,9 @@
     keepersGrid,
     type FlatHolding,
   } from '$lib/grids'
-  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2 } from 'lucide-svelte'
+  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap } from 'lucide-svelte'
 
-  type View = 'overview' | 'entry'
+  type View = 'overview' | 'do' | 'entry'
   type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers'
 
   let view = $state<View>('overview')
@@ -124,11 +125,20 @@
         <button
           class={cn(
             'flex items-center gap-1.5 rounded-md px-4 py-1.5 transition-colors',
+            view === 'do' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+          )}
+          onclick={() => (view = 'do')}
+        >
+          <Zap class="size-4" /> Do
+        </button>
+        <button
+          class={cn(
+            'flex items-center gap-1.5 rounded-md px-4 py-1.5 transition-colors',
             view === 'entry' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
           )}
           onclick={() => (view = 'entry')}
         >
-          <Table2 class="size-4" /> Entry
+          <Table2 class="size-4" /> Edit
         </button>
       </div>
     </div>
@@ -144,6 +154,10 @@
     {:else if view === 'overview'}
       {#if report}
         <Dashboard {report} onRefresh={refresh} />
+      {/if}
+    {:else if view === 'do'}
+      {#if report}
+        <Do {report} onChanged={refresh} />
       {/if}
     {:else}
       <section class="space-y-4">
