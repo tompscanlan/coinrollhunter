@@ -38,7 +38,7 @@
   import { untrack } from 'svelte'
   import { cn } from '$lib/utils'
   import Button from '$lib/components/ui/Button.svelte'
-  import { Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-svelte'
+  import { Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown, DollarSign } from 'lucide-svelte'
 
   type Draft = Omit<T, 'id'>
 
@@ -52,6 +52,9 @@
     remove,
     blank,
     onChanged,
+    rowAction,
+    rowActionTitle,
+    reloadSignal,
   }: {
     title: string
     description?: string
@@ -62,6 +65,11 @@
     remove: (id: number) => Promise<void>
     blank: () => Draft
     onChanged?: () => void
+    /** Optional extra per-row button (e.g. Sell). */
+    rowAction?: (row: T) => void
+    rowActionTitle?: string
+    /** Bump to force a reload from the parent (e.g. after an out-of-grid sale). */
+    reloadSignal?: number
   } = $props()
 
   let data = $state<T[]>([])
@@ -79,6 +87,7 @@
     }
   }
   $effect(() => {
+    reloadSignal // re-run when the parent bumps it (e.g. after a sale)
     reload()
   })
 
@@ -247,7 +256,7 @@
                 </span>
               </th>
             {/each}
-            <th class="w-10 px-2"></th>
+            <th class="px-2"></th>
           </tr>
         {/each}
       </thead>
@@ -306,15 +315,27 @@
                 {/if}
               </td>
             {/each}
-            <td class="px-1 text-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                title="Delete row"
-                onclick={() => deleteRow(row.original.id)}
-              >
-                <Trash2 class="size-4 text-muted-foreground hover:text-destructive" />
-              </Button>
+            <td class="px-1">
+              <div class="flex items-center justify-center gap-0.5">
+                {#if rowAction}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    title={rowActionTitle ?? 'Action'}
+                    onclick={() => rowAction?.(row.original)}
+                  >
+                    <DollarSign class="size-4 text-muted-foreground hover:text-primary" />
+                  </Button>
+                {/if}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Delete row"
+                  onclick={() => deleteRow(row.original.id)}
+                >
+                  <Trash2 class="size-4 text-muted-foreground hover:text-destructive" />
+                </Button>
+              </div>
             </td>
           </tr>
         {/each}

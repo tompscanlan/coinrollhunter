@@ -81,6 +81,75 @@ func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
 	return res.LastInsertId()
 }
 
+// SellHolding records a sale of qty units of holding id for proceeds on date.
+// A full sale (qty >= held) just marks the lot disposed; a partial sale splits
+// it: a new disposed lot carries the sold qty with proportional basis/premium/
+// face, and the original lot is reduced by the same. Realized P&L for the sold
+// portion is proceeds - its basis. Runs in one transaction.
+func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error {
+	if qty <= 0 {
+		return fmt.Errorf("sell qty must be > 0")
+	}
+	if date == "" {
+		return fmt.Errorf("sell date required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var h model.Holding
+	var wu, src, loc, attr, notes, disp sql.NullString
+	err = tx.QueryRow(
+		`SELECT item_type_id, activity, qty, gross_weight, purity, weight_unit,
+		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
+		   attributes, notes, disposed, disposed_usd
+		 FROM lots WHERE id=?`, id).Scan(
+		&h.ItemTypeID, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity, &wu,
+		&h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc, &h.InsuredValue,
+		&attr, &notes, &disp, &h.DisposedUSD)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if disp.Valid && disp.String != "" {
+		return fmt.Errorf("holding %d is already disposed", id)
+	}
+
+	if qty >= h.Qty {
+		if _, err := tx.Exec(`UPDATE lots SET disposed=?, disposed_usd=? WHERE id=?`,
+			date, proceeds, id); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	// Partial: carve out the sold portion as a new disposed lot.
+	frac := qty / h.Qty
+	soldBasis := h.BasisUSD * frac
+	soldPremium := h.PremiumUSD * frac
+	soldFace := h.FaceValueUSD * frac
+	if _, err := tx.Exec(
+		`INSERT INTO lots (item_type_id, activity, qty, gross_weight, purity, weight_unit,
+		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
+		   attributes, notes, disposed, disposed_usd)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		h.ItemTypeID, h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
+		soldBasis, soldPremium, soldFace, h.Acquired, src.String, loc.String, 0,
+		attr.String, notes.String, date, proceeds); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`UPDATE lots SET qty=?, basis_usd=?, premium_usd=?, face_value_usd=? WHERE id=?`,
+		h.Qty-qty, h.BasisUSD-soldBasis, h.PremiumUSD-soldPremium, h.FaceValueUSD-soldFace, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // PutSpot upserts a spot observation keyed by as_of.
 func (s *Store) PutSpot(sp model.Spot) error {
 	_, err := s.db.Exec(
@@ -221,6 +290,31 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		return d, err
+	}
+
+	// disposed holdings -> realized P&L (resolved name/metal via the catalog)
+	drows, err := s.db.Query(
+		`SELECT id, item_type_id, activity, qty, basis_usd, disposed_usd, disposed
+		 FROM lots WHERE disposed IS NOT NULL AND disposed != '' ORDER BY disposed, id`)
+	if err != nil {
+		return d, fmt.Errorf("load disposed lots: %w", err)
+	}
+	for drows.Next() {
+		var itemTypeID int64
+		var dl model.DisposedLot
+		var disposed sql.NullString
+		if err := drows.Scan(&dl.ID, &itemTypeID, &dl.Activity, &dl.Qty, &dl.BasisUSD,
+			&dl.ProceedsUSD, &disposed); err != nil {
+			drows.Close()
+			return d, err
+		}
+		t := types[itemTypeID]
+		dl.Product, dl.Metal, dl.Disposed = t.Name, t.Metal, disposed.String
+		d.Disposed = append(d.Disposed, dl)
+	}
+	drows.Close()
+	if err := drows.Err(); err != nil {
 		return d, err
 	}
 

@@ -140,9 +140,24 @@ type Spot struct {
 	Source       string  `json:"source"`
 }
 
+// DisposedLot is a sold holding, resolved (joined to its item type) for
+// realized-P&L reporting. Disposed holdings are excluded from the live Lots
+// valuation; their realized gain is proceeds - basis of the sold portion.
+type DisposedLot struct {
+	ID          int64   `json:"id"`
+	Activity    string  `json:"activity"`
+	Product     string  `json:"product"`
+	Metal       string  `json:"metal"`
+	Qty         float64 `json:"qty"`
+	BasisUSD    float64 `json:"basis_usd"`
+	ProceedsUSD float64 `json:"proceeds_usd"`
+	Disposed    string  `json:"disposed"` // ISO date sold
+}
+
 // Dataset is the full resolved in-memory store the calc engine operates on.
 type Dataset struct {
 	Lots     []Lot
+	Disposed []DisposedLot // sold holdings, for realized P&L
 	RollTxns []RollTxn
 	Trips    []Trip
 	Supplies []Supply

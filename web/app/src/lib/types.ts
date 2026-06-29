@@ -105,6 +105,19 @@ export interface EnrichedLot {
   unreal_pct: number
 }
 
+/** A sold holding with realized gain (proceeds - basis). */
+export interface RealizedLot {
+  id: number
+  activity: 'bullion' | 'crh'
+  product: string
+  metal: string
+  qty: number
+  basis_usd: number
+  proceeds_usd: number
+  disposed: string
+  gain_usd: number
+}
+
 /** The computed summary from GET /api/summary (calc.Report). */
 export interface Report {
   spot: Spot
@@ -143,6 +156,11 @@ export interface Report {
   crh_net_real: number
   crh_net_time: number
   hourly_rate: number
+
+  realized: RealizedLot[]
+  realized_proceeds: number
+  realized_basis: number
+  realized_gain: number
 
   total_basis: number
   total_market: number

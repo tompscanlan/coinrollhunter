@@ -86,6 +86,30 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 		writeJSON(w, http.StatusOK, cfg)
 	})
 
+	// lots: sell (full or partial) — records disposal + realized P&L. More
+	// specific than POST /api/lots, so it takes precedence in the mux.
+	mux.HandleFunc("POST /api/lots/{id}/sell", func(w http.ResponseWriter, r *http.Request) {
+		id, err := pathID(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(err))
+			return
+		}
+		body, err := decode[struct {
+			Qty      float64 `json:"qty"`
+			Proceeds float64 `json:"proceeds_usd"`
+			Date     string  `json:"date"`
+		}](r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(err))
+			return
+		}
+		if err := s.SellHolding(id, body.Qty, body.Proceeds, body.Date); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	// CRUD resources
 	register(mux, "item-types", resource[model.ItemType]{
 		list: s.ListItemTypes, create: s.InsertItemType, update: s.UpdateItemType, del: s.DeleteItemType,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '$lib/api'
   import type { Report } from '$lib/types'
+  import { today } from '$lib/format'
   import Dashboard from '$lib/components/Dashboard.svelte'
   import EditableGrid from '$lib/components/EditableGrid.svelte'
   import Button from '$lib/components/ui/Button.svelte'
@@ -11,6 +12,7 @@
     tripsGrid,
     suppliesGrid,
     keepersGrid,
+    type FlatHolding,
   } from '$lib/grids'
   import { Moon, Sun, RefreshCw, LayoutDashboard, Table2 } from 'lucide-svelte'
 
@@ -48,6 +50,42 @@
     { id: 'supplies', label: 'Supplies' },
     { id: 'keepers', label: 'Keepers' },
   ]
+
+  // --- sell a holding (full or partial) ---
+  let holdingsReload = $state(0) // bump to force the Holdings grid to reload
+  let sellRow = $state<FlatHolding | null>(null)
+  let sellQty = $state(0)
+  let sellProceeds = $state(0)
+  let sellDate = $state('')
+  let sellBusy = $state(false)
+  let sellErr = $state('')
+
+  function openSell(row: FlatHolding) {
+    sellRow = row
+    sellQty = row.qty
+    sellProceeds = 0
+    sellDate = today()
+    sellErr = ''
+  }
+  async function confirmSell() {
+    if (!sellRow) return
+    sellBusy = true
+    sellErr = ''
+    try {
+      await api.sellHolding(sellRow.id, {
+        qty: Number(sellQty) || 0,
+        proceeds_usd: Number(sellProceeds) || 0,
+        date: sellDate,
+      })
+      sellRow = null
+      holdingsReload++ // reload the grid (the split/disposal happened server-side)
+      refresh() // recompute the overview (realized section + stack)
+    } catch (e) {
+      sellErr = (e as Error).message
+    } finally {
+      sellBusy = false
+    }
+  }
 </script>
 
 <div class="mx-auto min-h-svh max-w-6xl px-4 pb-20 pt-6">
@@ -134,7 +172,13 @@
         </div>
 
         {#if dataTab === 'holdings'}
-          <EditableGrid {...holdingsGrid} onChanged={refresh} />
+          <EditableGrid
+            {...holdingsGrid}
+            onChanged={refresh}
+            rowAction={openSell}
+            rowActionTitle="Sell / dispose"
+            reloadSignal={holdingsReload}
+          />
         {:else if dataTab === 'rolls'}
           <EditableGrid {...rollTxnsGrid} onChanged={refresh} />
         {:else if dataTab === 'trips'}
@@ -148,3 +192,45 @@
     {/if}
   </main>
 </div>
+
+{#if sellRow}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+    <div class="w-full max-w-sm space-y-4 rounded-xl border bg-card p-5 shadow-lg">
+      <div>
+        <h3 class="text-lg font-semibold text-foreground">Sell {sellRow.product || 'holding'}</h3>
+        <p class="text-sm text-muted-foreground">
+          You hold {sellRow.qty} unit{sellRow.qty === 1 ? '' : 's'}. Selling fewer splits the lot — the
+          rest stays in your stack; the sold portion moves to realized P&amp;L.
+        </p>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          Qty to sell
+          <input
+            type="number" step="any" min="0" max={sellRow.qty} bind:value={sellQty}
+            class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
+          />
+        </label>
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          Proceeds $
+          <input
+            type="number" step="0.01" min="0" bind:value={sellProceeds}
+            class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
+          />
+        </label>
+        <label class="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">
+          Date sold
+          <input
+            type="date" bind:value={sellDate}
+            class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
+          />
+        </label>
+      </div>
+      {#if sellErr}<p class="text-sm text-destructive">{sellErr}</p>{/if}
+      <div class="flex justify-end gap-2">
+        <Button variant="ghost" onclick={() => (sellRow = null)}>Cancel</Button>
+        <Button onclick={confirmSell} disabled={sellBusy}>Record sale</Button>
+      </div>
+    </div>
+  </div>
+{/if}

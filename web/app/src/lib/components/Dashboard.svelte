@@ -239,6 +239,54 @@
     </div>
   </section>
 
+  <!-- realized (sold) -->
+  {#if r.realized.length}
+    <section class="space-y-2">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-semibold">Realized (sold)</h2>
+        <Badge variant={r.realized_gain >= 0 ? 'positive' : 'negative'}>gain {money(r.realized_gain)}</Badge>
+      </div>
+      <Card class="overflow-x-auto">
+        <table class="w-full text-sm tnum">
+          <thead>
+            <tr class="border-b bg-muted/40 text-left text-muted-foreground">
+              <th class="px-3 py-2 font-medium">Sold</th>
+              <th class="px-3 py-2 text-right font-medium">Qty</th>
+              <th class="px-3 py-2 text-right font-medium">Basis</th>
+              <th class="px-3 py-2 text-right font-medium">Proceeds</th>
+              <th class="px-3 py-2 text-right font-medium">Gain</th>
+              <th class="px-3 py-2 text-right font-medium">Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each r.realized as l (l.id)}
+              <tr class="border-b last:border-0">
+                <td class="px-3 py-2">{l.product}{l.activity === 'crh' ? ' (find)' : ''}</td>
+                <td class="px-3 py-2 text-right">{num(l.qty)}</td>
+                <td class="px-3 py-2 text-right">{money(l.basis_usd)}</td>
+                <td class="px-3 py-2 text-right">{money(l.proceeds_usd)}</td>
+                <td class={cn('px-3 py-2 text-right', l.gain_usd >= 0 ? 'text-positive' : 'text-negative')}>
+                  {money(l.gain_usd)}
+                </td>
+                <td class="px-3 py-2 text-right text-muted-foreground">{l.disposed}</td>
+              </tr>
+            {/each}
+            <tr class="border-t-2 bg-muted/30 font-semibold">
+              <td class="px-3 py-2">Total realized</td>
+              <td class="px-3 py-2"></td>
+              <td class="px-3 py-2 text-right">{money(r.realized_basis)}</td>
+              <td class="px-3 py-2 text-right">{money(r.realized_proceeds)}</td>
+              <td class={cn('px-3 py-2 text-right', r.realized_gain >= 0 ? 'text-positive' : 'text-negative')}>
+                {money(r.realized_gain)}
+              </td>
+              <td class="px-3 py-2"></td>
+            </tr>
+          </tbody>
+        </table>
+      </Card>
+    </section>
+  {/if}
+
   <!-- spot updater -->
   <section class="space-y-2">
     <h2 class="text-lg font-semibold">Spot prices</h2>

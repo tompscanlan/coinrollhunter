@@ -67,10 +67,22 @@ type Report struct {
 	CRHNetTime float64 `json:"crh_net_time"`
 	HourlyRate float64 `json:"hourly_rate"`
 
+	// Realized (sold holdings)
+	Realized         []RealizedLot `json:"realized"`
+	RealizedProceeds float64       `json:"realized_proceeds"`
+	RealizedBasis    float64       `json:"realized_basis"`
+	RealizedGain     float64       `json:"realized_gain"`
+
 	// Whole portfolio
 	TotalBasis  float64 `json:"total_basis"`
 	TotalMarket float64 `json:"total_market"`
 	TotalUnreal float64 `json:"total_unreal"`
+}
+
+// RealizedLot is a sold holding with its realized gain (proceeds - basis).
+type RealizedLot struct {
+	model.DisposedLot
+	GainUSD float64 `json:"gain_usd"`
 }
 
 // spotFor returns the spot price for a metal; any metal without a price column
@@ -219,6 +231,15 @@ func Compute(d model.Dataset) Report {
 	crhNetReal := fRealizable - fCost - opCost
 	crhNetTime := crhNetReal - hours*s.HourlyRateUSD
 
+	// --- realized (sold holdings) ---
+	realized := make([]RealizedLot, len(d.Disposed))
+	var rProceeds, rBasis float64
+	for i, dl := range d.Disposed {
+		realized[i] = RealizedLot{DisposedLot: dl, GainUSD: dl.ProceedsUSD - dl.BasisUSD}
+		rProceeds += dl.ProceedsUSD
+		rBasis += dl.BasisUSD
+	}
+
 	// --- totals ---
 	tBasis := bBasis + fCost
 	tMarket := bMarket + fRealizable
@@ -265,6 +286,11 @@ func Compute(d model.Dataset) Report {
 		CRHNetReal: crhNetReal,
 		CRHNetTime: crhNetTime,
 		HourlyRate: s.HourlyRateUSD,
+
+		Realized:         realized,
+		RealizedProceeds: rProceeds,
+		RealizedBasis:    rBasis,
+		RealizedGain:     rProceeds - rBasis,
 
 		TotalBasis:  tBasis,
 		TotalMarket: tMarket,

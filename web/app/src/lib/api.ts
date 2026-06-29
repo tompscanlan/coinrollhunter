@@ -67,6 +67,9 @@ export const api = {
 
   itemTypes: crud<ItemType>('item-types'),
   holdings: crud<Holding>('lots'),
+  // sell a holding (full or partial); records disposal + realized P&L
+  sellHolding: (id: number, body: { qty: number; proceeds_usd: number; date: string }) =>
+    req<void>('POST', `/lots/${id}/sell`, body),
   rollTxns: crud<RollTxn>('roll-txns'),
   trips: crud<Trip>('trips'),
   supplies: crud<Supply>('supplies'),
