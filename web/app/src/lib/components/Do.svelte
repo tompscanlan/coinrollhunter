@@ -2,23 +2,28 @@
   // The "Do" tab — a quick-action home built around the verbs of the hobby
   // ("what did you just do?") rather than raw tables. Each action is a focused
   // workflow over the same REST endpoints the Edit grids use; the grids stay as
-  // the correction/backstop layer. Prototype scope: "Return to bank" is wired
-  // end-to-end; the others are placeholders to show the shape.
+  // the correction/backstop layer.
   import type { Report } from '$lib/types'
   import { money } from '$lib/format'
   import Card from '$lib/components/ui/Card.svelte'
   import ReturnToBank from './workflows/ReturnToBank.svelte'
-  import { Boxes, Search, Landmark, Coins, HandCoins } from 'lucide-svelte'
+  import BoughtABox from './workflows/BoughtABox.svelte'
+  import LoggedFinds from './workflows/LoggedFinds.svelte'
+  import NewBullion from './workflows/NewBullion.svelte'
+  import SellHolding from './workflows/SellHolding.svelte'
+  import Reconcile from './workflows/Reconcile.svelte'
+  import { Boxes, Search, Landmark, Coins, HandCoins, Scale } from 'lucide-svelte'
   import { cn } from '$lib/utils'
 
   let { report, onChanged }: { report: Report; onChanged: () => void } = $props()
 
-  type WorkflowId = 'buy' | 'finds' | 'return' | 'purchase' | 'sell'
+  type WorkflowId = 'buy' | 'finds' | 'return' | 'reconcile' | 'purchase' | 'sell'
   let active = $state<WorkflowId | null>(null)
 
   const outstanding = $derived(Math.max(0, report.to_redeposit))
 
-  // Action tiles. `hint` is a live, data-aware nudge; only `return` is enabled here.
+  // Action tiles, ordered as the hunt loop runs then stack management. `hint` is
+  // a live, data-aware nudge.
   type Action = {
     id: WorkflowId
     title: string
@@ -33,14 +38,14 @@
       title: 'Bought a box / rolls',
       sub: 'Log coin picked up from a bank',
       icon: Boxes,
-      enabled: false,
+      enabled: true,
     },
     {
       id: 'finds',
       title: 'Logged finds',
       sub: 'Silver finds + keepers from a box',
       icon: Search,
-      enabled: false,
+      enabled: true,
     },
     {
       id: 'return',
@@ -51,24 +56,42 @@
       hint: outstanding > 0 ? `${money(outstanding)} outstanding` : 'all cashed in',
     },
     {
+      id: 'reconcile',
+      title: 'Reconcile / close out',
+      sub: 'Square the float, write off shrinkage',
+      icon: Scale,
+      enabled: true,
+      hint: outstanding > 0 ? `${money(outstanding)} to square` : 'books square',
+    },
+    {
       id: 'purchase',
       title: 'New coin / bullion',
       sub: 'A purchase for the stack',
       icon: Coins,
-      enabled: false,
+      enabled: true,
     },
     {
       id: 'sell',
       title: 'Sold something',
       sub: 'Record a sale + realized P&L',
       icon: HandCoins,
-      enabled: false,
+      enabled: true,
     },
   ])
 </script>
 
-{#if active === 'return'}
+{#if active === 'buy'}
+  <BoughtABox {report} {onChanged} onClose={() => (active = null)} />
+{:else if active === 'finds'}
+  <LoggedFinds {report} {onChanged} onClose={() => (active = null)} />
+{:else if active === 'return'}
   <ReturnToBank {report} {onChanged} onClose={() => (active = null)} />
+{:else if active === 'reconcile'}
+  <Reconcile {report} {onChanged} onClose={() => (active = null)} />
+{:else if active === 'purchase'}
+  <NewBullion {report} {onChanged} onClose={() => (active = null)} />
+{:else if active === 'sell'}
+  <SellHolding {report} {onChanged} onClose={() => (active = null)} />
 {:else}
   <div class="space-y-4">
     <div class="text-center">

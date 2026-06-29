@@ -13,12 +13,13 @@
     tripsGrid,
     suppliesGrid,
     keepersGrid,
+    lossesGrid,
     type FlatHolding,
   } from '$lib/grids'
   import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap } from 'lucide-svelte'
 
   type View = 'overview' | 'do' | 'entry'
-  type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers'
+  type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers' | 'losses'
 
   let view = $state<View>('overview')
   let dataTab = $state<DataTab>('holdings')
@@ -50,6 +51,7 @@
     { id: 'trips', label: 'Trips' },
     { id: 'supplies', label: 'Supplies' },
     { id: 'keepers', label: 'Keepers' },
+    { id: 'losses', label: 'Losses' },
   ]
 
   // --- sell a holding (full or partial) ---
@@ -201,6 +203,8 @@
           <EditableGrid {...suppliesGrid} onChanged={refresh} />
         {:else if dataTab === 'keepers'}
           <EditableGrid {...keepersGrid} onChanged={refresh} />
+        {:else if dataTab === 'losses'}
+          <EditableGrid {...lossesGrid} onChanged={refresh} />
         {/if}
       </section>
     {/if}

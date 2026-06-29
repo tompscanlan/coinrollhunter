@@ -7,7 +7,7 @@ import { api } from './api'
 import { today } from './format'
 import { DENOMS, ROLL_UNITS, METALS, SILVER_PRESETS } from './presets'
 import type { GridColumn } from './components/EditableGrid.svelte'
-import type { ItemType, Holding, RollTxn, Trip, Supply, Keeper } from './types'
+import type { ItemType, Holding, RollTxn, Trip, Supply, Keeper, Loss } from './types'
 
 // --- Autocomplete caches -----------------------------------------------------
 // Refreshed by each grid's load(); the column suggestion/autofill closures read
@@ -20,19 +20,30 @@ const distinct = (xs: (string | undefined)[]) =>
   [...new Set(xs.map((s) => (s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
 
 /** Map a Product value (existing item_type name OR a silver-preset label) to the
-    metal/fineness/fine-oz it implies. Catalog entries win over presets on name. */
-function productAutofill(value: string): Partial<FlatHolding> | undefined {
+    metal/fineness/fine-oz it implies, given a catalog. Catalog entries win over
+    presets on name. Pure — reused by the Do-tab workflows, which pass their own
+    freshly-fetched catalog. */
+export function productAutofillFrom(
+  value: string,
+  cat: ItemType[],
+): Pick<FlatHolding, 'metal' | 'fineness' | 'fine_oz_each'> | undefined {
   const v = norm(value)
-  const t = catalog.find((c) => norm(c.name) === v)
+  const t = cat.find((c) => norm(c.name) === v)
   if (t) return { metal: t.metal, fineness: t.fineness, fine_oz_each: t.fine_oz_each }
   const p = SILVER_PRESETS.find((p) => norm(p.label) === v)
   if (p) return { metal: 'silver', fineness: p.fineness, fine_oz_each: p.fine_oz_each }
   return undefined
 }
 
-/** Suggestion list for the Product field: your catalog names + preset labels. */
-const productSuggestions = () =>
-  distinct([...catalog.map((c) => c.name), ...SILVER_PRESETS.map((p) => p.label)])
+/** Suggestion list for the Product field: catalog names + preset labels. */
+export function productSuggestionsFrom(cat: ItemType[]): string[] {
+  return distinct([...cat.map((c) => c.name), ...SILVER_PRESETS.map((p) => p.label)])
+}
+
+// Grid-column closures read the module-level `catalog` cache (populated by the
+// Holdings grid's load()); the exported pure variants above take an explicit one.
+const productAutofill = (value: string) => productAutofillFrom(value, catalog)
+const productSuggestions = () => productSuggestionsFrom(catalog)
 
 /** Load a bank-bearing table and fold its bank names into the shared cache, so
     the Bank field on roll txns and trips suggests every bank you've used. */
@@ -267,4 +278,21 @@ export const keepersGrid: GridConfig<Keeper> = {
   update: api.keepers.update,
   remove: api.keepers.remove,
   blank: () => ({ denom: 'halves', count: 0, face_usd: 0 }),
+}
+
+export const lossesGrid: GridConfig<Loss> = {
+  title: 'Losses (shrinkage)',
+  description:
+    'Face written off at reconcile — machine miscounts, lost coins, short deposits. Honest, auditable, and correctable: delete a row if the coins resurface and the float reopens (ADR-005).',
+  columns: [
+    { accessorKey: 'date', header: 'Date', meta: { editor: 'date', width: '150px' } },
+    { accessorKey: 'amount_usd', header: 'Lost $', meta: { editor: 'number', step: 0.01, align: 'right', width: '120px' } },
+    { accessorKey: 'reason', header: 'Reason', meta: { editor: 'text', placeholder: 'machine miscount' } },
+    { accessorKey: 'scope', header: 'Scope', meta: { editor: 'text', placeholder: 'June halves run' } },
+  ],
+  load: api.losses.list,
+  create: api.losses.create,
+  update: api.losses.update,
+  remove: api.losses.remove,
+  blank: () => ({ date: today(), amount_usd: 0, reason: '', scope: '' }),
 }

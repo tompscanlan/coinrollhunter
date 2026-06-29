@@ -79,6 +79,15 @@ export interface Keeper {
   face_usd: number
 }
 
+/** A shrinkage write-off booked at reconcile — face declared lost (ADR-005). */
+export interface Loss {
+  id: number
+  date: string
+  amount_usd: number
+  reason: string
+  scope: string
+}
+
 export interface Settings {
   value_time: boolean
   hourly_rate_usd: number
@@ -154,6 +163,7 @@ export interface Report {
   hours: number
   supplies: number
   op_cost: number
+  losses: number // shrinkage write-offs (ADR-005)
 
   buys: number
   returns: number

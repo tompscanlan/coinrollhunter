@@ -10,6 +10,7 @@ import type {
   Trip,
   Supply,
   Keeper,
+  Loss,
 } from './types'
 
 const BASE = '/api'
@@ -74,4 +75,5 @@ export const api = {
   trips: crud<Trip>('trips'),
   supplies: crud<Supply>('supplies'),
   keepers: crud<Keeper>('keepers'),
+  losses: crud<Loss>('losses'),
 }

@@ -86,8 +86,8 @@
     <div class="text-sm/relaxed opacity-90">Is coin roll hunting costing you money?</div>
     <div class="mt-1 text-2xl font-bold tnum">{v} &nbsp; {money(r.crh_net_real)}</div>
     <div class="mt-1.5 text-sm opacity-95">
-      Near-free silver finds ({oz(r.find_oz)} oz) vs logged costs of {money(r.op_cost)}. Bullion is a
-      separate long-term hold.
+      Near-free silver finds ({oz(r.find_oz)} oz) vs logged costs of {money(r.op_cost + r.losses)}{#if r.losses > 0}
+        (incl. {money(r.losses)} shrinkage){/if}. Bullion is a separate long-term hold.
     </div>
   </Card>
 
@@ -215,14 +215,15 @@
       {#if r.reconciled}
         <Check class="mt-0.5 size-4 shrink-0" />
         <span>
-          <b>All cashed in.</b> Bought {money(r.buys)} − returned {money(r.returns)} − kept {money(r.kept_face)}
-          = $0.00 outstanding.
+          <b>All cashed in.</b> Bought {money(r.buys)} − returned {money(r.returns)} − kept {money(r.kept_face)}{#if r.losses > 0}
+            − lost {money(r.losses)}{/if} = $0.00 outstanding.
         </span>
       {:else}
         <TriangleAlert class="mt-0.5 size-4 shrink-0" />
         <span>
           <b>{money(r.to_redeposit)} still to redeposit.</b> Bought {money(r.buys)} − returned
-          {money(r.returns)} − kept {money(r.kept_face)}. That's searched culls awaiting a bank run.
+          {money(r.returns)} − kept {money(r.kept_face)}{#if r.losses > 0} − lost {money(r.losses)}{/if}. That's
+          searched culls awaiting a bank run — or close the books with Reconcile.
         </span>
       {/if}
     </div>
@@ -241,12 +242,12 @@
   </section>
 
   <!-- hunt yield by bank & box -->
-  {#if r.box_yields.length}
+  {#if r.box_yields?.length}
     <HuntYield {report} />
   {/if}
 
   <!-- realized (sold) -->
-  {#if r.realized.length}
+  {#if r.realized?.length}
     <section class="space-y-2">
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-semibold">Realized (sold)</h2>
