@@ -109,6 +109,10 @@
       },
     },
     onSortingChange: (u) => (sorting = typeof u === 'function' ? u(sorting) : u),
+    // Required by table-core's resolved options type. We drive state externally
+    // (controlled `sorting` + seeded defaults via setOptions below), so internal
+    // state pushes are a no-op — this just satisfies the type without changing behavior.
+    onStateChange: () => {},
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     renderFallbackValue: undefined,
