@@ -1,0 +1,13 @@
+{
+  "name": "coinrollhunter-qa",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless end-to-end regression guard (Playwright) for the CoinRollHunter UI.",
+  "scripts": {
+    "test": "node do-tab.e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

@@ -1,0 +1,170 @@
+// End-to-end regression guard for the workflow-first "Do" tab (bead om-tuu9).
+// Drives every tile in a real headless browser against a running `serve`
+// instance, asserting both the UI flow and the recorded rows (via the REST API),
+// and fails on ANY console/page error. Assumes a freshly-migrated DB with a spot
+// price seeded — see run.sh, which sets that up and tears it down.
+//
+// Run standalone:  BASE_URL=http://127.0.0.1:8799 node do-tab.e2e.mjs
+import { chromium } from 'playwright'
+
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:8799'
+const SHOT = process.env.SHOT_DIR || '.'
+const results = []
+const consoleErrors = []
+const pageErrors = []
+const ok = (n, cond, extra = '') => {
+  results.push({ n, pass: !!cond, extra })
+  console.log(`${cond ? 'PASS' : 'FAIL'}  ${n}${extra ? '  — ' + extra : ''}`)
+}
+const api = (p) => fetch(BASE + '/api' + p).then((r) => r.json())
+
+const browser = await chromium.launch()
+const page = await browser.newPage()
+page.on('console', (m) => {
+  if (m.type() === 'error') consoleErrors.push(m.text())
+})
+page.on('pageerror', (e) => pageErrors.push(e.message))
+
+const goDo = async () => {
+  await page.getByRole('button', { name: 'Do' }).click()
+  await page.getByRole('heading', { name: 'What did you do?' }).waitFor({ timeout: 5000 })
+}
+const tile = (name) => page.locator('button.group', { hasText: name })
+
+try {
+  await page.goto(BASE, { waitUntil: 'networkidle' })
+  await page.getByRole('heading', { name: 'CoinRollHunter' }).waitFor({ timeout: 8000 })
+  ok('app shell renders', await page.getByText('Local-first coins').isVisible())
+
+  // === Do tab: all six tiles present ===
+  await goDo()
+  for (const t of ['Bought a box', 'Logged finds', 'Returned to bank', 'Reconcile', 'New coin', 'Sold something']) {
+    ok(`tile present: ${t}`, (await tile(t).count()) > 0)
+  }
+
+  // === 1. Bought a box ===  (1 box of halves auto-fills $500, + a trip)
+  await tile('Bought a box').click()
+  await page.getByRole('heading', { name: 'Bought a box / rolls' }).waitFor()
+  await page.getByPlaceholder('Stock Yards').fill('Stock Yards')
+  ok('box-face auto-fills', true) // asserted via API below
+  await page.getByLabel('Also log the bank trip (gas + time)').check()
+  await page.locator('input[type=number]').last().fill('0.5') // hours
+  await page.getByRole('button', { name: /Log .* bought/ }).click()
+  await page.getByText('Logged', { exact: false }).first().waitFor({ timeout: 5000 })
+  const buys1 = (await api('/roll-txns')).filter((r) => r.action === 'buy')
+  ok('buy recorded', buys1.length === 1, `${buys1.length} buys`)
+  ok('buy face = $500 (auto)', buys1[0]?.face_usd === 500, `face ${buys1[0]?.face_usd}`)
+  ok('optional trip recorded', (await api('/trips')).length === 1)
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  // === 2. Logged finds ===  (90% half x3 + 10 clad halves, linked to the box)
+  await goDo()
+  await tile('Logged finds').click()
+  await page.getByRole('heading', { name: 'Logged finds' }).waitFor()
+  const prod = page.getByPlaceholder('90% half (1964 & earlier)')
+  await prod.fill('90% half (1964 & earlier)')
+  await prod.dispatchEvent('input')
+  const sb = () => page.getByRole('spinbutton')
+  await sb().nth(0).fill('3') // find qty
+  await sb().nth(0).dispatchEvent('input')
+  await page.getByRole('button', { name: 'Add a keeper' }).click()
+  await sb().nth(2).fill('10') // keeper count (find: qty,face ; keeper: count,face)
+  await sb().nth(2).dispatchEvent('input')
+  await page.getByRole('button', { name: 'Save finds' }).click()
+  await page.getByText('in silver face', { exact: false }).waitFor({ timeout: 5000 })
+  const finds = (await api('/lots')).filter((l) => l.activity === 'crh')
+  ok('find recorded (crh holding)', finds.length === 1, `${finds.length} finds`)
+  ok('find linked to box', finds[0]?.roll_txn_id === buys1[0].id, `roll_txn_id ${finds[0]?.roll_txn_id}`)
+  const keepers = await api('/keepers')
+  ok('keeper recorded', keepers.length === 1, `${keepers.length} keepers`)
+  ok('keeper face auto (10 halves=$5)', Math.abs((keepers[0]?.face_usd ?? 0) - 5) < 0.01, `face ${keepers[0]?.face_usd}`)
+  await page.getByRole('button', { name: 'Done' }).click()
+  const sum2 = await api('/summary')
+  ok('box yield computed', (sum2.box_yields || []).some((b) => b.find_count > 0))
+
+  // === 3. New coin / bullion ===  (1 oz gold eagle, basis $3950)
+  await goDo()
+  await tile('New coin').click()
+  await page.getByRole('heading', { name: 'New coin / bullion' }).waitFor()
+  await page.getByPlaceholder('1 oz American Gold Eagle').fill('1 oz Gold Eagle')
+  await page.locator('input[type=number]').nth(0).fill('1') // fine oz/unit
+  await page.locator('input[type=number]').nth(1).fill('1') // qty
+  await page.locator('input[type=number]').nth(2).fill('3950') // basis
+  await page.getByRole('button', { name: 'Add to stack' }).click()
+  await page.getByText('Added', { exact: false }).first().waitFor({ timeout: 5000 })
+  ok('bullion holding added', (await api('/lots')).filter((l) => l.activity === 'bullion').length === 1)
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  // === 4. Returned to bank ===  (partial return $400)
+  await goDo()
+  await tile('Returned to bank').click()
+  await page.getByRole('heading', { name: 'Return culls to the bank' }).waitFor()
+  await page.getByRole('spinbutton').first().fill('400')
+  await page.getByRole('button', { name: /Return .* to bank/ }).click()
+  await page.getByText('Recorded', { exact: false }).first().waitFor({ timeout: 5000 })
+  const returns4 = (await api('/roll-txns')).filter((r) => r.action === 'return')
+  ok('return recorded', returns4.length === 1 && returns4[0].face_usd === 400, `@ ${returns4[0]?.face_usd}`)
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  // === 5. Reconcile / close out ===  (record a forgotten keeper, then book the rest)
+  const sumBefore = await api('/summary')
+  ok('float still open before reconcile', sumBefore.to_redeposit > 0.01, `to_redeposit ${sumBefore.to_redeposit}`)
+  await goDo()
+  await tile('Reconcile').click()
+  await page.getByRole('heading', { name: 'Reconcile / close the books' }).waitFor()
+  // step 1: a forgotten keeper (5 halves = $2.50) shrinks the float — NOT a loss
+  await page.getByRole('spinbutton').nth(0).fill('5')
+  await page.getByRole('button', { name: 'Add', exact: true }).first().click()
+  await page.waitForTimeout(400)
+  ok('reconcile recorded forgotten keeper', (await api('/keepers')).length === 2)
+  const sumMid = await api('/summary')
+  ok('keeper reduced float (not a loss)', (sumMid.losses ?? 0) === 0 && sumMid.to_redeposit < sumBefore.to_redeposit,
+     `losses ${sumMid.losses}, float ${sumMid.to_redeposit}`)
+  // step 2: write off the rest
+  await page.getByRole('button', { name: /Book .* loss/ }).click()
+  await page.getByText('books closed', { exact: false }).waitFor({ timeout: 5000 })
+  const sumAfter = await api('/summary')
+  ok('loss booked', (sumAfter.losses ?? 0) > 0, `losses ${sumAfter.losses}`)
+  ok('float reconciled to ~$0', Math.abs(sumAfter.to_redeposit) < 0.01, `to_redeposit ${sumAfter.to_redeposit}`)
+  ok('reconciled flag true', sumAfter.reconciled === true)
+  ok('CRH net dropped by the loss', Math.abs(sumMid.crh_net_real - sumAfter.losses - sumAfter.crh_net_real) < 0.01,
+     `mid ${sumMid.crh_net_real} loss ${sumAfter.losses} after ${sumAfter.crh_net_real}`)
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  // === 6. Sold something ===  (sell the gold eagle: 4200 − 3950 = +250)
+  await goDo()
+  await tile('Sold something').click()
+  await page.getByRole('heading', { name: 'Sold something' }).waitFor()
+  await page.locator('select').first().selectOption({ index: 1 }) // the bullion lot, not the find
+  await page.getByRole('spinbutton').nth(1).fill('4200') // proceeds
+  await page.getByRole('button', { name: 'Record sale' }).click()
+  await page.getByText('Realized', { exact: false }).first().waitFor({ timeout: 5000 })
+  const sumSold = await api('/summary')
+  ok('sale recorded (realized)', (sumSold.realized || []).length === 1)
+  ok('realized gain ~ +$250', Math.abs(sumSold.realized_gain - 250) < 0.01, `gain ${sumSold.realized_gain}`)
+  await page.getByRole('button', { name: 'Done' }).click()
+
+  // === Edit layer: Losses grid round-trips ===
+  await page.getByRole('button', { name: 'Edit' }).click()
+  await page.getByRole('button', { name: 'Losses', exact: true }).click()
+  await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  const lossRows = await page.locator('section table tbody tr:has(button[title="Delete row"])').count()
+  const apiLosses = (await api('/losses')).length
+  ok('Losses grid round-trips', lossRows === apiLosses && apiLosses >= 1, `dom ${lossRows} vs api ${apiLosses}`)
+
+  // === Overview reflects shrinkage ===
+  await page.getByRole('button', { name: 'Overview', exact: true }).click()
+  await page.getByText('All cashed in', { exact: false }).first().waitFor({ timeout: 5000 })
+  ok('overview reconciliation banner shows lost', (await page.getByText('lost', { exact: false }).count()) > 0)
+  await page.screenshot({ path: `${SHOT}/do-overview.png`, fullPage: true }).catch(() => {})
+} catch (e) {
+  ok('UNCAUGHT', false, e.message)
+  await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})
+} finally {
+  ok('no console errors', consoleErrors.length === 0, consoleErrors.slice(0, 5).join(' | '))
+  ok('no page errors', pageErrors.length === 0, pageErrors.slice(0, 5).join(' | '))
+  const passed = results.filter((r) => r.pass).length
+  console.log(`\n${passed}/${results.length} checks passed`)
+  await browser.close()
+  process.exit(passed === results.length ? 0 : 1)
+}

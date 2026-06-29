@@ -3,7 +3,7 @@ SHELL := /bin/bash
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help ui build run test vet check release clean
+.PHONY: help ui build run test vet check e2e release clean
 
 help: ## list targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n",$$1,$$2}'
@@ -25,6 +25,9 @@ vet: ## go vet
 
 check: ## type-check the UI
 	cd web/app && npm run check
+
+e2e: ## headless end-to-end QA of the Do tab (builds, serves a throwaway DB)
+	./qa/run.sh
 
 release: ## cross-compile + package every platform into dist/
 	VERSION=$(VERSION) ./scripts/release.sh
