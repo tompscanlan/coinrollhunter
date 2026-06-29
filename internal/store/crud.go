@@ -157,6 +157,18 @@ func (s *Store) UpdateKeeper(id int64, k model.Keeper) error {
 
 func (s *Store) DeleteKeeper(id int64) error { return s.deleteByID("keepers", id) }
 
+// --- losses (shrinkage write-offs; ADR-005) ----------------------------------
+
+func (s *Store) ListLosses() ([]model.Loss, error) { return s.loadLosses() }
+
+func (s *Store) UpdateLoss(id int64, l model.Loss) error {
+	res, err := s.db.Exec(`UPDATE losses SET date=?, amount_usd=?, reason=?, scope=? WHERE id=?`,
+		l.Date, l.AmountUSD, l.Reason, l.Scope, id)
+	return affected(res, err, "update loss")
+}
+
+func (s *Store) DeleteLoss(id int64) error { return s.deleteByID("losses", id) }
+
 // --- spot history ------------------------------------------------------------
 
 func (s *Store) ListSpot() ([]model.Spot, error) {

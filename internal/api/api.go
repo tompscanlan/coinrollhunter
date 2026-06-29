@@ -129,6 +129,9 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 	register(mux, "keepers", resource[model.Keeper]{
 		list: s.ListKeepers, create: s.InsertKeeper, update: s.UpdateKeeper, del: s.DeleteKeeper,
 	})
+	register(mux, "losses", resource[model.Loss]{
+		list: s.ListLosses, create: s.InsertLoss, update: s.UpdateLoss, del: s.DeleteLoss,
+	})
 
 	// Static UI at the root (when embedded), with an SPA fallback to index.html.
 	if webFS != nil {

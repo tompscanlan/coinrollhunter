@@ -71,6 +71,16 @@ func (s *Store) InsertSupply(x model.Supply) (int64, error) {
 	return res.LastInsertId()
 }
 
+// InsertLoss inserts a shrinkage/loss adjustment and returns its new id (ADR-005).
+func (s *Store) InsertLoss(l model.Loss) (int64, error) {
+	res, err := s.db.Exec(`INSERT INTO losses (date, amount_usd, reason, scope) VALUES (?,?,?,?)`,
+		l.Date, l.AmountUSD, l.Reason, l.Scope)
+	if err != nil {
+		return 0, fmt.Errorf("insert loss: %w", err)
+	}
+	return res.LastInsertId()
+}
+
 // InsertKeeper inserts a keeper and returns its new id.
 func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
 	res, err := s.db.Exec(`INSERT INTO keepers (denom, count, face_usd) VALUES (?,?,?)`,
@@ -333,6 +343,9 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	if d.Keepers, err = s.loadKeepers(); err != nil {
 		return d, err
 	}
+	if d.Losses, err = s.loadLosses(); err != nil {
+		return d, err
+	}
 	if d.Spot, err = s.LatestSpot(); err != nil {
 		return d, err
 	}
@@ -396,6 +409,25 @@ func (s *Store) loadSupplies() ([]model.Supply, error) {
 		}
 		x.Date, x.Item = date.String, item.String
 		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) loadLosses() ([]model.Loss, error) {
+	rows, err := s.db.Query(`SELECT id, date, amount_usd, reason, scope FROM losses ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("load losses: %w", err)
+	}
+	defer rows.Close()
+	var out []model.Loss
+	for rows.Next() {
+		var l model.Loss
+		var date, reason, scope sql.NullString
+		if err := rows.Scan(&l.ID, &date, &l.AmountUSD, &reason, &scope); err != nil {
+			return nil, err
+		}
+		l.Date, l.Reason, l.Scope = date.String, reason.String, scope.String
+		out = append(out, l)
 	}
 	return out, rows.Err()
 }

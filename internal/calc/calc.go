@@ -48,6 +48,11 @@ type Report struct {
 	Supplies float64 `json:"supplies"`
 	OpCost   float64 `json:"op_cost"`
 
+	// Shrinkage write-offs (ADR-005): face declared lost at reconcile. A real
+	// cash cost — surfaced as its own line, not folded into op_cost — that both
+	// closes the float and reduces CRH net.
+	Losses float64 `json:"losses"`
+
 	// Float / cash-in reconciliation
 	Buys        float64 `json:"buys"`
 	Returns     float64 `json:"returns"`
@@ -221,8 +226,15 @@ func Compute(d model.Dataset) Report {
 	for _, k := range d.Keepers {
 		cladFace += k.FaceUSD
 	}
+	// Shrinkage write-offs (ADR-005): face declared lost at reconcile. It closes
+	// the float just like a return, but represents value gone rather than coin
+	// recovered, so it is tracked separately and also hits CRH net below.
+	var losses float64
+	for _, l := range d.Losses {
+		losses += l.AmountUSD
+	}
 	keptFace := cladFace + fCost
-	toRedeposit := buys - returns - keptFace
+	toRedeposit := buys - returns - keptFace - losses
 	reconciled := math.Abs(toRedeposit) < 0.01
 
 	// --- box throughput (derived from normalized face; ADR-001 R7) ---
@@ -241,9 +253,9 @@ func Compute(d model.Dataset) Report {
 		totalBoxes += b
 	}
 
-	// --- CRH net ---
-	crhNetMelt := fMelt - fCost - opCost
-	crhNetReal := fRealizable - fCost - opCost
+	// --- CRH net --- (losses are a real cash cost; subtract alongside op cost)
+	crhNetMelt := fMelt - fCost - opCost - losses
+	crhNetReal := fRealizable - fCost - opCost - losses
 	crhNetTime := crhNetReal - hours*s.HourlyRateUSD
 
 	// --- per-box yield (which boxes/banks actually produced silver) ---
@@ -264,7 +276,9 @@ func Compute(d model.Dataset) Report {
 			by.FindCount++
 		}
 	}
-	var boxYields []BoxYield
+	// Non-nil so it serializes as [] not null (the summary handler writes the
+	// Report directly; an empty DB must not crash the UI's {#if ...length}).
+	boxYields := []BoxYield{}
 	for _, t := range d.RollTxns {
 		if t.Action != "buy" {
 			continue
@@ -315,6 +329,7 @@ func Compute(d model.Dataset) Report {
 		Hours:    hours,
 		Supplies: supplies,
 		OpCost:   opCost,
+		Losses:   losses,
 
 		Buys:        buys,
 		Returns:     returns,

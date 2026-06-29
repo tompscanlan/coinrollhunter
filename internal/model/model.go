@@ -133,6 +133,19 @@ type Keeper struct {
 	FaceUSD float64 `json:"face_usd"`
 }
 
+// Loss is a shrinkage / write-off booked when the float can't be fully
+// reconciled — face that was bought but never returned, found, or kept (machine
+// miscounts, lost coins, short deposits). Unlike a roll-txn 'return' (coin
+// recovered), a loss is value gone: it drives the float to $0 and flows into
+// calc as a real cash cost (ADR-005).
+type Loss struct {
+	ID        int64   `json:"id"`
+	Date      string  `json:"date"`       // ISO date the period was closed
+	AmountUSD float64 `json:"amount_usd"` // face declared lost
+	Reason    string  `json:"reason"`     // "machine miscount", "short deposit", ...
+	Scope     string  `json:"scope"`      // free-text period/session/bank tag
+}
+
 // Spot is a metals price observation; every fetch is appended so we keep history.
 type Spot struct {
 	AsOf         string  `json:"as_of"`
@@ -165,6 +178,7 @@ type Dataset struct {
 	Trips    []Trip
 	Supplies []Supply
 	Keepers  []Keeper
+	Losses   []Loss // shrinkage write-offs (ADR-005)
 	Spot     Spot
 	Settings Settings
 }

@@ -112,6 +112,47 @@ func TestSampleReport(t *testing.T) {
 	approx(t, "total_market", r.TotalMarket, 4434.04+66.55896)
 }
 
+// TestLossReconciliation is the worked example for ADR-005: booking the
+// unaccounted float as a loss drives to_redeposit to $0 and reduces CRH net by
+// exactly the loss amount (a loss is a real cash cost, not a free reset).
+func TestLossReconciliation(t *testing.T) {
+	// $500 halves bought, $480 returned, $15 clad kept, one 90% silver find
+	// (face $0.50). Accounted = 480 + 15 + 0.50 = 495.50 → $4.50 unaccounted.
+	base := model.Dataset{
+		Spot:     model.Spot{SilverUSD: 60},
+		Settings: model.DefaultSettings(),
+		Lots: []model.Lot{
+			{Activity: "crh", Metal: "silver", Fineness: "90%", Qty: 2, FineOzEach: 0.18084, BasisUSD: 0.50},
+		},
+		RollTxns: []model.RollTxn{
+			{Action: "buy", Denom: "halves", FaceUSD: 500},
+			{Action: "return", FaceUSD: 480},
+		},
+		Keepers: []model.Keeper{{Denom: "halves", FaceUSD: 15}},
+	}
+
+	// Before reconcile: $4.50 still "outstanding", not reconciled.
+	before := Compute(base)
+	approx(t, "before to_redeposit", before.ToRedeposit, 4.50)
+	if before.Reconciled {
+		t.Errorf("before reconciled = true, want false ($4.50 outstanding)")
+	}
+
+	// Book the $4.50 as a loss (the Reconcile action).
+	withLoss := base
+	withLoss.Losses = []model.Loss{{Date: "2026-06-29", AmountUSD: 4.50, Reason: "machine miscount"}}
+	after := Compute(withLoss)
+
+	approx(t, "losses", after.Losses, 4.50)
+	approx(t, "after to_redeposit", after.ToRedeposit, 0.00)
+	if !after.Reconciled {
+		t.Errorf("after reconciled = false, want true (float closed)")
+	}
+	// CRH net drops by exactly the loss; nothing else changed.
+	approx(t, "crh_net drops by the loss", after.CRHNetReal, before.CRHNetReal-4.50)
+	approx(t, "op_cost unchanged (loss is its own line)", after.OpCost, before.OpCost)
+}
+
 // TestInvariants asserts the accounting identities that must hold for ANY
 // dataset, regardless of the specific numbers. These survive intentional changes
 // to spot prices, haircuts, or fixtures — they encode what the math *means*.
@@ -131,14 +172,24 @@ func TestInvariants(t *testing.T) {
 			RollTxns: []model.RollTxn{{Action: "buy", Denom: "dimes", FaceUSD: 250}},
 			Keepers:  []model.Keeper{{Denom: "dimes", FaceUSD: 2.50}},
 		}},
+		{"with-loss", model.Dataset{
+			Settings: model.DefaultSettings(),
+			Spot:     model.Spot{GoldUSD: 4000, SilverUSD: 60},
+			Lots: []model.Lot{
+				{Activity: "crh", Metal: "silver", Fineness: "90%", Qty: 2, FineOzEach: 0.18084, BasisUSD: 0.50},
+			},
+			RollTxns: []model.RollTxn{{Action: "buy", Denom: "halves", FaceUSD: 500}, {Action: "return", FaceUSD: 480}},
+			Keepers:  []model.Keeper{{Denom: "halves", FaceUSD: 15}},
+			Losses:   []model.Loss{{Date: "2026-06-29", AmountUSD: 3.00, Reason: "machine miscount"}},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Compute(tc.d)
 			approx(t, "op_cost = gas+supplies", r.OpCost, r.Gas+r.Supplies)
 			approx(t, "kept = clad+find_cost", r.KeptFace, r.CladFace+r.FindCost)
-			approx(t, "to_redeposit = buys-returns-kept", r.ToRedeposit, r.Buys-r.Returns-r.KeptFace)
-			approx(t, "crh_net_real = realizable-cost-op", r.CRHNetReal, r.FindRealizable-r.FindCost-r.OpCost)
-			approx(t, "crh_net_melt = melt-cost-op", r.CRHNetMelt, r.FindMelt-r.FindCost-r.OpCost)
+			approx(t, "to_redeposit = buys-returns-kept-lost", r.ToRedeposit, r.Buys-r.Returns-r.KeptFace-r.Losses)
+			approx(t, "crh_net_real = realizable-cost-op-loss", r.CRHNetReal, r.FindRealizable-r.FindCost-r.OpCost-r.Losses)
+			approx(t, "crh_net_melt = melt-cost-op-loss", r.CRHNetMelt, r.FindMelt-r.FindCost-r.OpCost-r.Losses)
 			approx(t, "bullion_unreal = market-basis", r.BullionUnreal, r.BullionMarket-r.BullionBasis)
 			approx(t, "total_basis = bullion+find_cost", r.TotalBasis, r.BullionBasis+r.FindCost)
 			approx(t, "total_market = bullion+realizable", r.TotalMarket, r.BullionMarket+r.FindRealizable)
