@@ -19,9 +19,9 @@ export function signedMoney(x: number): string {
   return (x >= 0 ? '+' : '') + money(x).replace('+', '')
 }
 
-/** Percent, e.g. 8.53 -> "+8.5%"; Infinity -> "n/a" (zero basis). */
-export function pct(x: number): string {
-  if (x === Infinity || x == null || Number.isNaN(x)) return 'n/a'
+/** Percent, e.g. 8.53 -> "+8.5%"; null/Infinity/NaN -> "n/a" (undefined, e.g. zero basis). */
+export function pct(x: number | null | undefined): string {
+  if (x == null || x === Infinity || Number.isNaN(x)) return 'n/a'
   return (x >= 0 ? '+' : '') + x.toFixed(1) + '%'
 }
 

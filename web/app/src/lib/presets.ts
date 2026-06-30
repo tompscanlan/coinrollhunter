@@ -26,10 +26,49 @@ export const BOX_FACE: Record<string, number> = {
   cents: 25,
 }
 
+/** Face dollars in one standard bag, by denomination — for bag→face auto-fill.
+    Standard mint/Fed bag quantities: cents 5,000=$50 · nickels 4,000=$200 ·
+    dimes 10,000=$1,000 · quarters 4,000=$1,000 · halves 2,000=$1,000 (ADR-006). */
+export const BAG_FACE: Record<string, number> = {
+  halves: 1000,
+  quarters: 1000,
+  dimes: 1000,
+  nickels: 200,
+  cents: 50,
+}
+
 export const DENOMS = ['halves', 'quarters', 'dimes', 'nickels', 'cents'] as const
-export const ROLL_UNITS = ['box', 'roll', 'face', 'coin'] as const
+// 'bag' is both a quantity unit (a $1k bag of loose coin) and recognized by the
+// backend (ADR-006); it normalizes to face via BAG_FACE, like box.
+export const ROLL_UNITS = ['box', 'roll', 'bag', 'face', 'coin'] as const
 export const METALS = ['gold', 'silver', 'platinum', 'palladium'] as const
 export const KINDS = ['coin', 'round', 'bar', 'junk', 'jewelry', 'other'] as const
+
+/** Acquisition source-type (ADR-006) — how the coin was wrapped, orthogonal to
+    `unit`. The strongest yield predictor in the field data (CR ≫ MR). The empty
+    value is "unknown" (back-compatible default). Order = canonical (high-yield first). */
+export const SOURCE_TYPES: { value: string; label: string }[] = [
+  { value: '', label: '— unknown' },
+  { value: 'customer_roll', label: 'Customer rolls (CR)' },
+  { value: 'machine_roll', label: 'Machine rolls (MR)' },
+  { value: 'box', label: 'Box (sealed)' },
+  { value: 'bag', label: 'Bag ($ loose)' },
+  { value: 'loose', label: 'Loose / other' },
+]
+
+/** Documented find-taxonomy vocabulary (ADR-006 §2), seeded from the field data's
+    dime buckets. Open vocabulary: these seed the autocomplete dropdowns, unioned
+    with whatever category/subcategory strings already exist in your data. */
+export const FIND_CATEGORIES = [
+  'Proof', 'Silver', 'Other Silver', 'Key Date', 'Variety', 'AU+', 'CAD', 'World', 'Error', 'PMD',
+] as const
+export const FIND_SUBCATEGORIES = [
+  'Mercury', 'Barber', 'Seated Liberty', 'Roosevelt 90%', // Silver
+  '2009', '1996-W', '82 No-P', // Key Date
+  '69/70 Proof Reverse', // Variety
+  'minor', 'major', // Error
+  'Oreo', 'Slider', 'roller', 'parking lot', 'fire', 'bent', 'tooled', // PMD
+] as const
 
 /** Face dollars per single coin, by denomination. */
 export const COIN_FACE: Record<string, number> = {
@@ -58,6 +97,8 @@ export function faceFor(unit: string, denom: string, amount: number): number {
   switch (unit) {
     case 'box':
       return n * (BOX_FACE[denom] ?? 0)
+    case 'bag':
+      return n * (BAG_FACE[denom] ?? 0)
     case 'roll':
       return n * (COIN_FACE[denom] ?? 0) * (ROLL_COUNT[denom] ?? 0)
     case 'coin':

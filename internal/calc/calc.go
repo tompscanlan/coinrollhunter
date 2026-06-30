@@ -19,7 +19,7 @@ type EnrichedLot struct {
 	FineOz    float64 `json:"fine_oz"`
 	MarketUSD float64 `json:"market_usd"`
 	UnrealUSD float64 `json:"unreal_usd"`
-	UnrealPct float64 `json:"unreal_pct"` // +Inf if basis is 0
+	UnrealPct *float64 `json:"unreal_pct"` // null when basis is 0 (undefined % — UI shows "n/a"); JSON can't carry ±Inf
 }
 
 // Report is the full computed result, mirroring portfolio.py's compute() output.
@@ -133,9 +133,13 @@ func enrich(l model.Lot, s model.Spot) EnrichedLot {
 	market := fineOz * spotFor(s, l.Metal)
 	basis := l.BasisUSD
 	unreal := market - basis
-	pct := math.Inf(1)
+	// Percent return is undefined when basis is 0 (infinite return on zero cost);
+	// emit null rather than ±Inf, which json.Marshal can't encode (a single Inf
+	// would fail the whole /summary response). The UI renders null as "n/a".
+	var pct *float64
 	if basis != 0 {
-		pct = unreal / basis * 100
+		p := unreal / basis * 100
+		pct = &p
 	}
 	return EnrichedLot{Lot: l, FineOz: fineOz, MarketUSD: market, UnrealUSD: unreal, UnrealPct: pct}
 }

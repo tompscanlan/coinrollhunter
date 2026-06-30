@@ -8,7 +8,7 @@
   import type { Report, RollTxn, Trip } from '$lib/types'
   import { api } from '$lib/api'
   import { money, today } from '$lib/format'
-  import { DENOMS, ROLL_UNITS, faceFor } from '$lib/presets'
+  import { DENOMS, ROLL_UNITS, SOURCE_TYPES, faceFor } from '$lib/presets'
   import Card from '$lib/components/ui/Card.svelte'
   import Button from '$lib/components/ui/Button.svelte'
   import { ArrowLeft, Check, Boxes } from 'lucide-svelte'
@@ -25,6 +25,7 @@
   let date = $state(today())
   let denom = $state<string>('halves')
   let unit = $state<string>('box')
+  let sourceType = $state<string>('') // how it was wrapped (ADR-006) — the yield-class axis
   let amount = $state(1)
   let face = $state(500)
   let manualFace = $state(false) // true once the user overrides the auto-fill
@@ -72,6 +73,7 @@
         action: 'buy',
         denom,
         unit,
+        source_type: sourceType,
         amount: Number(amount) || 0,
         face_usd: faceAmt,
         notes: notes.trim(),
@@ -175,6 +177,16 @@
             class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
           >
             {#each ROLL_UNITS as u (u)}<option value={u}>{u}</option>{/each}
+          </select>
+        </label>
+
+        <label class="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">
+          Source type <span class="text-muted-foreground/70">— how it was wrapped (drives yield)</span>
+          <select
+            bind:value={sourceType}
+            class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
+          >
+            {#each SOURCE_TYPES as s (s.value)}<option value={s.value}>{s.label}</option>{/each}
           </select>
         </label>
 

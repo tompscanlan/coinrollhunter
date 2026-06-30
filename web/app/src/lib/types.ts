@@ -41,6 +41,10 @@ export interface Holding {
   insured_value?: number
   attributes?: string
   notes: string
+  // CRH find taxonomy (ADR-006) — meaningful for activity='crh' rows.
+  category?: string // e.g. "Silver" | "PMD" | "Error" | "Key Date"
+  subcategory?: string // e.g. "Mercury" | "parking lot" | "major"
+  trophy?: boolean // flags a notable find for the highlights feed
   disposed?: string
   disposed_usd?: number
 }
@@ -51,9 +55,12 @@ export interface RollTxn {
   bank: string
   action: 'buy' | 'return'
   denom: string // halves|quarters|dimes|nickels|cents
-  unit: string // box|roll|face|coin
+  unit: string // box|roll|bag|face|coin
   amount: number
   face_usd: number
+  // How the coin was wrapped/acquired — the high-signal yield axis (ADR-006),
+  // orthogonal to unit: machine_roll|customer_roll|box|bag|loose ('' = unknown).
+  source_type?: string
   notes: string
 }
 
@@ -109,10 +116,14 @@ export interface EnrichedLot {
   face_value_usd: number
   acquired: string
   source: string
+  // CRH find taxonomy (ADR-006) — present on activity='crh' lots (omitted when empty/false).
+  category?: string
+  subcategory?: string
+  trophy?: boolean
   fine_oz: number
   market_usd: number
   unreal_usd: number
-  unreal_pct: number
+  unreal_pct: number | null // null when basis is 0 (undefined %; rendered "n/a")
 }
 
 /** A sold holding with realized gain (proceeds - basis). */
@@ -172,6 +183,11 @@ export interface Report {
   to_redeposit: number
   reconciled: boolean
 
+  // Activity KPIs (ADR-006): coarse "how much hunting" stats over buy txns.
+  buy_count: number
+  branch_count: number
+  avg_buy_usd: number
+
   boxes_by_denom: Record<string, number>
   total_boxes: number
   face_searched: number
@@ -190,6 +206,54 @@ export interface Report {
   total_basis: number
   total_market: number
   total_unreal: number
+}
+
+// --- Hit-rate report (GET /api/finds-report, calc.FindsReport, ADR-006) -------
+// The "1 per face $" view: per denom × find category × acquisition source, how
+// many face dollars you must search to find one. Every cell carries its sample
+// size (count) and a low_confidence flag — a point estimate is misleading at small N.
+
+/** One (category|subcategory) × source hit-rate cell. */
+export interface SourceCell {
+  source: string
+  count: number
+  hit_per_face: number // 0 when count is 0 (treat as N/A)
+  low_confidence: boolean
+}
+
+export interface SubcategoryReport {
+  subcategory: string
+  count: number
+  hit_per_face: number
+  low_confidence: boolean
+  by_source: SourceCell[]
+}
+
+export interface CategoryReport {
+  category: string
+  count: number
+  hit_per_face: number
+  low_confidence: boolean
+  by_source: SourceCell[]
+  subcategories?: SubcategoryReport[]
+}
+
+/** The hit-rate grid for one denomination. */
+export interface DenomReport {
+  denom: string
+  face_searched: number
+  coins_searched: number
+  face_by_source: Record<string, number>
+  categories: CategoryReport[]
+}
+
+/** The full hit-rate view (GET /api/finds-report). */
+export interface FindsReport {
+  total_face_searched: number
+  low_confidence_n: number
+  sources: string[] // source_types present, canonical order (high-yield first)
+  unattributed: number // finds (coins) with no linked buy
+  denoms: DenomReport[]
 }
 
 /** Mirrors calc.Report.Verdict() — derived client-side (not serialized). */

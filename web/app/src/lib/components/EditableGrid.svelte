@@ -3,7 +3,7 @@
 
   /** Per-column editing metadata, carried on ColumnDef.meta. */
   export interface EditMeta<T> {
-    editor?: 'text' | 'number' | 'date' | 'select' | 'autocomplete'
+    editor?: 'text' | 'number' | 'date' | 'select' | 'autocomplete' | 'checkbox'
     options?: readonly string[]
     /** For editor:'select' — dynamic value/label options (e.g. pick a box).
         Takes precedence over `options`; a function so it reflects loaded data. */
@@ -333,6 +333,18 @@
                       saveRow(row.original)
                     }}
                   />
+                {:else if m.editor === 'checkbox'}
+                  <div class="flex justify-center px-1.5 py-1">
+                    <input
+                      type="checkbox"
+                      class="size-4 rounded border-input"
+                      checked={Boolean(row.original[key])}
+                      onchange={(e) => {
+                        ;(row.original as Record<string, unknown>)[key as string] = e.currentTarget.checked
+                        saveRow(row.original)
+                      }}
+                    />
+                  </div>
                 {:else}
                   <input
                     type={m.editor === 'number' ? 'number' : m.editor === 'date' ? 'date' : 'text'}
@@ -401,6 +413,15 @@
                   oninput={() => applyAutofill(m, draft as Record<string, unknown>, draft[key])}
                   onkeydown={(e) => e.key === 'Enter' && addRow()}
                 />
+              {:else if m.editor === 'checkbox'}
+                <div class="flex justify-center px-1.5 py-1">
+                  <input
+                    type="checkbox"
+                    class="size-4 rounded border-input"
+                    checked={Boolean(draft[key])}
+                    onchange={(e) => ((draft as Record<string, unknown>)[key as string] = e.currentTarget.checked)}
+                  />
+                </div>
               {:else}
                 <input
                   type={m.editor === 'number' ? 'number' : m.editor === 'date' ? 'date' : 'text'}

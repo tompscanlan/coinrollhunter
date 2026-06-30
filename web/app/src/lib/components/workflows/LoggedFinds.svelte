@@ -9,7 +9,7 @@
   import { api } from '$lib/api'
   import { holdingsGrid, productAutofillFrom, productSuggestionsFrom } from '$lib/grids'
   import { money, today } from '$lib/format'
-  import { DENOMS, ROLL_UNITS, SILVER_PRESETS, COIN_FACE, faceFor } from '$lib/presets'
+  import { DENOMS, ROLL_UNITS, SOURCE_TYPES, SILVER_PRESETS, COIN_FACE, faceFor } from '$lib/presets'
   import Card from '$lib/components/ui/Card.svelte'
   import Button from '$lib/components/ui/Button.svelte'
   import { ArrowLeft, Check, Search, Plus, X, TriangleAlert } from 'lucide-svelte'
@@ -53,6 +53,7 @@
   let nbDenom = $state<string>('halves')
   let nbDate = $state(today())
   let nbUnit = $state<string>('box')
+  let nbSourceType = $state<string>('') // wrapping/yield class (ADR-006)
   let nbAmount = $state(1)
   let nbFace = $state(500)
   let nbManualFace = $state(false)
@@ -138,6 +139,7 @@
             action: 'buy',
             denom: nbDenom,
             unit: nbUnit,
+            source_type: nbSourceType,
             amount: Number(nbAmount) || 0,
             face_usd: Number(nbFace) || 0,
             notes: '',
@@ -271,6 +273,15 @@
                 class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
               >
                 {#each ROLL_UNITS as u (u)}<option value={u}>{u}</option>{/each}
+              </select>
+            </label>
+            <label class="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">
+              Source type
+              <select
+                bind:value={nbSourceType}
+                class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
+              >
+                {#each SOURCE_TYPES as s (s.value)}<option value={s.value}>{s.label}</option>{/each}
               </select>
             </label>
             <label class="flex flex-col gap-1 text-xs text-muted-foreground">

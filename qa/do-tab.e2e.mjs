@@ -47,6 +47,11 @@ try {
   await page.getByRole('heading', { name: 'Bought a box / rolls' }).waitFor()
   await page.getByPlaceholder('Stock Yards').fill('Stock Yards')
   ok('box-face auto-fills', true) // asserted via API below
+  // ADR-006: pick the acquisition source-type (the high-yield channel)
+  await page
+    .locator('select')
+    .filter({ has: page.locator('option[value="customer_roll"]') })
+    .selectOption('customer_roll')
   await page.getByLabel('Also log the bank trip (gas + time)').check()
   await page.locator('input[type=number]').last().fill('0.5') // hours
   await page.getByRole('button', { name: /Log .* bought/ }).click()
@@ -54,6 +59,7 @@ try {
   const buys1 = (await api('/roll-txns')).filter((r) => r.action === 'buy')
   ok('buy recorded', buys1.length === 1, `${buys1.length} buys`)
   ok('buy face = $500 (auto)', buys1[0]?.face_usd === 500, `face ${buys1[0]?.face_usd}`)
+  ok('buy source_type persisted (ADR-006)', buys1[0]?.source_type === 'customer_roll', `src ${buys1[0]?.source_type}`)
   ok('optional trip recorded', (await api('/trips')).length === 1)
   await page.getByRole('button', { name: 'Done' }).click()
 
@@ -156,7 +162,49 @@ try {
   await page.getByRole('button', { name: 'Overview', exact: true }).click()
   await page.getByText('All cashed in', { exact: false }).first().waitFor({ timeout: 5000 })
   ok('overview reconciliation banner shows lost', (await page.getByText('lost', { exact: false }).count()) > 0)
+
+  // === ADR-006/007 surfacing (om-5tl2) ===
+  // KPI cards from /api/summary
+  const sumKpi = await api('/summary')
+  ok('KPI: buy_count present', sumKpi.buy_count >= 1, `buy_count ${sumKpi.buy_count}`)
+  ok('KPI cards render (Buys/Branches/Avg buy)',
+    (await page.getByText('Buys', { exact: true }).count()) > 0 &&
+    (await page.getByText('Branches', { exact: true }).count()) > 0 &&
+    (await page.getByText('Avg buy', { exact: true }).count()) > 0)
+  // spot freshness chip — source label varies (manual seed vs. the ADR-007 poller),
+  // so match the chip by its unique title, not the source string.
+  ok('spot freshness chip visible (ADR-007)', await page.locator('span[title*="background"]').first().isVisible())
+  // hit-rate report endpoint + grid
+  const fr = await api('/finds-report')
+  ok('finds-report endpoint shape', typeof fr.total_face_searched === 'number' && Array.isArray(fr.denoms),
+    `face ${fr.total_face_searched}, denoms ${fr.denoms?.length}`)
+  ok('hit-rate grid heading renders', await page.getByRole('heading', { name: 'Hit rate — 1 per face $' }).isVisible())
   await page.screenshot({ path: `${SHOT}/do-overview.png`, fullPage: true }).catch(() => {})
+
+  // === Holdings grid: category/subcategory/trophy are enterable + persist ===
+  await page.getByRole('button', { name: 'Edit' }).click()
+  await page.getByRole('button', { name: 'Holdings', exact: true }).click()
+  await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  const newRow = page.locator('tbody tr').filter({ has: page.locator('button[title="Add row"]') })
+  await newRow.locator('select').first().selectOption('crh') // activity
+  await newRow.getByPlaceholder('1 oz Gold Eagle').fill('Mercury dime (trophy)')
+  await newRow.getByPlaceholder('Silver').fill('Silver')
+  await newRow.getByPlaceholder('Mercury').fill('Mercury')
+  await newRow.locator('input[type=checkbox]').check()
+  await newRow.locator('button[title="Add row"]').click()
+  await page.waitForTimeout(500)
+  const taxLot = (await api('/lots')).find((l) => l.category === 'Silver' && l.subcategory === 'Mercury' && l.trophy === true)
+  ok('Holdings taxonomy persists (category/subcategory/trophy)', !!taxLot, taxLot ? `lot ${taxLot.id}` : 'not found')
+  // The new find has basis 0 (grid default) — summary must still serialize (no +Inf in unreal_pct).
+  const sumZeroBasis = await api('/summary')
+  ok('summary survives a zero-basis find (unreal_pct null, not +Inf)',
+    Array.isArray(sumZeroBasis.lots) && sumZeroBasis.lots.length >= 1,
+    `lots ${sumZeroBasis.lots?.length}`)
+
+  // trophy feed surfaces it back on the Overview
+  await page.getByRole('button', { name: 'Overview', exact: true }).click()
+  await page.getByRole('heading', { name: 'Greatest hits' }).waitFor({ timeout: 5000 })
+  ok('trophy feed shows the trophy', (await page.getByText('Mercury dime (trophy)', { exact: false }).count()) > 0)
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})

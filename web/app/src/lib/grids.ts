@@ -5,7 +5,15 @@
 // split (find-or-create an item_type, then attach the holding).
 import { api } from './api'
 import { today } from './format'
-import { DENOMS, ROLL_UNITS, METALS, SILVER_PRESETS } from './presets'
+import {
+  DENOMS,
+  ROLL_UNITS,
+  METALS,
+  SILVER_PRESETS,
+  SOURCE_TYPES,
+  FIND_CATEGORIES,
+  FIND_SUBCATEGORIES,
+} from './presets'
 import type { GridColumn } from './components/EditableGrid.svelte'
 import type { ItemType, Holding, RollTxn, Trip, Supply, Keeper, Loss } from './types'
 
@@ -15,6 +23,10 @@ import type { ItemType, Holding, RollTxn, Trip, Supply, Keeper, Loss } from './t
 let catalog: ItemType[] = [] // item_types — powers Product autocomplete + autofill
 let holdingSources: string[] = [] // distinct dealer/source names from holdings
 let banks: string[] = [] // distinct bank names, unioned across roll txns + trips
+// Find-taxonomy autocomplete: the documented ADR-006 vocab unioned with whatever
+// category/subcategory strings already exist in your holdings (open vocabulary).
+let findCategories: string[] = [...FIND_CATEGORIES]
+let findSubcategories: string[] = [...FIND_SUBCATEGORIES]
 
 const distinct = (xs: (string | undefined)[]) =>
   [...new Set(xs.map((s) => (s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
@@ -72,7 +84,9 @@ export interface GridConfig<T extends { id: number }> {
 
 // --- Holdings (flat view over item_type + holding) ---------------------------
 
-/** The flat row the spreadsheet edits — joins a holding to its item type. */
+/** The flat row the spreadsheet edits — joins a holding to its item type.
+    The CRH find taxonomy (category/subcategory/trophy, ADR-006) is optional so
+    bullion callers (NewBullion) can omit it; toHolding coerces the defaults. */
 export interface FlatHolding {
   id: number
   activity: 'bullion' | 'crh'
@@ -86,6 +100,9 @@ export interface FlatHolding {
   acquired: string
   source: string
   from_box: string // roll_txn id (as string) this CRH find came from; '' = none
+  category?: string // CRH find taxonomy (ADR-006) — only meaningful for activity='crh'
+  subcategory?: string
+  trophy?: boolean
 }
 
 const norm = (s: string) => (s ?? '').trim().toLowerCase()
@@ -126,6 +143,9 @@ function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Hol
     face_value_usd: Number(row.face_value_usd) || 0,
     acquired: row.acquired,
     source: row.source,
+    category: row.category ?? '',
+    subcategory: row.subcategory ?? '',
+    trophy: Boolean(row.trophy),
     notes: '',
   }
 }
@@ -156,6 +176,11 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'acquired', header: 'Acquired', meta: { editor: 'date', width: '150px' } },
     { accessorKey: 'source', header: 'Source', meta: { editor: 'autocomplete', placeholder: 'APMEX', suggestions: () => holdingSources } },
     { accessorKey: 'from_box', header: 'From box (CRH)', meta: { editor: 'select', optionsFn: boxOptions, width: '190px' } },
+    // CRH find taxonomy (ADR-006) — denom-scoped open vocabulary; the dropdowns
+    // suggest the documented buckets plus whatever you've already used.
+    { accessorKey: 'category', header: 'Category (CRH)', meta: { editor: 'autocomplete', width: '150px', placeholder: 'Silver', suggestions: () => findCategories } },
+    { accessorKey: 'subcategory', header: 'Subcat (CRH)', meta: { editor: 'autocomplete', width: '150px', placeholder: 'Mercury', suggestions: () => findSubcategories } },
+    { accessorKey: 'trophy', header: 'Trophy', meta: { editor: 'checkbox', width: '90px' } },
   ],
   load: async () => {
     const [types, holdings, rolls] = await Promise.all([
@@ -165,6 +190,9 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     ])
     catalog = types
     holdingSources = distinct(holdings.map((h) => h.source))
+    // Seed the taxonomy dropdowns from the documented vocab + your own entries.
+    findCategories = distinct([...FIND_CATEGORIES, ...holdings.map((h) => h.category)])
+    findSubcategories = distinct([...FIND_SUBCATEGORIES, ...holdings.map((h) => h.subcategory)])
     boxOpts = [
       { value: '', label: '— (none)' },
       ...rolls.filter((r) => r.action === 'buy').map((r) => ({ value: String(r.id), label: fmtBox(r) })),
@@ -185,6 +213,9 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         acquired: h.acquired,
         source: h.source,
         from_box: h.roll_txn_id ? String(h.roll_txn_id) : '',
+        category: h.category ?? '',
+        subcategory: h.subcategory ?? '',
+        trophy: Boolean(h.trophy),
       } satisfies FlatHolding
     })
   },
@@ -209,6 +240,9 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     acquired: today(),
     source: '',
     from_box: '',
+    category: '',
+    subcategory: '',
+    trophy: false,
   }),
 }
 
@@ -216,22 +250,25 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
 
 export const rollTxnsGrid: GridConfig<RollTxn> = {
   title: 'Roll transactions',
-  description: 'Boxes/rolls bought and culls returned. face_usd is the source of truth; box throughput is derived from it.',
+  description:
+    'Boxes/rolls bought and culls returned. face_usd is the source of truth; box throughput is derived from it. Source-type is the wrapping/yield class (ADR-006), orthogonal to unit.',
   columns: [
     { accessorKey: 'date', header: 'Date', meta: { editor: 'date', width: '150px' } },
     { accessorKey: 'bank', header: 'Bank', meta: { editor: 'autocomplete', placeholder: 'Stock Yards', suggestions: () => banks } },
     { accessorKey: 'action', header: 'Action', meta: { editor: 'select', options: ['buy', 'return'], width: '100px' } },
     { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '110px' } },
     { accessorKey: 'unit', header: 'Unit', meta: { editor: 'select', options: ROLL_UNITS, width: '90px' } },
+    { accessorKey: 'source_type', header: 'Source', meta: { editor: 'select', optionsFn: () => SOURCE_TYPES, width: '160px' } },
     { accessorKey: 'amount', header: 'Amount', meta: { editor: 'number', step: 0.1, align: 'right', width: '90px' } },
     { accessorKey: 'face_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'notes', header: 'Notes', meta: { editor: 'text' } },
   ],
-  load: () => loadCachingBanks(api.rollTxns.list),
+  // Normalize source_type to '' (the Go side omits it when empty) so the select binds cleanly.
+  load: async () => (await loadCachingBanks(api.rollTxns.list)).map((r) => ({ ...r, source_type: r.source_type ?? '' })),
   create: api.rollTxns.create,
   update: api.rollTxns.update,
   remove: api.rollTxns.remove,
-  blank: () => ({ date: today(), bank: '', action: 'buy', denom: 'halves', unit: 'box', amount: 1, face_usd: 500, notes: '' }),
+  blank: () => ({ date: today(), bank: '', action: 'buy', denom: 'halves', unit: 'box', source_type: '', amount: 1, face_usd: 500, notes: '' }),
 }
 
 export const tripsGrid: GridConfig<Trip> = {

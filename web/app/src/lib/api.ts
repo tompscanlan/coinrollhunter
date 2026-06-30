@@ -2,6 +2,7 @@
 // when embedded (Go serves the SPA + API together) and in dev (Vite proxies /api).
 import type {
   Report,
+  FindsReport,
   Spot,
   Settings,
   ItemType,
@@ -57,6 +58,8 @@ function crud<T extends { id: number }>(name: string): Crud<T> {
 
 export const api = {
   summary: () => req<Report>('GET', '/summary'),
+  // hit-rate report: the "1 per face $" view per denom × category × source (ADR-006)
+  findsReport: () => req<FindsReport>('GET', '/finds-report'),
   health: () => req<{ status: string }>('GET', '/health'),
 
   spotHistory: () => req<Spot[]>('GET', '/spot'),

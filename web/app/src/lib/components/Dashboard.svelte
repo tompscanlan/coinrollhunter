@@ -10,8 +10,10 @@
   import Composition from './Composition.svelte'
   import StackByType from './StackByType.svelte'
   import HuntYield from './HuntYield.svelte'
+  import HitRateGrid from './HitRateGrid.svelte'
+  import TrophyFeed from './TrophyFeed.svelte'
   import { cn } from '$lib/utils'
-  import { Check, TriangleAlert } from 'lucide-svelte'
+  import { Check, TriangleAlert, RadioTower } from 'lucide-svelte'
 
   let { report, onRefresh }: { report: Report; onRefresh: () => void } = $props()
 
@@ -69,12 +71,22 @@
 </script>
 
 <div class="space-y-6">
-  <!-- meta line -->
-  <p class="text-sm text-muted-foreground">
-    As of <span class="font-medium text-foreground">{r.spot.as_of || '—'}</span>
-    &nbsp;·&nbsp; Spot: Au {money(r.spot.gold_usd)} · Ag {money(r.spot.silver_usd)}{#if r.spot.platinum_usd}
-      · Pt {money(r.spot.platinum_usd)}{/if}{#if r.spot.palladium_usd} · Pd {money(r.spot.palladium_usd)}{/if} / ozt
-  </p>
+  <!-- meta line + spot freshness chip (ADR-007: a background poller refreshes spot) -->
+  <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+    <p class="text-sm text-muted-foreground">
+      As of <span class="font-medium text-foreground">{r.spot.as_of || '—'}</span>
+      &nbsp;·&nbsp; Spot: Au {money(r.spot.gold_usd)} · Ag {money(r.spot.silver_usd)}{#if r.spot.platinum_usd}
+        · Pt {money(r.spot.platinum_usd)}{/if}{#if r.spot.palladium_usd} · Pd {money(r.spot.palladium_usd)}{/if} / ozt
+    </p>
+    <span
+      class="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground"
+      title="Spot prices refresh in the background while the app runs (ADR-007). Manual entry is the offline fallback."
+    >
+      <RadioTower class="size-3" />
+      <span>Spot: {r.spot.source || 'none'}</span>
+      <span class="text-muted-foreground/60">· {r.spot.as_of || 'no data'}</span>
+    </span>
+  </div>
 
   <!-- verdict -->
   <Card
@@ -239,12 +251,25 @@
         tone={r.reconciled ? 'positive' : 'warning'}
       />
     </div>
+
+    <!-- hunt-activity KPIs (ADR-006): how much hunting, over buy txns -->
+    <div class="grid grid-cols-3 gap-3">
+      <StatCard label="Buys" value={num(r.buy_count)} sub="roll-txn purchases" />
+      <StatCard label="Branches" value={num(r.branch_count)} sub="distinct banks" />
+      <StatCard label="Avg buy" value={money(r.avg_buy_usd)} sub="mean face / buy" />
+    </div>
   </section>
 
   <!-- hunt yield by bank & box -->
   {#if r.box_yields?.length}
     <HuntYield {report} />
   {/if}
+
+  <!-- greatest hits: finds flagged as trophies (ADR-006) -->
+  <TrophyFeed {report} />
+
+  <!-- hit-rate report: 1 per face $, per denom × category × source (ADR-006) -->
+  <HitRateGrid {report} />
 
   <!-- realized (sold) -->
   {#if r.realized?.length}
