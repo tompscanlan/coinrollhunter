@@ -9,8 +9,8 @@ cd coinrollhunter
 make build        # builds the Svelte UI (web/app -> web/dist) then the Go binary
 # optional: load the fictional sample data so the dashboard isn't empty
 ./coinrollhunter migrate \
-  --holdings prototype/sample-data/pm_holdings.sample.json \
-  --crh prototype/sample-data/crh_ledger.sample.json
+  --holdings sample-data/pm_holdings.sample.json \
+  --crh sample-data/crh_ledger.sample.json
 ./coinrollhunter serve     # open http://127.0.0.1:8787
 claude            # start Claude Code in the repo root
 ```

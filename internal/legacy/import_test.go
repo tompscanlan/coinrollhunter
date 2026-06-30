@@ -15,7 +15,7 @@ import (
 // same numbers the calc package verifies on its in-memory fixture. If migration
 // or resolution drops or mangles data, the headline numbers move.
 func TestImportSampleEndToEnd(t *testing.T) {
-	root := filepath.Join("..", "..", "prototype", "sample-data")
+	root := filepath.Join("..", "..", "sample-data")
 	holdings, err := os.ReadFile(filepath.Join(root, "pm_holdings.sample.json"))
 	if err != nil {
 		t.Fatal(err)

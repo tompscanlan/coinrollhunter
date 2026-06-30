@@ -24,7 +24,7 @@ func newServer(t *testing.T) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join("..", "..", "prototype", "sample-data")
+	root := filepath.Join("..", "..", "sample-data")
 	holdings, _ := os.ReadFile(filepath.Join(root, "pm_holdings.sample.json"))
 	crh, _ := os.ReadFile(filepath.Join(root, "crh_ledger.sample.json"))
 	if err := legacy.Import(s, holdings, crh); err != nil {
