@@ -205,6 +205,32 @@ try {
   await page.getByRole('button', { name: 'Overview', exact: true }).click()
   await page.getByRole('heading', { name: 'Greatest hits' }).waitFor({ timeout: 5000 })
   ok('trophy feed shows the trophy', (await page.getByText('Mercury dime (trophy)', { exact: false }).count()) > 0)
+
+  // === Settings editor (audit gap #8): edits persist via PUT /api/settings ===
+  await page.locator('button[title="Settings"]').click()
+  const dialog = page.locator('[role="dialog"]')
+  await dialog.getByRole('heading', { name: 'Settings' }).waitFor({ timeout: 5000 })
+  await dialog.locator('input[type=number]').first().fill('0.85') // 90% buyback factor
+  await page.getByRole('button', { name: 'Save settings' }).click()
+  await dialog.waitFor({ state: 'detached', timeout: 5000 })
+  const cfg = await api('/settings')
+  ok('settings modal persists buyback factor', cfg.silver_buyback_factor_90pct === 0.85,
+    `90pct ${cfg.silver_buyback_factor_90pct}`)
+
+  // === Roll-txns grid: source-type is inert on 'return' rows (om-kn0f) ===
+  await page.getByRole('button', { name: 'Edit' }).click()
+  await page.getByRole('button', { name: 'Roll txns', exact: true }).click()
+  await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  // cells: date(0) bank(1) action(2) denom(3) unit(4) source(5); the first select
+  // in a row is the action select. The draft row defaults to 'buy' so it's excluded.
+  const returnSourceCells = await page.$$eval('section table tbody tr', (rows) =>
+    rows
+      .filter((r) => r.querySelector('select')?.value === 'return')
+      .map((r) => r.cells[5]?.textContent?.trim()),
+  )
+  ok('source-type inert on return rows (om-kn0f)',
+    returnSourceCells.length >= 1 && returnSourceCells.every((t) => t === '—'),
+    JSON.stringify(returnSourceCells))
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})
