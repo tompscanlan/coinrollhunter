@@ -16,7 +16,8 @@
     lossesGrid,
     type FlatHolding,
   } from '$lib/grids'
-  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap } from 'lucide-svelte'
+  import SettingsPanel from '$lib/components/SettingsPanel.svelte'
+  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, Settings as SettingsIcon } from 'lucide-svelte'
 
   type View = 'overview' | 'do' | 'entry'
   type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers' | 'losses'
@@ -27,6 +28,7 @@
   let loading = $state(true)
   let error = $state('')
   let dark = $state(false)
+  let settingsOpen = $state(false)
 
   async function refresh() {
     try {
@@ -104,6 +106,9 @@
     <div class="flex items-center gap-2">
       <Button variant="ghost" size="icon" title="Refresh" onclick={refresh}>
         <RefreshCw class={cn('size-4', loading && 'animate-spin')} />
+      </Button>
+      <Button variant="ghost" size="icon" title="Settings" onclick={() => (settingsOpen = true)}>
+        <SettingsIcon class="size-4" />
       </Button>
       <Button variant="ghost" size="icon" title="Toggle theme" onclick={() => (dark = !dark)}>
         {#if dark}<Sun class="size-4" />{:else}<Moon class="size-4" />{/if}
@@ -210,6 +215,10 @@
     {/if}
   </main>
 </div>
+
+{#if settingsOpen}
+  <SettingsPanel onClose={() => (settingsOpen = false)} onSaved={refresh} />
+{/if}
 
 {#if sellRow}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
