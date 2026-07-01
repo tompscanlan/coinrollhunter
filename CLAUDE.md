@@ -90,11 +90,18 @@ keyless gold-api.com provider + a staleness-gated background **poller** started 
 (`--spot-provider`/`--spot-interval`, opt-out with `none`; failures log + skip). UI surfacing of
 these is the next pass (data model + calc + API + tests landed; grids/dashboards not yet wired).
 
-Remaining polish (not yet done): **UI for the above** (source-type + category/trophy entry, the
-hit-rate grid, KPI cards), a **settings editor UI** (buyback/mileage/box-face/hourly are API-only),
-**junk-by-face** entry,
-**bars by gross-weight×purity** in the UI, **numismatic/collectible value**, a `--demo` seed
-dataset, and merchant-of-record monetization wiring. **ADR-004** — stack-over-time vs indexes
+Added 2026-07-01 (launch-polish pass): the **UI for ADR-006/007** shipped earlier (628b6e5);
+this pass added the **settings editor UI** (SettingsPanel modal over GET/PUT /api/settings —
+buyback factors, mileage, value-time+hourly, box face), the **`demo` command** (`internal/demo`
+seeds a separate demo.db with ~15 months / ~$44k face / ~500 buys of deterministic fictional
+data, then serves it; `--reset` regenerates; spot polling off), source-type rendered inert on
+'return' roll-txn rows (EditableGrid `enabled` meta, om-kn0f), and web/dist un-committed
+(gitignored build artifact, om-qbmm).
+
+Remaining polish (not yet done): **junk-by-face** entry, **premium** in the Holdings grid,
+**bars by gross-weight×purity** in the UI (incl. `weight_unit` in ResolveDataset),
+**numismatic/collectible value**, the **keepers-vs-find-face double-count** seam, and
+merchant-of-record monetization wiring. **ADR-004** — stack-over-time vs indexes
 (gold:silver, S&P, CPI) — is deferred; the box-link + appended spot history are the data foundation.
 
 Build notes: `make build` (UI then Go). In this container, Go needs a writable cache —

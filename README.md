@@ -60,7 +60,19 @@ run it and open the dashboard in your browser.
 > Gatekeeper (macOS: right-click → **Open**, then **Open**) or SmartScreen (Windows:
 > **More info → Run anyway**). The source is right here if you'd rather build it yourself.
 
-Want to see it populated before entering your own holdings? Load the fictional sample data:
+Want to see it populated before entering your own holdings? Run the demo:
+
+```bash
+./coinrollhunter demo              # then open http://127.0.0.1:8787
+```
+
+That seeds a **separate** `demo.db` with ~15 months of fictional hunting — ~$44k face
+searched across ~500 buys, a bullion stack, trophies, sales, an outstanding float — so
+every screen has something on it, including the hit-rate grid with honest low-sample
+warnings. Poke, edit, and delete freely; it never touches your real `crh.db`. Start over
+any time with `./coinrollhunter demo --reset`.
+
+There's also a smaller fixture if you prefer the importer route:
 
 ```bash
 ./coinrollhunter migrate \
@@ -94,9 +106,9 @@ which builds and publishes the cross-platform archives to a GitHub Release.
 
 ## What's here
 
-- `cmd/coinrollhunter` — the single binary (`migrate`, `serve`, `version`).
+- `cmd/coinrollhunter` — the single binary (`migrate`, `serve`, `demo`, `version`).
 - `internal/` — `model`, `calc` (the profitability engine), `store` (SQLite), `legacy`
-  (sample/JSON importer), `api` (REST).
+  (sample/JSON importer), `api` (REST), `demo` (the fictional demo-dataset seeder).
 - `web/app` — the Svelte 5 + Vite + Tailwind UI (shadcn-style components, TanStack editable
   grids), built to `web/dist` and embedded via `go:embed`.
 - `docs/ADR-*` — the architecture decisions (single Go binary + SQLite, the UI/monetization/

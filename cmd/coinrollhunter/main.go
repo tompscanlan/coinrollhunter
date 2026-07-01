@@ -19,6 +19,7 @@ import (
 
 	"github.com/tompscanlan/coinrollhunter/internal/api"
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
+	"github.com/tompscanlan/coinrollhunter/internal/demo"
 	"github.com/tompscanlan/coinrollhunter/internal/legacy"
 	"github.com/tompscanlan/coinrollhunter/internal/spot"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
@@ -44,6 +45,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "serve:", err)
 			os.Exit(1)
 		}
+	case "demo":
+		if err := runDemo(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "demo:", err)
+			os.Exit(1)
+		}
 	case "version", "-v", "--version":
 		fmt.Printf("coinrollhunter %s\n", version)
 	case "-h", "--help", "help":
@@ -63,6 +69,10 @@ usage:
       Import the prototype JSON (pm_holdings.json + crh_ledger.json) into SQLite.
   coinrollhunter serve [--db crh.db] [--addr 127.0.0.1:8787]
       Serve the REST API + embedded web UI on localhost.
+  coinrollhunter demo [--db demo.db] [--reset]
+      Seed a separate database with ~15 months of fictional data and serve it —
+      a full dashboard to explore before entering your own. Your real data is
+      untouched; --reset regenerates the demo from scratch.
   coinrollhunter version
       Print the build version.
 `)
@@ -132,8 +142,65 @@ func runServe(args []string) error {
 	}
 	defer s.Close()
 
+	return serveStore(s, *dbPath, *addr, *spotProvider, *spotInterval)
+}
+
+// runDemo seeds a separate demo database with the fictional dataset (only when
+// it's empty, so demo edits survive restarts) and serves it. --reset deletes
+// and regenerates. The user's real database is never touched.
+func runDemo(args []string) error {
+	fs := flag.NewFlagSet("demo", flag.ExitOnError)
+	dbPath := fs.String("db", "demo.db", "path to the demo SQLite database (kept separate from your real data)")
+	addr := fs.String("addr", "127.0.0.1:8787", "address to listen on (localhost only by default)")
+	reset := fs.Bool("reset", false, "delete the demo database and regenerate it from scratch")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *reset {
+		if err := os.Remove(*dbPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("reset %s: %w", *dbPath, err)
+		}
+	}
+
+	s, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	var rows int
+	if err := s.DB().QueryRow(`SELECT (SELECT count(*) FROM roll_txns) + (SELECT count(*) FROM lots)`).Scan(&rows); err != nil {
+		return err
+	}
+	if rows > 0 {
+		fmt.Printf("Demo database %s already seeded — serving it as-is (use --reset to regenerate).\n", *dbPath)
+	} else {
+		fmt.Printf("Seeding %s with ~15 months of fictional hunt + bullion data…\n", *dbPath)
+		if err := demo.Seed(s, time.Now()); err != nil {
+			return err
+		}
+		d, err := s.ResolveDataset()
+		if err != nil {
+			return err
+		}
+		r := calc.Compute(d)
+		fmt.Printf("  lots: %d · roll txns: %d · face searched: $%.0f across %d buys\n",
+			len(d.Lots)+len(d.Disposed), len(d.RollTxns), r.FaceSearched, int(r.BuyCount))
+		fmt.Printf("  CRH net (cash): $%.2f · bullion P/L: $%.2f · to redeposit: $%.2f\n",
+			r.CRHNetReal, r.BullionUnreal, r.ToRedeposit)
+	}
+	fmt.Println("Everything here is fictional — poke, edit, delete freely.")
+
+	// Spot polling stays off: the demo ships its own price history, and keeping
+	// it deterministic beats mixing in live quotes.
+	return serveStore(s, *dbPath, *addr, "none", 6*time.Hour)
+}
+
+// serveStore runs the HTTP server (REST API + embedded UI) over an open store
+// until interrupted — shared by `serve` and `demo`.
+func serveStore(s *store.Store, dbPath, addr, spotProvider string, spotInterval time.Duration) error {
 	srv := &http.Server{
-		Addr:              *addr,
+		Addr:              addr,
 		Handler:           api.Handler(s, web.FS()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -144,17 +211,17 @@ func runServe(args []string) error {
 
 	// Background spot polling (ADR-007): keep valuations fresh while we run. Opt out with
 	// --spot-provider=none; any fetch failure is logged and skipped (manual entry remains).
-	if !spot.Disabled(*spotProvider) {
-		if prov, err := spot.ByName(*spotProvider, nil); err != nil {
+	if !spot.Disabled(spotProvider) {
+		if prov, err := spot.ByName(spotProvider, nil); err != nil {
 			fmt.Fprintln(os.Stderr, "spot:", err, "— polling disabled")
 		} else {
-			go spot.NewPoller(prov, s, *spotInterval).Run(ctx)
+			go spot.NewPoller(prov, s, spotInterval).Run(ctx)
 		}
 	}
 
 	errc := make(chan error, 1)
 	go func() {
-		fmt.Printf("coinrollhunter serving on http://%s  (db: %s)\n", *addr, *dbPath)
+		fmt.Printf("coinrollhunter serving on http://%s  (db: %s)\n", addr, dbPath)
 		errc <- srv.ListenAndServe()
 	}()
 
