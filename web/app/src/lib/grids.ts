@@ -248,6 +248,11 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
 
 // --- Plain CRUD tables -------------------------------------------------------
 
+/** source_type is a buy-only attribute — blank it when the row is (or becomes)
+    a return, so flipping a buy to a return can't leave a stale wrap class behind. */
+const dropReturnSourceType = (row: Omit<RollTxn, 'id'>): Omit<RollTxn, 'id'> =>
+  row.action === 'return' ? { ...row, source_type: '' } : row
+
 export const rollTxnsGrid: GridConfig<RollTxn> = {
   title: 'Roll transactions',
   description:
@@ -258,15 +263,17 @@ export const rollTxnsGrid: GridConfig<RollTxn> = {
     { accessorKey: 'action', header: 'Action', meta: { editor: 'select', options: ['buy', 'return'], width: '100px' } },
     { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '110px' } },
     { accessorKey: 'unit', header: 'Unit', meta: { editor: 'select', options: ROLL_UNITS, width: '90px' } },
-    { accessorKey: 'source_type', header: 'Source', meta: { editor: 'select', optionsFn: () => SOURCE_TYPES, width: '160px' } },
+    // Buy-only attribute: a 'return' is just face going back to the bank, so the
+    // cell renders inert ("—") on return rows (om-kn0f).
+    { accessorKey: 'source_type', header: 'Source', meta: { editor: 'select', optionsFn: () => SOURCE_TYPES, width: '160px', enabled: (r) => r.action !== 'return' } },
     { accessorKey: 'amount', header: 'Amount', meta: { editor: 'number', step: 0.1, align: 'right', width: '90px' } },
     { accessorKey: 'face_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'notes', header: 'Notes', meta: { editor: 'text' } },
   ],
   // Normalize source_type to '' (the Go side omits it when empty) so the select binds cleanly.
   load: async () => (await loadCachingBanks(api.rollTxns.list)).map((r) => ({ ...r, source_type: r.source_type ?? '' })),
-  create: api.rollTxns.create,
-  update: api.rollTxns.update,
+  create: (row) => api.rollTxns.create(dropReturnSourceType(row)),
+  update: (id, row) => api.rollTxns.update(id, dropReturnSourceType(row)),
   remove: api.rollTxns.remove,
   blank: () => ({ date: today(), bank: '', action: 'buy', denom: 'halves', unit: 'box', source_type: '', amount: 1, face_usd: 500, notes: '' }),
 }

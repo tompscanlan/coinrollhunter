@@ -16,6 +16,10 @@
     /** Read-only computed display (e.g. a derived/joined column). */
     display?: (row: T) => string
     readOnly?: boolean
+    /** Row-conditional applicability: return false to render an inert "—"
+        instead of the editor (e.g. source-type only applies to 'buy' roll
+        txns). Also consulted for the new-row draft. */
+    enabled?: (row: Partial<T>) => boolean
     /** For editor:'autocomplete' — suggestion list (a function so it can reflect
         freshly-loaded data each render). Renders an HTML <datalist>. */
     suggestions?: () => readonly string[]
@@ -301,7 +305,9 @@
               {@const m = meta(col)}
               {@const key = col.accessorKey as keyof T}
               <td class={cn('px-1.5 py-1', align(m))}>
-                {#if m.display}
+                {#if m.enabled && !m.enabled(row.original)}
+                  <span class="block px-1.5 py-1 text-muted-foreground/50">—</span>
+                {:else if m.display}
                   <span class={cn('block px-1.5 py-1', align(m))}>{m.display(row.original)}</span>
                 {:else if m.readOnly}
                   <span class={cn('block px-1.5 py-1 text-muted-foreground', align(m))}>
@@ -392,7 +398,7 @@
             {@const m = meta(col)}
             {@const key = col.accessorKey as keyof Draft}
             <td class={cn('px-1.5 py-1', align(m))}>
-              {#if m.display || m.readOnly}
+              {#if m.display || m.readOnly || (m.enabled && !m.enabled(draft as Partial<T>))}
                 <span class="block px-1.5 py-1 text-muted-foreground">—</span>
               {:else if m.editor === 'select'}
                 <select
