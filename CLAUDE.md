@@ -99,6 +99,7 @@ dataset, and merchant-of-record monetization wiring. **ADR-004** — stack-over-
 
 Build notes: `make build` (UI then Go). In this container, Go needs a writable cache —
 `go env -w GOCACHE=/go/cache`. The UI build needs Node 22 + npm registry access. `web/dist`
-is committed so `go build`/`go install` work without Node.
+is a git-ignored build artifact (only its `.gitkeep` is committed, so `go:embed all:dist`
+always resolves) — a bare `go build` without `make ui` first serves an empty UI.
 
 The `prototype/` reference is the source of truth for behavior and exact formulas.

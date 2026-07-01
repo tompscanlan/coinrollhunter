@@ -10,9 +10,13 @@ data/
 .env
 .env.local
 
-# Build output. web/dist IS committed — it's the embedded UI, so `go build`
-# and `go install` work without Node. node_modules and release artifacts aren't.
+# Build output. web/dist is a build artifact — `make ui` / `make build`
+# regenerates it; only the .gitkeep placeholder is committed so `go:embed
+# all:dist` always has a directory to embed. A bare `go build` without the UI
+# build produces a binary that serves an empty UI — use make.
 node_modules/
+web/dist/*
+!web/dist/.gitkeep
 /coinrollhunter
 /coinrollhunter.exe
 /dist/
