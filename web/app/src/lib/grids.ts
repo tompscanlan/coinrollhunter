@@ -31,6 +31,22 @@ let findSubcategories: string[] = [...FIND_SUBCATEGORIES]
 const distinct = (xs: (string | undefined)[]) =>
   [...new Set(xs.map((s) => (s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
 
+const grossWeightToFineOz = (gross: number, purity: number, unit?: string): number => {
+  if (!gross || !purity) return 0
+  switch ((unit ?? 'ozt').trim().toLowerCase()) {
+    case 'g':
+    case 'gram':
+    case 'grams':
+      return (gross / 31.1034768) * purity
+    case 'kg':
+    case 'kilogram':
+    case 'kilograms':
+      return (gross * 1000.0 / 31.1034768) * purity
+    default:
+      return gross * purity
+  }
+}
+
 /** Map a Product value (existing item_type name OR a silver-preset label) to the
     metal/fineness/fine-oz it implies, given a catalog. Catalog entries win over
     presets on name. Pure — reused by the Do-tab workflows, which pass their own
@@ -94,6 +110,9 @@ export interface FlatHolding {
   metal: string
   fineness: string
   fine_oz_each: number
+  gross_weight?: number
+  purity?: number
+  weight_unit?: string
   qty: number
   basis_usd: number
   face_value_usd: number
@@ -139,6 +158,9 @@ function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Hol
     roll_txn_id: Number(row.from_box) || 0,
     activity: row.activity,
     qty: Number(row.qty) || 0,
+    gross_weight: row.gross_weight,
+    purity: row.purity,
+    weight_unit: row.weight_unit,
     basis_usd: Number(row.basis_usd) || 0,
     face_value_usd: Number(row.face_value_usd) || 0,
     acquired: row.acquired,
@@ -170,6 +192,9 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'metal', header: 'Metal', meta: { editor: 'select', options: METALS, width: '110px' } },
     { accessorKey: 'fineness', header: 'Fineness', meta: { editor: 'text', width: '100px', placeholder: '.9999' } },
     { accessorKey: 'fine_oz_each', header: 'Fine oz / unit', meta: { editor: 'number', step: 0.0001, align: 'right', width: '120px' } },
+    { accessorKey: 'gross_weight', header: 'Gross wt', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px', placeholder: '0' } },
+    { accessorKey: 'purity', header: 'Purity', meta: { editor: 'number', step: 0.0001, align: 'right', width: '100px', placeholder: '.999' } },
+    { accessorKey: 'weight_unit', header: 'Unit', meta: { editor: 'select', options: ['ozt', 'g', 'kg'], width: '90px' } },
     { accessorKey: 'qty', header: 'Qty', meta: { editor: 'number', step: 1, align: 'right', width: '80px' } },
     { accessorKey: 'basis_usd', header: 'Basis $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'face_value_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px' } },
@@ -206,7 +231,11 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         product: t?.name ?? '',
         metal: t?.metal ?? '',
         fineness: t?.fineness ?? '',
-        fine_oz_each: t?.fine_oz_each ?? 0,
+        fine_oz_each:
+          (t?.fine_oz_each ?? 0) || grossWeightToFineOz(h.gross_weight ?? 0, h.purity ?? 0, h.weight_unit),
+        gross_weight: h.gross_weight,
+        purity: h.purity,
+        weight_unit: h.weight_unit,
         qty: h.qty,
         basis_usd: h.basis_usd,
         face_value_usd: h.face_value_usd,
@@ -234,6 +263,9 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     metal: 'silver',
     fineness: '',
     fine_oz_each: 0,
+    gross_weight: 0,
+    purity: 0,
+    weight_unit: 'ozt',
     qty: 1,
     basis_usd: 0,
     face_value_usd: 0,

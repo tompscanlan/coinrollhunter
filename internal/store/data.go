@@ -283,7 +283,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 
 	// holdings -> resolved lots
 	rows, err = s.db.Query(
-		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, basis_usd,
+		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
 		   face_value_usd, acquired, source, category, subcategory, trophy
 		 FROM lots WHERE disposed IS NULL OR disposed = '' ORDER BY id`)
 	if err != nil {
@@ -292,14 +292,15 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	for rows.Next() {
 		var h model.Holding
 		var rtid sql.NullInt64
-		var source, cat, subcat sql.NullString
+		var source, cat, subcat, wu sql.NullString
 		var trophy int64
 		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight,
-			&h.Purity, &h.BasisUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy); err != nil {
+			&h.Purity, &wu, &h.BasisUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy); err != nil {
 			rows.Close()
 			return d, err
 		}
 		h.RollTxnID = rtid.Int64
+		h.WeightUnit = wu.String
 		h.Source = source.String
 		h.Category, h.Subcategory, h.Trophy = cat.String, subcat.String, trophy != 0
 		d.Lots = append(d.Lots, model.Resolve(h, types[h.ItemTypeID]))

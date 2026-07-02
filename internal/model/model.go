@@ -8,6 +8,8 @@
 // faithful port of the prototype and is blind to the storage split.
 package model
 
+import "strings"
+
 // ItemType is catalog/reference data for a kind of thing (a coin type, a bar
 // product, a junk-silver denomination). Entered once, shared by many holdings.
 type ItemType struct {
@@ -52,6 +54,23 @@ type Holding struct {
 	DisposedUSD float64 `json:"disposed_usd,omitempty"`
 }
 
+const gramsPerTroyOunce = 31.1034768
+
+// grossWeightToTroyOunces normalizes a specimen's gross weight to troy ounces.
+// Unknown units fall back to troy ounces (the historical behavior).
+func grossWeightToTroyOunces(gross float64, unit string) float64 {
+	switch strings.TrimSpace(strings.ToLower(unit)) {
+	case "", "ozt", "troy_oz", "troyoz":
+		return gross
+	case "g", "gram", "grams":
+		return gross / gramsPerTroyOunce
+	case "kg", "kilogram", "kilograms":
+		return gross * 1000.0 / gramsPerTroyOunce
+	default:
+		return gross
+	}
+}
+
 // Lot is the flat, resolved engine view of a holding (Holding joined to its
 // ItemType). This is what calc operates on; it mirrors the prototype's lot shape
 // so the ported math is unchanged.
@@ -78,11 +97,12 @@ func (l Lot) IsFind() bool { return l.Activity == "crh" }
 
 // Resolve joins a holding to its item type to produce the flat engine view.
 // Fine ounces per unit come from the catalog's FineOzEach when set, otherwise from
-// the specimen's gross weight * purity (bars, generic rounds, jewelry).
+// the specimen's gross weight (normalized to troy oz via WeightUnit) * purity
+// (bars, generic rounds, jewelry).
 func Resolve(h Holding, t ItemType) Lot {
 	fineEach := t.FineOzEach
 	if fineEach == 0 {
-		fineEach = h.GrossWeight * h.Purity
+		fineEach = grossWeightToTroyOunces(h.GrossWeight, h.WeightUnit) * h.Purity
 	}
 	return Lot{
 		ID:           h.ID,
