@@ -10,6 +10,8 @@ export interface SilverPreset {
 }
 
 export const SILVER_PRESETS: SilverPreset[] = [
+  { label: '90% silver dollar (Morgan/Peace, pre-1936)', fineness: '90%', fine_oz_each: 0.77344, face_each: 1 },
+  { label: '40% Eisenhower dollar (1971–76 collector)', fineness: '40%', fine_oz_each: 0.31625, face_each: 1 },
   { label: '40% Kennedy half (1965–70)', fineness: '40%', fine_oz_each: 0.1479, face_each: 0.5 },
   { label: '90% half (1964 & earlier)', fineness: '90%', fine_oz_each: 0.36169, face_each: 0.5 },
   { label: '90% quarter (pre-1965)', fineness: '90%', fine_oz_each: 0.18084, face_each: 0.25 },
@@ -17,8 +19,10 @@ export const SILVER_PRESETS: SilverPreset[] = [
   { label: '35% war nickel (1942–45)', fineness: '35%', fine_oz_each: 0.05626, face_each: 0.05 },
 ]
 
-/** Face dollars in one bank box, by denomination — for box→face auto-fill. */
+/** Face dollars in one bank box, by denomination — for box→face auto-fill.
+    Dollar coins ship in $1,000 Fed boxes (40 rolls × $25). */
 export const BOX_FACE: Record<string, number> = {
+  dollars: 1000,
   halves: 500,
   quarters: 500,
   dimes: 250,
@@ -28,8 +32,10 @@ export const BOX_FACE: Record<string, number> = {
 
 /** Face dollars in one standard bag, by denomination — for bag→face auto-fill.
     Standard mint/Fed bag quantities: cents 5,000=$50 · nickels 4,000=$200 ·
-    dimes 10,000=$1,000 · quarters 4,000=$1,000 · halves 2,000=$1,000 (ADR-006). */
+    dimes 10,000=$1,000 · quarters 4,000=$1,000 · halves 2,000=$1,000 ·
+    dollars 2,000=$2,000 (ADR-006). */
 export const BAG_FACE: Record<string, number> = {
+  dollars: 2000,
   halves: 1000,
   quarters: 1000,
   dimes: 1000,
@@ -37,7 +43,7 @@ export const BAG_FACE: Record<string, number> = {
   cents: 50,
 }
 
-export const DENOMS = ['halves', 'quarters', 'dimes', 'nickels', 'cents'] as const
+export const DENOMS = ['dollars', 'halves', 'quarters', 'dimes', 'nickels', 'cents'] as const
 // 'bag' is both a quantity unit (a $1k bag of loose coin) and recognized by the
 // backend (ADR-006); it normalizes to face via BAG_FACE, like box.
 export const ROLL_UNITS = ['box', 'roll', 'bag', 'face', 'coin'] as const
@@ -72,6 +78,7 @@ export const FIND_SUBCATEGORIES = [
 
 /** Face dollars per single coin, by denomination. */
 export const COIN_FACE: Record<string, number> = {
+  dollars: 1,
   halves: 0.5,
   quarters: 0.25,
   dimes: 0.1,
@@ -81,6 +88,7 @@ export const COIN_FACE: Record<string, number> = {
 
 /** Coins in a standard customer-wrapped roll, by denomination. */
 export const ROLL_COUNT: Record<string, number> = {
+  dollars: 25,
   halves: 20,
   quarters: 40,
   dimes: 50,

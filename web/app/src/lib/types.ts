@@ -54,7 +54,7 @@ export interface RollTxn {
   date: string
   bank: string
   action: 'buy' | 'return'
-  denom: string // halves|quarters|dimes|nickels|cents
+  denom: string // dollars|halves|quarters|dimes|nickels|cents
   unit: string // box|roll|bag|face|coin
   amount: number
   face_usd: number

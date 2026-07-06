@@ -253,6 +253,8 @@ func coinsSearched(denom string, face float64) float64 {
 
 func coinFaceValue(denom string) float64 {
 	switch denom {
+	case "dollars":
+		return 1.00
 	case "halves":
 		return 0.50
 	case "quarters":
@@ -294,7 +296,7 @@ func sortedSources(seen map[string]bool) []string {
 
 // denomLess orders denoms by coin value (halves→cents), unknowns last alphabetically.
 func denomLess(a, b string) bool {
-	order := map[string]int{"halves": 0, "quarters": 1, "dimes": 2, "nickels": 3, "cents": 4, "": 99}
+	order := map[string]int{"dollars": -1, "halves": 0, "quarters": 1, "dimes": 2, "nickels": 3, "cents": 4, "": 99}
 	oa, aok := order[a]
 	ob, bok := order[b]
 	if aok && bok && oa != ob {

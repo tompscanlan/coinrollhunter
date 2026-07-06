@@ -131,7 +131,7 @@ type RollTxn struct {
 	Date    string  `json:"date"`
 	Bank    string  `json:"bank"`
 	Action  string  `json:"action"` // "buy" | "return"
-	Denom   string  `json:"denom"`  // halves|quarters|dimes|nickels|cents
+	Denom   string  `json:"denom"`  // dollars|halves|quarters|dimes|nickels|cents
 	Unit    string  `json:"unit"`   // "box" | "roll" | "bag" | "face" | "coin"
 	Amount  float64 `json:"amount"` // quantity in that unit
 	FaceUSD float64 `json:"face_usd"`
@@ -239,7 +239,7 @@ func DefaultSettings() Settings {
 		SilverBuyback40pct: 0.80,
 		SilverBuyback90pct: 0.90,
 		BoxFaceUSD: map[string]float64{
-			"halves": 500, "quarters": 500, "dimes": 250, "nickels": 100, "cents": 25,
+			"dollars": 1000, "halves": 500, "quarters": 500, "dimes": 250, "nickels": 100, "cents": 25,
 		},
 	}
 }
