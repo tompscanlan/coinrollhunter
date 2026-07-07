@@ -46,3 +46,27 @@ func TestResolveUsesGrossWeightPurityAndUnit(t *testing.T) {
 		t.Fatalf("FineOzEach = %v, want %v", got, want)
 	}
 }
+
+// PremiumUSD is a display memo (paid over melt at acquisition), a component of
+// basis. It must thread from Holding through Resolve into the flat Lot so calc/UI
+// (the Overview stack table) can surface it — mirroring the taxonomy fields.
+func TestResolveThreadsPremiumUSD(t *testing.T) {
+	h := Holding{
+		ID:         1,
+		ItemTypeID: 1,
+		Qty:        1,
+		BasisUSD:   1512,
+		PremiumUSD: 62,
+		Acquired:   "2026-07-02",
+		Source:     "test",
+	}
+	itemType := ItemType{ID: 1, Name: "1 oz Gold Eagle", Metal: "gold", Fineness: ".9167", FineOzEach: 1}
+	lot := Resolve(h, itemType)
+	if got, want := lot.PremiumUSD, 62.0; got != want {
+		t.Fatalf("PremiumUSD = %v, want %v", got, want)
+	}
+	// Sanity: premium is a memo, not folded into basis by Resolve.
+	if got, want := lot.BasisUSD, 1512.0; got != want {
+		t.Fatalf("BasisUSD = %v, want %v (premium must not alter basis)", got, want)
+	}
+}

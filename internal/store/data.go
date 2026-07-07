@@ -284,7 +284,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	// holdings -> resolved lots
 	rows, err = s.db.Query(
 		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
-		   face_value_usd, acquired, source, category, subcategory, trophy
+		   premium_usd, face_value_usd, acquired, source, category, subcategory, trophy
 		 FROM lots WHERE disposed IS NULL OR disposed = '' ORDER BY id`)
 	if err != nil {
 		return d, fmt.Errorf("load lots: %w", err)
@@ -295,7 +295,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 		var source, cat, subcat, wu sql.NullString
 		var trophy int64
 		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight,
-			&h.Purity, &wu, &h.BasisUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy); err != nil {
+			&h.Purity, &wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy); err != nil {
 			rows.Close()
 			return d, err
 		}

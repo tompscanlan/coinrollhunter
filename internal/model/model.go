@@ -87,6 +87,7 @@ type Lot struct {
 	FaceValueUSD float64 `json:"face_value_usd"`
 	Acquired     string  `json:"acquired"`
 	Source       string  `json:"source"`
+	PremiumUSD   float64 `json:"premium_usd,omitempty"` // paid over melt at acquisition; a component of basis, display-only
 	Category     string  `json:"category,omitempty"`    // CRH find taxonomy (ADR-006)
 	Subcategory  string  `json:"subcategory,omitempty"` // CRH find taxonomy (ADR-006)
 	Trophy       bool    `json:"trophy,omitempty"`
@@ -117,6 +118,7 @@ func Resolve(h Holding, t ItemType) Lot {
 		FaceValueUSD: h.FaceValueUSD,
 		Acquired:     h.Acquired,
 		Source:       h.Source,
+		PremiumUSD:   h.PremiumUSD,
 		Category:     h.Category,
 		Subcategory:  h.Subcategory,
 		Trophy:       h.Trophy,
