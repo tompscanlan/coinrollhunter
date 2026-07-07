@@ -134,6 +134,7 @@
         fine_oz_each: Number(fFineOz) || 0,
         qty: Number(fQty) || 0,
         basis_usd: faceTotal,
+        premium_usd: 0, // CRH finds carry no premium over melt (acquired at face)
         face_value_usd: faceTotal,
         acquired: today(),
         source: fBox ? (buys.find((b) => String(b.id) === fBox)?.bank ?? '') : '',

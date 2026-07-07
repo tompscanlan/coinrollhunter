@@ -115,6 +115,7 @@ export interface FlatHolding {
   weight_unit?: string
   qty: number
   basis_usd: number
+  premium_usd: number
   face_value_usd: number
   acquired: string
   source: string
@@ -162,6 +163,7 @@ function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Hol
     purity: row.purity,
     weight_unit: row.weight_unit,
     basis_usd: Number(row.basis_usd) || 0,
+    premium_usd: Number(row.premium_usd) || 0,
     face_value_usd: Number(row.face_value_usd) || 0,
     acquired: row.acquired,
     source: row.source,
@@ -197,6 +199,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'weight_unit', header: 'Unit', meta: { editor: 'select', options: ['ozt', 'g', 'kg'], width: '90px' } },
     { accessorKey: 'qty', header: 'Qty', meta: { editor: 'number', step: 1, align: 'right', width: '80px' } },
     { accessorKey: 'basis_usd', header: 'Basis $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
+    { accessorKey: 'premium_usd', header: 'Premium $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'face_value_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px' } },
     { accessorKey: 'acquired', header: 'Acquired', meta: { editor: 'date', width: '150px' } },
     { accessorKey: 'source', header: 'Source', meta: { editor: 'autocomplete', placeholder: 'APMEX', suggestions: () => holdingSources } },
@@ -238,6 +241,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         weight_unit: h.weight_unit,
         qty: h.qty,
         basis_usd: h.basis_usd,
+        premium_usd: h.premium_usd ?? 0,
         face_value_usd: h.face_value_usd,
         acquired: h.acquired,
         source: h.source,
@@ -268,6 +272,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     weight_unit: 'ozt',
     qty: 1,
     basis_usd: 0,
+    premium_usd: 0,
     face_value_usd: 0,
     acquired: today(),
     source: '',

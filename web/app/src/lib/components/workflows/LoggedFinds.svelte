@@ -160,6 +160,7 @@
           fine_oz_each: Number(f.fineOz) || 0,
           qty: Number(f.qty) || 0,
           basis_usd: faceTotal,
+          premium_usd: 0, // CRH finds carry no premium over melt (acquired at face)
           face_value_usd: faceTotal,
           acquired: chosenDate || today(),
           source: chosenBank.trim(),

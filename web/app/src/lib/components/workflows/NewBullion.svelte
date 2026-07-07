@@ -87,6 +87,7 @@
         fine_oz_each: Number(fineOz) || 0,
         qty: Number(qty) || 0,
         basis_usd: Number(basis) || 0,
+        premium_usd: 0, // not collected in the quick-entry form; editable in the Holdings grid
         face_value_usd: 0,
         acquired: acquired || today(),
         source: source.trim(),
