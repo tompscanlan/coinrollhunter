@@ -33,14 +33,22 @@
   let recorded = $state(0) // how many inventory rows we've added this session
   let note = $state('') // transient "added X" confirmation
 
-  // quick-add keeper
+  // quick-add keeper (bulk/uncategorized clad only — ADR-008)
   let kDenom = $state<string>('halves')
   let kCount = $state(0)
   let kFace = $state(0)
   let kManual = $state(false)
+  let kBox = $state<string>('') // box this batch is logged against (audit + double-count guard)
   $effect(() => {
     if (!kManual) kFace = Math.round((Number(kCount) || 0) * (COIN_FACE[kDenom] ?? 0) * 100) / 100
   })
+  // Warn when a keeper is added against a box that ALREADY has crh find lots — a
+  // notable coin logged as a taxonomy find must not be re-counted as a bulk keeper.
+  const crhFindsForBox = $derived(
+    kBox ? report.lots.filter((l) => l.activity === 'crh' && String(l.roll_txn_id ?? 0) === kBox) : []
+  )
+  const keeperDoubleCount = $derived(crhFindsForBox.length > 0)
+  const kBoxDate = $derived(kBox ? (buys.find((b) => String(b.id) === kBox)?.date ?? '') : '')
 
   // quick-add silver find
   let fProduct = $state('')
@@ -104,7 +112,13 @@
     busy = true
     err = ''
     try {
-      await api.keepers.create({ denom: kDenom, count: Number(kCount) || 0, face_usd: Number(kFace) || 0 })
+      await api.keepers.create({
+        denom: kDenom,
+        count: Number(kCount) || 0,
+        face_usd: Number(kFace) || 0,
+        date: kBoxDate || today(),
+        roll_txn_id: Number(kBox) || 0,
+      })
       note = `Recorded ${money(Number(kFace) || 0)} of ${kDenom} keepers.`
       recorded++
       kCount = 0
@@ -245,7 +259,11 @@
 
       <!-- keeper quick-add -->
       <div class="space-y-1.5">
-        <p class="text-xs font-medium text-muted-foreground">Clad keepers</p>
+        <p class="text-xs font-medium text-muted-foreground">Bulk clad keepers</p>
+        <p class="text-xs text-muted-foreground">
+          Bulk / uncategorized clad only. Already logged this coin as a taxonomy find? Don't add it here too —
+          you'd double-count it (ADR-008).
+        </p>
         <div class="grid grid-cols-[1fr_auto_auto_auto] items-end gap-2">
           <label class="flex flex-col gap-1 text-xs text-muted-foreground">
             Denom
@@ -272,6 +290,28 @@
           </label>
           <Button variant="secondary" size="sm" onclick={addKeeper} disabled={busy} class="mb-0.5">Add</Button>
         </div>
+        {#if buys.length}
+          <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+            Against box (optional — for audit)
+            <select
+              bind:value={kBox}
+              class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
+            >
+              <option value="">— (none)</option>
+              {#each buys as b (b.id)}<option value={String(b.id)}>{fmtBuy(b)}</option>{/each}
+            </select>
+          </label>
+        {/if}
+        {#if keeperDoubleCount}
+          <p class="flex items-start gap-1.5 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              This box already has {crhFindsForBox.length} taxonomy find{crhFindsForBox.length === 1 ? '' : 's'} recorded
+              this session. If any of those coins are in this keeper batch, you'd double-count them — keepers are for
+              bulk / uncategorized clad only.
+            </span>
+          </p>
+        {/if}
       </div>
 
       <!-- find quick-add -->

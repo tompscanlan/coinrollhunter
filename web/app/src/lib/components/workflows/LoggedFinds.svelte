@@ -168,12 +168,15 @@
         })
       }
 
-      // 3) clad keepers
+      // 3) bulk clad keepers — attributed to the same box/date as the finds so a
+      //    later Reconcile can tell whether a batch was already counted (ADR-008).
       for (const k of realKeepers) {
         await api.keepers.create({
           denom: k.denom,
           count: Number(k.count) || 0,
           face_usd: Number(k.face) || 0,
+          date: chosenDate || today(),
+          roll_txn_id: boxId || 0,
         })
       }
 
@@ -208,7 +211,7 @@
     </span>
     <div>
       <h2 class="text-lg font-bold leading-tight">Logged finds</h2>
-      <p class="text-xs text-muted-foreground">Silver finds + clad keepers from a searched box.</p>
+      <p class="text-xs text-muted-foreground">Notable finds + bulk clad keepers from a searched box.</p>
     </div>
   </div>
 
@@ -322,9 +325,13 @@
     <!-- finds -->
     <Card class="space-y-3 p-5">
       <div class="flex items-center justify-between">
-        <h3 class="text-sm font-semibold text-foreground">Silver finds</h3>
+        <h3 class="text-sm font-semibold text-foreground">Notable finds</h3>
         <span class="text-xs text-muted-foreground tnum">{money(findValueTotal)} face</span>
       </div>
+      <p class="text-xs text-muted-foreground">
+        Any individually-notable coin — silver <em>or</em> clad (proof, error, key date, PMD…). Logged as a
+        taxonomy find in Holdings, not a keeper (ADR-008).
+      </p>
       {#each finds as f, i (i)}
         <div class="grid grid-cols-[1fr_auto_auto_auto] items-end gap-2">
           <label class="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -385,9 +392,16 @@
 
     <!-- clad keepers -->
     <Card class="space-y-3 p-5">
-      <h3 class="text-sm font-semibold text-foreground">Clad keepers (kept at face)</h3>
+      <h3 class="text-sm font-semibold text-foreground">Bulk clad keepers (kept at face)</h3>
+      <p class="flex items-start gap-1.5 text-xs text-muted-foreground">
+        <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
+        <span>
+          <b>Bulk / uncategorized clad only.</b> Already logged this coin as a taxonomy find above? Don't add it
+          here too — you'd double-count its face and understate what's left to redeposit.
+        </span>
+      </p>
       {#if keepers.length === 0}
-        <p class="text-xs text-muted-foreground">None — add any non-silver coins you're keeping.</p>
+        <p class="text-xs text-muted-foreground">None — add the leftover bulk clad you're keeping.</p>
       {/if}
       {#each keepers as k, i (i)}
         <div class="grid grid-cols-[1fr_auto_auto_auto] items-end gap-2">

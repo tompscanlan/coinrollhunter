@@ -84,6 +84,10 @@ export interface Keeper {
   denom: string
   count: number
   face_usd: number
+  // Auditable dimension (migration 0007, ADR-008) — which session/box a bulk-clad
+  // batch was logged against. Both nullable; legacy keepers omit them.
+  date?: string // ISO date the batch was logged
+  roll_txn_id?: number // box (buy) this batch is attributed to (0/absent = none)
 }
 
 /** A shrinkage write-off booked at reconcile — face declared lost (ADR-005). */
@@ -106,6 +110,7 @@ export interface Settings {
 
 export interface EnrichedLot {
   id: number
+  roll_txn_id?: number // box this find came from (0/absent = none) — used to flag keeper double-counts
   activity: 'bullion' | 'crh'
   product: string
   metal: string

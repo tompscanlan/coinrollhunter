@@ -348,17 +348,20 @@ export const suppliesGrid: GridConfig<Supply> = {
 
 export const keepersGrid: GridConfig<Keeper> = {
   title: 'Keepers',
-  description: 'Non-silver coins pulled at face. Recoverable, not a loss — kept out of the redeposit float.',
+  description:
+    'Bulk / uncategorized clad pulled at face. Recoverable, not a loss — kept out of the redeposit float. Individually-notable coins (silver OR clad) belong in Holdings as a taxonomy find, not here (ADR-008). Date/box are optional audit context.',
   columns: [
-    { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '130px' } },
-    { accessorKey: 'count', header: 'Count', meta: { editor: 'number', step: 1, align: 'right', width: '120px' } },
-    { accessorKey: 'face_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '130px' } },
+    { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '120px' } },
+    { accessorKey: 'count', header: 'Count', meta: { editor: 'number', step: 1, align: 'right', width: '110px' } },
+    { accessorKey: 'face_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '120px' } },
+    { accessorKey: 'date', header: 'Date', meta: { editor: 'date', width: '150px' } },
+    { accessorKey: 'roll_txn_id', header: 'Box', meta: { editor: 'number', step: 1, align: 'right', width: '90px' } },
   ],
   load: api.keepers.list,
   create: api.keepers.create,
   update: api.keepers.update,
   remove: api.keepers.remove,
-  blank: () => ({ denom: 'halves', count: 0, face_usd: 0 }),
+  blank: () => ({ denom: 'halves', count: 0, face_usd: 0, date: today(), roll_txn_id: 0 }),
 }
 
 export const lossesGrid: GridConfig<Loss> = {
