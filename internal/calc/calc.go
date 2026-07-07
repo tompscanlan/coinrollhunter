@@ -16,9 +16,9 @@ import (
 // EnrichedLot is a lot with its market valuation filled in.
 type EnrichedLot struct {
 	model.Lot
-	FineOz    float64 `json:"fine_oz"`
-	MarketUSD float64 `json:"market_usd"`
-	UnrealUSD float64 `json:"unreal_usd"`
+	FineOz    float64  `json:"fine_oz"`
+	MarketUSD float64  `json:"market_usd"`
+	UnrealUSD float64  `json:"unreal_usd"`
 	UnrealPct *float64 `json:"unreal_pct"` // null when basis is 0 (undefined % — UI shows "n/a"); JSON can't carry ±Inf
 }
 
@@ -54,12 +54,17 @@ type Report struct {
 	Losses float64 `json:"losses"`
 
 	// Float / cash-in reconciliation
-	Buys        float64 `json:"buys"`
-	Returns     float64 `json:"returns"`
-	CladFace    float64 `json:"clad_face"`
-	KeptFace    float64 `json:"kept_face"`
-	ToRedeposit float64 `json:"to_redeposit"`
-	Reconciled  bool    `json:"reconciled"`
+	Buys     float64 `json:"buys"`
+	Returns  float64 `json:"returns"`
+	CladFace float64 `json:"clad_face"`
+	KeptFace float64 `json:"kept_face"`
+	// DisposedFindFace is the face (basis) of SOLD CRH finds that stays on the
+	// kept side of the float (om-co69 / ADR-008). It is a component of KeptFace
+	// only — deliberately NOT part of CRH net or total basis (those are
+	// live-only). KeptFace == CladFace + FindCost + DisposedFindFace.
+	DisposedFindFace float64 `json:"disposed_find_face"`
+	ToRedeposit      float64 `json:"to_redeposit"`
+	Reconciled       bool    `json:"reconciled"`
 
 	// Activity KPIs (ADR-006): coarse "how much hunting" stats over buy txns.
 	BuyCount    int     `json:"buy_count"`    // number of buy roll-txns
@@ -252,7 +257,21 @@ func Compute(d model.Dataset) Report {
 	for _, l := range d.Losses {
 		losses += l.AmountUSD
 	}
-	keptFace := cladFace + fCost
+	// (c) om-co69: a sold (disposed) CRH find's face STAYS on the kept side of the
+	// float permanently. to_redeposit reconciles the ORIGINAL find-time float (the
+	// dollars pulled off the search table), not live inventory, so a later sale
+	// must not reopen a float that was already reconciled. This is a FLOAT-ONLY
+	// term: it feeds keptFace only and must NOT enter CRH net (crhNet* below) or
+	// total basis (tBasis) — those stay live-only via fCost, and a disposed find's
+	// P&L is realized separately as proceeds − basis (see ADR-005 + ADR-008).
+	var disposedFindFace float64
+	for _, dl := range d.Disposed {
+		if dl.Activity == "crh" {
+			disposedFindFace += dl.BasisUSD
+		}
+	}
+	keptFindFace := fCost + disposedFindFace // live + disposed CRH find face
+	keptFace := cladFace + keptFindFace
 	toRedeposit := buys - returns - keptFace - losses
 	reconciled := math.Abs(toRedeposit) < 0.01
 
@@ -350,12 +369,13 @@ func Compute(d model.Dataset) Report {
 		OpCost:   opCost,
 		Losses:   losses,
 
-		Buys:        buys,
-		Returns:     returns,
-		CladFace:    cladFace,
-		KeptFace:    keptFace,
-		ToRedeposit: toRedeposit,
-		Reconciled:  reconciled,
+		Buys:             buys,
+		Returns:          returns,
+		CladFace:         cladFace,
+		KeptFace:         keptFace,
+		DisposedFindFace: disposedFindFace,
+		ToRedeposit:      toRedeposit,
+		Reconciled:       reconciled,
 
 		BuyCount:    buyCount,
 		BranchCount: len(branches),

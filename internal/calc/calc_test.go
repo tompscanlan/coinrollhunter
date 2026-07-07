@@ -153,6 +153,74 @@ func TestLossReconciliation(t *testing.T) {
 	approx(t, "op_cost unchanged (loss is its own line)", after.OpCost, before.OpCost)
 }
 
+// TestDisposedFindStaysKept is the headline pin for om-co69 (decision (c)):
+// selling a CRH find must NOT change keptFace or to_redeposit — the sold find's
+// face stays on the kept side of the float permanently — while CRH net and total
+// basis MUST NOT absorb the disposed find's basis (they stay live-only; a
+// disposed find's P&L is realized separately). It compares three datasets that
+// differ only in where one CRH find sits: live inventory, sold, or absent.
+func TestDisposedFindStaysKept(t *testing.T) {
+	const findBasis = 5.00 // the CRH find's face/basis dollars
+
+	// build makes the base dataset and places the one find where `where` says:
+	// "live" -> a live crh Lot; "sold" -> a disposed crh lot; "absent" -> neither.
+	build := func(where string) model.Dataset {
+		d := model.Dataset{
+			Spot:     model.Spot{GoldUSD: 4000, SilverUSD: 60},
+			Settings: model.DefaultSettings(),
+			Lots: []model.Lot{
+				{Activity: "bullion", Metal: "gold", Qty: 1, FineOzEach: 1.0, BasisUSD: 1000.00},
+			},
+			RollTxns: []model.RollTxn{
+				{Action: "buy", Denom: "halves", FaceUSD: 500},
+				{Action: "return", FaceUSD: 400},
+			},
+			Keepers: []model.Keeper{{Denom: "halves", FaceUSD: 20}},
+		}
+		switch where {
+		case "live":
+			d.Lots = append(d.Lots, model.Lot{
+				Activity: "crh", Metal: "silver", Fineness: "90%", Qty: 1, FineOzEach: 0.18084, BasisUSD: findBasis,
+			})
+		case "sold":
+			d.Disposed = []model.DisposedLot{
+				{Activity: "crh", Metal: "silver", Qty: 1, BasisUSD: findBasis, ProceedsUSD: 8.00, Disposed: "2026-05-01"},
+			}
+		case "absent":
+			// nothing
+		}
+		return d
+	}
+
+	live := Compute(build("live"))
+	sold := Compute(build("sold"))
+	absent := Compute(build("absent"))
+
+	// AC1 — sold-find face stays kept: selling the find does NOT move keptFace or
+	// to_redeposit, and keptFace includes the find's basis exactly once.
+	approx(t, "keptFace: sold == live (sale doesn't change it)", sold.KeptFace, live.KeptFace)
+	approx(t, "to_redeposit: sold == live (sale doesn't reopen the float)", sold.ToRedeposit, live.ToRedeposit)
+	approx(t, "keptFace rose by exactly the find basis vs absent", sold.KeptFace, absent.KeptFace+findBasis)
+	approx(t, "to_redeposit fell by exactly the find basis vs absent", sold.ToRedeposit, absent.ToRedeposit-findBasis)
+	approx(t, "disposed_find_face == the sold find's basis", sold.DisposedFindFace, findBasis)
+	// counted exactly once: for the sold dataset there is no live find, so all of
+	// the kept find face comes from the disposed side.
+	approx(t, "sold: FindCost is live-only (0 here)", sold.FindCost, 0)
+	approx(t, "sold: keptFindFace = live FindCost + disposed face", sold.KeptFace, sold.CladFace+sold.FindCost+sold.DisposedFindFace)
+
+	// AC2 — CRH net + total basis MUST NOT MOVE: a disposed find's basis must not
+	// leak into CRH net or total basis. Byte-identical to the "find absent" case
+	// (the live-only formula), which is the strongest no-move pin: if fCost were
+	// silently widened to include disposed basis, these would drift.
+	approx(t, "crh_net_melt unchanged by the sale", sold.CRHNetMelt, absent.CRHNetMelt)
+	approx(t, "crh_net_real unchanged by the sale", sold.CRHNetReal, absent.CRHNetReal)
+	approx(t, "crh_net_time unchanged by the sale", sold.CRHNetTime, absent.CRHNetTime)
+	approx(t, "total_basis unchanged by the sale", sold.TotalBasis, absent.TotalBasis)
+	// And they equal the live-only formula recomputed from the sold report fields.
+	approx(t, "sold crh_net_real = realizable-cost-op-loss (live-only)", sold.CRHNetReal, sold.FindRealizable-sold.FindCost-sold.OpCost-sold.Losses)
+	approx(t, "sold total_basis = bullion+find_cost (live-only)", sold.TotalBasis, sold.BullionBasis+sold.FindCost)
+}
+
 // TestInvariants asserts the accounting identities that must hold for ANY
 // dataset, regardless of the specific numbers. These survive intentional changes
 // to spot prices, haircuts, or fixtures — they encode what the math *means*.
@@ -182,11 +250,30 @@ func TestInvariants(t *testing.T) {
 			Keepers:  []model.Keeper{{Denom: "halves", FaceUSD: 15}},
 			Losses:   []model.Loss{{Date: "2026-06-29", AmountUSD: 3.00, Reason: "machine miscount"}},
 		}},
+		// A dataset with BOTH a live find and a sold (disposed) CRH find, so the
+		// kept-face identity is exercised across live + disposed (om-co69). The
+		// disposed find's basis must show up in DisposedFindFace / KeptFace but not
+		// in FindCost (live-only).
+		{"disposed-find", model.Dataset{
+			Settings: model.DefaultSettings(),
+			Spot:     model.Spot{GoldUSD: 4000, SilverUSD: 60},
+			Lots: []model.Lot{
+				{Activity: "crh", Metal: "silver", Fineness: "90%", Qty: 1, FineOzEach: 0.18084, BasisUSD: 0.25},
+			},
+			Disposed: []model.DisposedLot{
+				{Activity: "crh", Metal: "silver", Qty: 3, BasisUSD: 0.75, ProceedsUSD: 12.00, Disposed: "2026-05-01"},
+			},
+			RollTxns: []model.RollTxn{{Action: "buy", Denom: "halves", FaceUSD: 500}, {Action: "return", FaceUSD: 480}},
+			Keepers:  []model.Keeper{{Denom: "halves", FaceUSD: 15}},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Compute(tc.d)
 			approx(t, "op_cost = gas+supplies", r.OpCost, r.Gas+r.Supplies)
-			approx(t, "kept = clad+find_cost", r.KeptFace, r.CladFace+r.FindCost)
+			// kept-face identity (om-co69): kept = clad + live-find-cost +
+			// disposed-find-face. Spans the live set (FindCost) AND sold CRH finds
+			// (DisposedFindFace); collapses to clad+find_cost when nothing is disposed.
+			approx(t, "kept = clad+find_cost+disposed_find_face", r.KeptFace, r.CladFace+r.FindCost+r.DisposedFindFace)
 			approx(t, "to_redeposit = buys-returns-kept-lost", r.ToRedeposit, r.Buys-r.Returns-r.KeptFace-r.Losses)
 			approx(t, "crh_net_real = realizable-cost-op-loss", r.CRHNetReal, r.FindRealizable-r.FindCost-r.OpCost-r.Losses)
 			approx(t, "crh_net_melt = melt-cost-op-loss", r.CRHNetMelt, r.FindMelt-r.FindCost-r.OpCost-r.Losses)
