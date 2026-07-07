@@ -116,6 +116,7 @@ export interface EnrichedLot {
   face_value_usd: number
   acquired: string
   source: string
+  premium_usd?: number // paid over melt at acquisition; a component of basis, display-only (omitted when 0)
   // CRH find taxonomy (ADR-006) — present on activity='crh' lots (omitted when empty/false).
   category?: string
   subcategory?: string

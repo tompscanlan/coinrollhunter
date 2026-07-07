@@ -11,7 +11,9 @@
   let { report }: { report: Report } = $props()
   const r = $derived(report)
 
-  type Src = { qty: number; basis: number }
+  // premium is a component of basis (paid over melt at acquisition), tracked as a
+  // display memo alongside it — NEVER summed into melt/qty/fineOz.
+  type Src = { qty: number; basis: number; premium: number }
   type Group = {
     key: string
     product: string
@@ -33,7 +35,7 @@
         g = {
           key, product: l.product, metal: l.metal, fineness: l.fineness,
           qty: 0, fineOz: 0, melt: 0,
-          bought: { qty: 0, basis: 0 }, found: { qty: 0, basis: 0 },
+          bought: { qty: 0, basis: 0, premium: 0 }, found: { qty: 0, basis: 0, premium: 0 },
         }
         m.set(key, g)
       }
@@ -43,6 +45,7 @@
       const src = l.activity === 'crh' ? g.found : g.bought
       src.qty += l.qty
       src.basis += l.basis_usd
+      src.premium += l.premium_usd ?? 0 // memo only — deliberately NOT added to melt/qty/fineOz
     }
     return [...m.values()].sort((a, b) => b.melt - a.melt)
   })
@@ -55,6 +58,11 @@
 
   // sourced from both bought + found — the case that "felt wrong", now unified
   const mixed = (g: Group) => g.bought.qty > 0 && g.found.qty > 0
+
+  // "bought 3 ($4,621, incl. $225 prem)" — premium surfaced AS A COMPONENT of the
+  // basis figure, never as its own total. Suppressed when there's no premium.
+  const srcLabel = (verb: string, s: Src) =>
+    `${verb} ${num(s.qty)} (${money(s.basis)}${s.premium > 0 ? `, incl. ${money(s.premium)} prem` : ''})`
 </script>
 
 <section class="space-y-2">
@@ -85,7 +93,7 @@
                 {g.metal}{g.fineness ? ` · ${g.fineness}` : ''}
                 {#if g.bought.qty > 0 || g.found.qty > 0}
                   <span class={mixed(g) ? 'font-medium text-foreground' : ''}>
-                    &nbsp;·&nbsp;{#if g.bought.qty > 0}bought {num(g.bought.qty)} ({money(g.bought.basis)}){/if}{#if mixed(g)} · {/if}{#if g.found.qty > 0}found {num(g.found.qty)} ({money(g.found.basis)}){/if}
+                    &nbsp;·&nbsp;{#if g.bought.qty > 0}{srcLabel('bought', g.bought)}{/if}{#if mixed(g)} · {/if}{#if g.found.qty > 0}{srcLabel('found', g.found)}{/if}
                   </span>
                 {/if}
               </div>
