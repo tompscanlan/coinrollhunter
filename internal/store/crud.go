@@ -110,6 +110,16 @@ func nullID(id int64) any {
 	return id
 }
 
+// nullStr maps an empty string to SQL NULL (for optional text columns like a
+// keeper's audit date), else the string. Keeps nullable columns truly NULL for
+// legacy/unspecified values rather than storing "".
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // b2i maps a bool to SQLite's 0/1 integer form (used for the lots.trophy flag).
 func b2i(b bool) int64 {
 	if b {
@@ -160,8 +170,8 @@ func (s *Store) DeleteSupply(id int64) error { return s.deleteByID("supplies", i
 func (s *Store) ListKeepers() ([]model.Keeper, error) { return s.loadKeepers() }
 
 func (s *Store) UpdateKeeper(id int64, k model.Keeper) error {
-	res, err := s.db.Exec(`UPDATE keepers SET denom=?, count=?, face_usd=? WHERE id=?`,
-		k.Denom, k.Count, k.FaceUSD, id)
+	res, err := s.db.Exec(`UPDATE keepers SET denom=?, count=?, face_usd=?, date=?, roll_txn_id=? WHERE id=?`,
+		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), nullID(k.RollTxnID), id)
 	return affected(res, err, "update keeper")
 }
 

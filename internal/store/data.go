@@ -81,10 +81,11 @@ func (s *Store) InsertLoss(l model.Loss) (int64, error) {
 	return res.LastInsertId()
 }
 
-// InsertKeeper inserts a keeper and returns its new id.
+// InsertKeeper inserts a keeper and returns its new id. date/roll_txn_id (ADR-008)
+// are nullable: an empty date and a zero roll_txn_id are stored as SQL NULL.
 func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
-	res, err := s.db.Exec(`INSERT INTO keepers (denom, count, face_usd) VALUES (?,?,?)`,
-		k.Denom, k.Count, k.FaceUSD)
+	res, err := s.db.Exec(`INSERT INTO keepers (denom, count, face_usd, date, roll_txn_id) VALUES (?,?,?,?,?)`,
+		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), nullID(k.RollTxnID))
 	if err != nil {
 		return 0, fmt.Errorf("insert keeper: %w", err)
 	}
@@ -441,7 +442,7 @@ func (s *Store) loadLosses() ([]model.Loss, error) {
 }
 
 func (s *Store) loadKeepers() ([]model.Keeper, error) {
-	rows, err := s.db.Query(`SELECT id, denom, count, face_usd FROM keepers ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, denom, count, face_usd, date, roll_txn_id FROM keepers ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("load keepers: %w", err)
 	}
@@ -449,11 +450,14 @@ func (s *Store) loadKeepers() ([]model.Keeper, error) {
 	var out []model.Keeper
 	for rows.Next() {
 		var k model.Keeper
-		var denom sql.NullString
-		if err := rows.Scan(&k.ID, &denom, &k.Count, &k.FaceUSD); err != nil {
+		var denom, date sql.NullString
+		var rtid sql.NullInt64
+		// date/roll_txn_id (ADR-008) are nullable; legacy rows scan back as
+		// empty/zero and leave cladFace unchanged.
+		if err := rows.Scan(&k.ID, &denom, &k.Count, &k.FaceUSD, &date, &rtid); err != nil {
 			return nil, err
 		}
-		k.Denom = denom.String
+		k.Denom, k.Date, k.RollTxnID = denom.String, date.String, rtid.Int64
 		out = append(out, k)
 	}
 	return out, rows.Err()

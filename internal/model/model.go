@@ -160,13 +160,22 @@ type Supply struct {
 	CostUSD float64 `json:"cost_usd"`
 }
 
-// Keeper is clad coin parked at face (recoverable, not a loss) — kept out of the
-// redeposit float.
+// Keeper is BULK/UNCATEGORIZED clad coin parked at face (recoverable, not a
+// loss) — kept out of the redeposit float. Individually-notable coins of ANY
+// metal (silver or clad) belong in a CRH find lot with ADR-006 taxonomy, not
+// here (the notability-based single-entry rule; ADR-008).
+//
+// Date + RollTxnID (migration 0007, ADR-008) make a keeper auditable / box-
+// attributable like a lot: which session/box a batch was logged against. Both
+// are nullable — legacy keeper rows carry NULL (empty Date / zero RollTxnID) and
+// compute exactly as before (cladFace is unaffected).
 type Keeper struct {
-	ID      int64   `json:"id"`
-	Denom   string  `json:"denom"`
-	Count   int64   `json:"count"`
-	FaceUSD float64 `json:"face_usd"`
+	ID        int64   `json:"id"`
+	Denom     string  `json:"denom"`
+	Count     int64   `json:"count"`
+	FaceUSD   float64 `json:"face_usd"`
+	Date      string  `json:"date,omitempty"`        // ISO date the batch was logged (audit dimension)
+	RollTxnID int64   `json:"roll_txn_id,omitempty"` // box (buy) this batch is attributed to (0 = none)
 }
 
 // Loss is a shrinkage / write-off booked when the float can't be fully
