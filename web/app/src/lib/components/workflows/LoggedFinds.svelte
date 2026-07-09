@@ -220,7 +220,7 @@
       <div class="flex items-start gap-2 text-positive">
         <Check class="mt-0.5 size-5 shrink-0" />
         <div>
-          <p class="font-semibold text-foreground">Logged {money(done.findValue)} in silver face.</p>
+          <p class="font-semibold text-foreground">Logged {money(done.findValue)} in find face.</p>
           <p class="text-sm text-muted-foreground">
             Attributed {done.bank ? `to ${done.bank}` : ''} — see the per-box yield on the Overview. Return
             the culls when you're done searching.

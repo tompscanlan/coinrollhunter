@@ -30,7 +30,7 @@
   // --- step 1: record forgotten inventory -----------------------------------
   let buys = $state<RollTxn[]>([])
   let catalog = $state<ItemType[]>([])
-  let recorded = $state(0) // how many inventory rows we've added this session
+  let recorded = $state(0) // how many inventory rows we've added so far
   let note = $state('') // transient "added X" confirmation
 
   // quick-add keeper (bulk/uncategorized clad only — ADR-008)
@@ -50,7 +50,7 @@
   const keeperDoubleCount = $derived(crhFindsForBox.length > 0)
   const kBoxDate = $derived(kBox ? (buys.find((b) => String(b.id) === kBox)?.date ?? '') : '')
 
-  // quick-add silver find
+  // quick-add notable find
   let fProduct = $state('')
   let fMetal = $state('silver')
   let fFineness = $state('')
@@ -307,7 +307,7 @@
             <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
             <span>
               This box already has {crhFindsForBox.length} taxonomy find{crhFindsForBox.length === 1 ? '' : 's'} recorded
-              this session. If any of those coins are in this keeper batch, you'd double-count them — keepers are for
+              against it. If any of those coins are in this keeper batch, you'd double-count them — keepers are for
               bulk / uncategorized clad only.
             </span>
           </p>
@@ -316,7 +316,7 @@
 
       <!-- find quick-add -->
       <div class="space-y-1.5">
-        <p class="text-xs font-medium text-muted-foreground">Silver find</p>
+        <p class="text-xs font-medium text-muted-foreground">Notable find</p>
         <div class="grid grid-cols-[1fr_auto_auto_auto] items-end gap-2">
           <label class="flex flex-col gap-1 text-xs text-muted-foreground">
             Product

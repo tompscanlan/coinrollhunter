@@ -15,7 +15,7 @@
   }
   const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s)
   // Where your value sits: bullion bucketed by actual metal (so Pt/Pd show too),
-  // plus CRH silver finds at their haircut-adjusted realizable value.
+  // plus CRH finds at their haircut-adjusted realizable value.
   const segs = $derived.by(() => {
     const byMetal = new Map<string, number>()
     for (const l of r.lots) {
@@ -26,7 +26,7 @@
     for (const [metal, value] of byMetal) {
       out.push({ label: `${cap(metal)} bullion`, value, color: METAL_COLORS[metal] ?? '#64748b' })
     }
-    if (r.find_realizable > 0) out.push({ label: 'CRH silver finds', value: r.find_realizable, color: '#10b981' })
+    if (r.find_realizable > 0) out.push({ label: 'CRH finds', value: r.find_realizable, color: '#10b981' })
     return out.filter((s) => s.value > 0).sort((a, b) => b.value - a.value)
   })
   const total = $derived(segs.reduce((t, s) => t + s.value, 0))

@@ -98,7 +98,7 @@
     <div class="text-sm/relaxed opacity-90">Is coin roll hunting costing you money?</div>
     <div class="mt-1 text-2xl font-bold tnum">{v} &nbsp; {money(r.crh_net_real)}</div>
     <div class="mt-1.5 text-sm opacity-95">
-      Near-free silver finds ({oz(r.find_oz)} oz) vs logged costs of {money(r.op_cost + r.losses)}{#if r.losses > 0}
+      Near-free finds ({oz(r.find_oz)} oz) vs logged costs of {money(r.op_cost + r.losses)}{#if r.losses > 0}
         (incl. {money(r.losses)} shrinkage){/if}. Bullion is a separate long-term hold.
     </div>
   </Card>

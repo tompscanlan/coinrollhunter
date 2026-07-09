@@ -177,7 +177,7 @@ function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Hol
 export const holdingsGrid: GridConfig<FlatHolding> = {
   title: 'Holdings',
   description:
-    'Bullion lots and CRH silver finds. Type the product, metal, fineness and metal-oz; we keep the catalog tidy for you.',
+    'Bullion lots and CRH finds. Type the product, metal, fineness and metal-oz; we keep the catalog tidy for you.',
   columns: [
     { accessorKey: 'activity', header: 'Activity', meta: { editor: 'select', options: ['bullion', 'crh'], width: '110px' } },
     {

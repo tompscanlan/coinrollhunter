@@ -43,7 +43,7 @@
     {
       id: 'finds',
       title: 'Logged finds',
-      sub: 'Silver finds + keepers from a box',
+      sub: 'Notable finds + keepers from a box',
       icon: Search,
       enabled: true,
     },

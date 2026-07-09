@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Which banks/boxes actually pay off: silver found (realizable, after haircut)
+  // Which banks/boxes actually pay off: find value (realizable, after haircut)
   // vs face searched, attributed to the box each find came from. Aggregated by
   // bank (the headline question) and listed box-by-box, newest first (the
   // over-time view). All $derived from the report.
@@ -42,7 +42,7 @@
 <section class="space-y-2">
   <h2 class="text-lg font-semibold">Hunt yield by bank &amp; box</h2>
   <p class="text-sm text-muted-foreground">
-    Silver found (realizable) vs face searched, attributed to the box it came from. Set a find's
+    Find value (realizable) vs face searched, attributed to the box it came from. Set a find's
     <span class="font-medium">From box</span> in Entry → Holdings to populate this.
   </p>
 
@@ -53,7 +53,7 @@
           <th class="px-3 py-2 font-medium">Bank</th>
           <th class="px-3 py-2 text-right font-medium">Boxes</th>
           <th class="px-3 py-2 text-right font-medium">Face searched</th>
-          <th class="px-3 py-2 text-right font-medium">Silver found</th>
+          <th class="px-3 py-2 text-right font-medium">Find value</th>
           <th class="px-3 py-2 text-right font-medium">Yield</th>
         </tr>
       </thead>

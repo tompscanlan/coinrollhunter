@@ -77,7 +77,7 @@ try {
   await sb().nth(2).fill('10') // keeper count (find: qty,face ; keeper: count,face)
   await sb().nth(2).dispatchEvent('input')
   await page.getByRole('button', { name: 'Save finds' }).click()
-  await page.getByText('in silver face', { exact: false }).waitFor({ timeout: 5000 })
+  await page.getByText('in find face', { exact: false }).waitFor({ timeout: 5000 })
   const finds = (await api('/lots')).filter((l) => l.activity === 'crh')
   ok('find recorded (crh holding)', finds.length === 1, `${finds.length} finds`)
   ok('find linked to box', finds[0]?.roll_txn_id === buys1[0].id, `roll_txn_id ${finds[0]?.roll_txn_id}`)
