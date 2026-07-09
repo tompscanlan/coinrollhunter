@@ -104,6 +104,37 @@ filename alone. `photos.csv` carries `role`, `seq`, `caption`, and a derived `pa
 column, so the spreadsheet-to-image join is a single column — and a file manager still
 shows one folder per coin.
 
+**How the app reads it.** `obverse` and `reverse` are *known* roles rendered in fixed
+slots; every other role flows into a detail gallery in the user's own order. Nothing about
+this is left to chance:
+
+```sql
+-- the two faces (same query for 'reverse')
+SELECT * FROM photos WHERE owner_kind=? AND owner_uid=? AND role='obverse'
+  ORDER BY seq, uid LIMIT 1;
+
+-- everything else, in the user's order
+SELECT * FROM photos WHERE owner_kind=? AND owner_uid=? AND role NOT IN ('obverse','reverse')
+  ORDER BY seq, uid;
+```
+
+The grid thumbnail is the obverse when one exists, else the lowest `(seq, uid)`. Two
+details are what make that deterministic rather than merely likely, and both were found by
+testing rather than reasoning:
+
+- **`ORDER BY seq` alone is not a total order.** `seq` defaults to 0, so a UI that never
+  assigns one leaves every photo tied, and SQLite's order among ties is unspecified —
+  verified: the identical query over the identical rows returns `reverse, obverse, detail,
+  detail` under one plan and the exact reverse of that under another. So the order is
+  always `ORDER BY seq, uid`, with `uid` as the total, stable tiebreaker; the owner index
+  carries `uid` as its last column, which turns the ordering into a covering-index scan
+  instead of a temp b-tree. The app should still assign `seq = max(seq)+1` per owner at
+  insert, so ties are a fallback rather than the norm.
+- **`role` is `NOT NULL DEFAULT 'detail'`.** A nullable role *loses photos*: `NULL NOT IN
+  ('obverse','reverse')` evaluates to `NULL` rather than true, so an un-roled image drops
+  out of the gallery query — present in the database, present on disk, invisible in the
+  app. `photos` is a new table, so it can simply forbid the case.
+
 Export therefore becomes a bundle: per-table CSVs (including `photos.csv`), a `photos/`
 tree, and a `manifest.json` carrying schema version and file list — rather than loose
 CSVs.
@@ -131,13 +162,17 @@ CREATE TABLE photos (
   uid        TEXT NOT NULL UNIQUE,   -- filename stem; a NEW table can declare this
   owner_kind TEXT NOT NULL,          -- 'lot' | 'roll_txn'
   owner_uid  TEXT NOT NULL,          -- lots.uid | roll_txns.uid (logical link, no FK)
-  role       TEXT,                   -- obverse|reverse|detail|edge|slab-label|box-end|receipt
-  seq        INTEGER NOT NULL DEFAULT 0,
+  role       TEXT NOT NULL DEFAULT 'detail',
+                                     -- obverse|reverse|detail|edge|slab-label|box-end|receipt
+                                     -- NOT NULL: a NULL role drops the photo out of the
+                                     -- gallery query (NULL NOT IN (...) is NULL, not true)
+  seq        INTEGER NOT NULL DEFAULT 0,   -- lowest = cover; app assigns max(seq)+1 per owner
   ext        TEXT NOT NULL,          -- jpg|png|webp
   caption    TEXT,
   created    TEXT
 );
-CREATE INDEX idx_photos_owner ON photos(owner_kind, owner_uid, seq);
+-- uid is the last column so ORDER BY seq, uid is served by a covering index, not a sort
+CREATE INDEX idx_photos_owner ON photos(owner_kind, owner_uid, seq, uid);
 ```
 
 Verified end-to-end on top of the real 0001–0007: both backfills produce distinct,
@@ -188,6 +223,8 @@ a breaking change; reserving all three now costs nothing.
   deletes, sales, and reimports.
 - **+** Arbitrary photos per row, each with a role and an order — and box/roll records can
   carry evidence of the hunt, not just specimens of it.
+- **+** The two faces are a first-class query rather than a naming convention: `role` slots
+  the obverse and reverse, and `(seq, uid)` orders everything else deterministically.
 - **+** Re-ordering or re-roling a photo never touches the filesystem.
 - **+** The export → edit → reimport round trip has a join key that survives it, which
   is what makes "you can always leave with your data" true rather than merely shipped.
@@ -227,6 +264,13 @@ a breaking change; reserving all three now costs nothing.
   becomes a filesystem rename, a second write that can fail after the database has
   committed, and identity would once again derive from mutable data. The `path` column in
   `photos.csv` buys back the readability at no such cost.
+- **Enforce at most one `obverse` and one `reverse` per owner** with a partial unique index
+  (`… ON photos(owner_kind, owner_uid, role) WHERE role IN ('obverse','reverse')`).
+  Supported on the pinned driver (verified), and tempting because it makes "the obverse"
+  literally singular. Not adopted: it contradicts the open-vocabulary precedent ADR-006
+  set, and it forbids a legitimate case — two obverse shots under different lighting.
+  Taking the lowest `(seq, uid)` among `role='obverse'` is already deterministic without
+  spending a constraint on it.
 - **Give `item_type` a uid too.** Still deferred, not rejected. A catalog entry is
   reference data — not a thing you own, and not a thing you photograph (per ADR-003 you
   photograph *your* coin). It becomes a live problem only if export starts emitting
