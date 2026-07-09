@@ -186,6 +186,10 @@ export interface Report {
   returns: number
   clad_face: number
   kept_face: number
+  // Face (basis) of SOLD CRH finds that stays on the kept side of the float
+  // (ADR-008 (c)). A component of kept_face only — NOT part of CRH net or total
+  // basis (those are live-only): kept_face folds it in alongside clad_face and find_cost.
+  disposed_find_face: number
   to_redeposit: number
   reconciled: boolean
 
