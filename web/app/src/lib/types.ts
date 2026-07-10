@@ -52,7 +52,8 @@ export interface Holding {
 export interface RollTxn {
   id: number
   date: string
-  bank: string
+  bank: string // resolved branch name; typing it find-or-creates a branch (ADR-010)
+  branch_id?: number // logical link to a branches row (0/absent = none)
   action: 'buy' | 'return'
   denom: string // dollars|halves|quarters|dimes|nickels|cents
   unit: string // box|roll|bag|face|coin
@@ -67,9 +68,34 @@ export interface RollTxn {
 export interface Trip {
   id: number
   date: string
-  bank: string
+  bank: string // resolved branch name (see RollTxn.bank)
+  branch_id?: number
   miles: number
   hours: number
+}
+
+/** A bank branch as a first-class entity (ADR-010): the address book plus the
+    pickup/dropoff eligibility and cooldown that later feed routing. uid is opaque
+    and server-managed; lat/lon stay 0 until geocoded (ADR-011). */
+export interface Branch {
+  id: number
+  uid: string
+  name: string
+  institution: string
+  address: string
+  phone: string
+  lat: number
+  lon: number
+  hours: string
+  buys: boolean
+  dumps: boolean
+  denoms: string
+  box_limit: number
+  box_lead_days: number
+  coin_fee_usd: number
+  cooldown_days: number
+  notes: string
+  active: boolean
 }
 
 export interface Supply {
@@ -149,7 +175,8 @@ export interface RealizedLot {
 export interface BoxYield {
   roll_txn_id: number
   date: string
-  bank: string
+  bank: string // resolved branch name (ADR-010)
+  branch_id?: number // stable grouping key; survives a rename/merge
   denom: string
   face_usd: number
   find_count: number

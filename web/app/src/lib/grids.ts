@@ -15,7 +15,7 @@ import {
   FIND_SUBCATEGORIES,
 } from './presets'
 import type { GridColumn } from './components/EditableGrid.svelte'
-import type { ItemType, Holding, RollTxn, Trip, Supply, Keeper, Loss } from './types'
+import type { ItemType, Holding, RollTxn, Trip, Branch, Supply, Keeper, Loss } from './types'
 
 // --- Autocomplete caches -----------------------------------------------------
 // Refreshed by each grid's load(); the column suggestion/autofill closures read
@@ -74,10 +74,12 @@ const productAutofill = (value: string) => productAutofillFrom(value, catalog)
 const productSuggestions = () => productSuggestionsFrom(catalog)
 
 /** Load a bank-bearing table and fold its bank names into the shared cache, so
-    the Bank field on roll txns and trips suggests every bank you've used. */
+    the Bank field on roll txns and trips suggests every branch you've used — which
+    nudges reuse of an existing branch instead of forking a new one on a typo. Also
+    pulls the full branch list so branches with no transactions yet still suggest. */
 async function loadCachingBanks<T extends { bank: string }>(list: () => Promise<T[]>): Promise<T[]> {
-  const rows = await list()
-  banks = distinct([...banks, ...rows.map((r) => r.bank)])
+  const [rows, branchList] = await Promise.all([list(), api.branches.list()])
+  banks = distinct([...banks, ...rows.map((r) => r.bank), ...branchList.map((b) => b.name)])
   return rows
 }
 
@@ -329,6 +331,49 @@ export const tripsGrid: GridConfig<Trip> = {
   update: api.trips.update,
   remove: api.trips.remove,
   blank: () => ({ date: today(), bank: '', miles: 0, hours: 0 }),
+}
+
+// --- Branches (the address book, ADR-010) ------------------------------------
+// The searchable notebook of your branches: phone/hours/fees/denoms/box limits and
+// — the highest-value field — teller notes. buys/dumps say whether a branch is a
+// pickup and/or dropoff stop (they feed routing later). uid is server-managed and
+// lat/lon are geocoded by a later slice (om-w2tm), so neither is edited here. Merge
+// duplicate branches with the per-row "Merge into…" action.
+export const branchesGrid: GridConfig<Branch> = {
+  title: 'Branches',
+  description:
+    'Your bank address book — phone, hours, coin fee, which denoms they stock, box limit/lead time, cooldown, and teller notes. Duplicate spellings from before? Use the row’s “Merge into…” action to fold them together.',
+  columns: [
+    { accessorKey: 'name', header: 'Name', meta: { editor: 'autocomplete', width: '200px', placeholder: 'Chase — Main St', suggestions: () => banks } },
+    { accessorKey: 'institution', header: 'Institution', meta: { editor: 'text', width: '150px', placeholder: 'Chase' } },
+    { accessorKey: 'phone', header: 'Phone', meta: { editor: 'text', width: '140px', placeholder: '(502) 555-0134' } },
+    { accessorKey: 'address', header: 'Address', meta: { editor: 'text', width: '220px' } },
+    { accessorKey: 'hours', header: 'Hours', meta: { editor: 'text', width: '160px', placeholder: 'M–F 9–5, Sat 9–12' } },
+    { accessorKey: 'denoms', header: 'Stocks', meta: { editor: 'text', width: '140px', placeholder: 'halves,dimes' } },
+    { accessorKey: 'buys', header: 'Buys', meta: { editor: 'checkbox', width: '80px' } },
+    { accessorKey: 'dumps', header: 'Dumps', meta: { editor: 'checkbox', width: '80px' } },
+    { accessorKey: 'box_limit', header: 'Box limit', meta: { editor: 'number', step: 1, align: 'right', width: '100px', placeholder: '0' } },
+    { accessorKey: 'box_lead_days', header: 'Lead days', meta: { editor: 'number', step: 1, align: 'right', width: '100px', placeholder: '0' } },
+    { accessorKey: 'coin_fee_usd', header: 'Coin fee $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px', placeholder: '0' } },
+    { accessorKey: 'cooldown_days', header: 'Cooldown', meta: { editor: 'number', step: 1, align: 'right', width: '100px', placeholder: '0' } },
+    { accessorKey: 'notes', header: 'Teller notes', meta: { editor: 'text', width: '240px', placeholder: 'ask for Diane, Tuesdays' } },
+    { accessorKey: 'active', header: 'Active', meta: { editor: 'checkbox', width: '80px' } },
+  ],
+  load: async () => {
+    const rows = await api.branches.list()
+    banks = distinct([...banks, ...rows.map((b) => b.name)])
+    return rows
+  },
+  create: api.branches.create,
+  update: api.branches.update,
+  remove: api.branches.remove,
+  // A new branch defaults to buys+dumps+active on (uncheck to narrow); uid/lat/lon
+  // are server/geocoder-owned and carried as inert zeros.
+  blank: () => ({
+    uid: '', name: '', institution: '', address: '', phone: '', lat: 0, lon: 0, hours: '',
+    buys: true, dumps: true, denoms: '', box_limit: 0, box_lead_days: 0, coin_fee_usd: 0,
+    cooldown_days: 0, notes: '', active: true,
+  }),
 }
 
 export const suppliesGrid: GridConfig<Supply> = {

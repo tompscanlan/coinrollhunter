@@ -9,6 +9,7 @@ import type {
   Holding,
   RollTxn,
   Trip,
+  Branch,
   Supply,
   Keeper,
   Loss,
@@ -76,6 +77,10 @@ export const api = {
     req<void>('POST', `/lots/${id}/sell`, body),
   rollTxns: crud<RollTxn>('roll-txns'),
   trips: crud<Trip>('trips'),
+  branches: crud<Branch>('branches'),
+  // Fold duplicate branches into one survivor (ADR-010 dedup).
+  mergeBranches: (survivorId: number, loserIds: number[]) =>
+    req<void>('POST', `/branches/${survivorId}/merge`, { loser_ids: loserIds }),
   supplies: crud<Supply>('supplies'),
   keepers: crud<Keeper>('keepers'),
   losses: crud<Loss>('losses'),

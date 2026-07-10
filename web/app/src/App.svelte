@@ -12,16 +12,18 @@
     holdingsGrid,
     rollTxnsGrid,
     tripsGrid,
+    branchesGrid,
     suppliesGrid,
     keepersGrid,
     lossesGrid,
     type FlatHolding,
   } from '$lib/grids'
+  import type { Branch } from '$lib/types'
   import SettingsPanel from '$lib/components/SettingsPanel.svelte'
   import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon } from 'lucide-svelte'
 
   type View = 'overview' | 'do' | 'insights' | 'edit'
-  type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers' | 'losses'
+  type DataTab = 'holdings' | 'rolls' | 'trips' | 'branches' | 'supplies' | 'keepers' | 'losses'
 
   let view = $state<View>('overview')
   let dataTab = $state<DataTab>('holdings')
@@ -64,6 +66,7 @@
     { id: 'holdings', label: 'Holdings' },
     { id: 'rolls', label: 'Roll txns' },
     { id: 'trips', label: 'Trips' },
+    { id: 'branches', label: 'Branches' },
     { id: 'supplies', label: 'Supplies' },
     { id: 'keepers', label: 'Keepers' },
     { id: 'losses', label: 'Losses' },
@@ -102,6 +105,36 @@
       sellErr = (e as Error).message
     } finally {
       sellBusy = false
+    }
+  }
+
+  // --- merge a duplicate branch into another (ADR-010 dedup) ---
+  let branchesReload = $state(0)
+  let mergeRow = $state<Branch | null>(null) // the branch to retire (the loser)
+  let mergeInto = $state('') // survivor branch id (as string)
+  let mergeChoices = $state<Branch[]>([])
+  let mergeBusy = $state(false)
+  let mergeErr = $state('')
+
+  async function openMerge(row: Branch) {
+    mergeRow = row
+    mergeInto = ''
+    mergeErr = ''
+    mergeChoices = (await api.branches.list()).filter((b) => b.id !== row.id)
+  }
+  async function confirmMerge() {
+    if (!mergeRow || !mergeInto) return
+    mergeBusy = true
+    mergeErr = ''
+    try {
+      await api.mergeBranches(Number(mergeInto), [mergeRow.id])
+      mergeRow = null
+      branchesReload++ // the loser is gone + history repointed, server-side
+      refresh() // branch_count / yield-by-bank change
+    } catch (e) {
+      mergeErr = (e as Error).message
+    } finally {
+      mergeBusy = false
     }
   }
 </script>
@@ -243,6 +276,14 @@
           <EditableGrid {...rollTxnsGrid} onChanged={refresh} />
         {:else if dataTab === 'trips'}
           <EditableGrid {...tripsGrid} onChanged={refresh} />
+        {:else if dataTab === 'branches'}
+          <EditableGrid
+            {...branchesGrid}
+            onChanged={refresh}
+            rowAction={openMerge}
+            rowActionTitle="Merge into…"
+            reloadSignal={branchesReload}
+          />
         {:else if dataTab === 'supplies'}
           <EditableGrid {...suppliesGrid} onChanged={refresh} />
         {:else if dataTab === 'keepers'}
@@ -296,6 +337,38 @@
       <div class="flex justify-end gap-2">
         <Button variant="ghost" onclick={() => (sellRow = null)}>Cancel</Button>
         <Button onclick={confirmSell} disabled={sellBusy}>Record sale</Button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if mergeRow}
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+    <div class="w-full max-w-sm space-y-4 rounded-xl border bg-card p-5 shadow-lg">
+      <div>
+        <h3 class="text-lg font-semibold text-foreground">Merge branch</h3>
+        <p class="text-sm text-muted-foreground">
+          Fold <b class="text-foreground">{mergeRow.name || 'this branch'}</b> into another. Its
+          transactions, trips, and every old spelling move to the survivor; this row is then removed.
+          Nothing is lost — the merge is a repoint, not a delete.
+        </p>
+      </div>
+      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+        Survivor branch
+        <select
+          bind:value={mergeInto}
+          class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
+        >
+          <option value="" disabled>Choose a branch…</option>
+          {#each mergeChoices as b (b.id)}
+            <option value={String(b.id)}>{b.name}</option>
+          {/each}
+        </select>
+      </label>
+      {#if mergeErr}<p class="text-sm text-destructive">{mergeErr}</p>{/if}
+      <div class="flex justify-end gap-2">
+        <Button variant="ghost" onclick={() => (mergeRow = null)}>Cancel</Button>
+        <Button onclick={confirmMerge} disabled={mergeBusy || !mergeInto}>Merge</Button>
       </div>
     </div>
   </div>

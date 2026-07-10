@@ -11,13 +11,16 @@
   let { report }: { report: Report } = $props()
   const r = $derived(report)
 
+  // Group by the stable branch_id, not the display name (ADR-010) — so a renamed
+  // or merged branch stays one row instead of forking on the old spelling. Boxes
+  // with no branch link fall into a single "(unknown)" bucket keyed on 0.
   const byBank = $derived.by(() => {
-    const m = new Map<string, { bank: string; face: number; value: number; finds: number; boxes: number }>()
+    const m = new Map<number, { bank: string; face: number; value: number; finds: number; boxes: number }>()
     for (const b of r.box_yields) {
-      const key = b.bank || '(unknown)'
+      const key = b.branch_id ?? 0
       let g = m.get(key)
       if (!g) {
-        g = { bank: key, face: 0, value: 0, finds: 0, boxes: 0 }
+        g = { bank: b.bank || '(unknown)', face: 0, value: 0, finds: 0, boxes: 0 }
         m.set(key, g)
       }
       g.face += b.face_usd
@@ -25,8 +28,8 @@
       g.finds += b.find_count
       g.boxes += 1
     }
-    return [...m.values()]
-      .map((g) => ({ ...g, yield: g.face ? (g.value / g.face) * 100 : 0 }))
+    return [...m.entries()]
+      .map(([id, g]) => ({ ...g, id, yield: g.face ? (g.value / g.face) * 100 : 0 }))
       .sort((a, b) => b.yield - a.yield)
   })
 
@@ -43,7 +46,7 @@
   <h2 class="text-lg font-semibold">Hunt yield by bank &amp; box</h2>
   <p class="text-sm text-muted-foreground">
     Find value (realizable) vs face searched, attributed to the box it came from. Set a find's
-    <span class="font-medium">From box</span> in Entry → Holdings to populate this.
+    <span class="font-medium">From box</span> in Edit → Holdings to populate this.
   </p>
 
   <Card class="overflow-x-auto">
@@ -58,7 +61,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each byBank as g (g.bank)}
+        {#each byBank as g (g.id)}
           <tr class="border-b last:border-0">
             <td class="px-3 py-2">{g.bank}</td>
             <td class="px-3 py-2 text-right">{num(g.boxes)}</td>
