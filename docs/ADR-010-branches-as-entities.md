@@ -51,12 +51,12 @@ Walking the feature through from the driver's seat, the string→entity fix serv
 user-facing surfaces. All four read from one `branches` table; **this ADR builds the table and
 the address book**, and sets direction for the rest (ADR-011). In rising order of ambition:
 
-- **The address book — the foundation, and the part that earns the $5.** Before any routing, a
-  hunter wants a searchable, mappable notebook of *their* branches: phone, hours, whether it
-  charges a coin fee, its box-order limit, which denominations it stocks, and — the single most
-  valuable field — teller notes ("ask for Diane, Tuesdays"). Most of the CRH community would
-  pay-what-you-want for this alone. The optimizer is garnish; this is the meal, and it is
-  literally the columns in Decision (a).
+- **The address book — the everyday foundation.** Before any routing, a hunter wants a
+  searchable, mappable notebook of *their* branches: phone, hours, whether it charges a coin
+  fee, its box-order limit, which denominations it stocks, and — the single most valuable
+  field — teller notes ("ask for Diane, Tuesdays"). For most hunters this notebook is the whole
+  point of the app; routing is a bonus layered on top. It is literally the columns in
+  Decision (a).
 
 - **Nearby — opportunistic.** "I'll already be in that area; what's worth a five-minute
   detour?" Drop a pin (or use current location), get branches by distance with a CRH overlay:
@@ -182,7 +182,8 @@ It answers the questions a hunter actually has before any route exists — *who 
 (`denoms`), *who charges a fee* (`coin_fee_usd`), *how many will they order and how far ahead*
 (`box_limit`/`box_lead_days`), *who's the teller* (`notes`). Alias-backed dedup (Decision (b))
 is what makes it trustworthy; a merge UI (list, pick survivor, repoint) is part of this slice,
-not a follow-up. Don't let the solver eclipse this — it is the meal.
+not a follow-up. Don't let the solver eclipse it — for most hunters this is the surface they
+open every day.
 
 ### What a planned run must respect (and a pin-map ignores)
 
@@ -289,7 +290,7 @@ first is the cheap, independently valuable slice: it fixes the `byBank` grouping
 ## Consequences
 
 - **+** The address book — the highest value-per-effort slice — serves every hunter with zero
-  routing built, and ships in this ADR alone. It is likely what earns the pay-what-you-want.
+  routing built, and ships in this ADR alone. For many, it's reason enough to use the app.
 - **+** The headline "which banks pay off" table and `branch_count` stop forking on typos —
   the bug is fixed by the migration, before any routing exists.
 - **+** Pickup/dropoff eligibility becomes data (`buys`/`dumps`) instead of a fixture constant.
