@@ -129,10 +129,14 @@ func Resolve(h Holding, t ItemType) Lot {
 // dollars. The entry unit (box/roll/face/coin) is preserved for display, but
 // FaceUSD is the source of truth (see ADR-001 R7).
 type RollTxn struct {
-	ID      int64   `json:"id"`
-	Date    string  `json:"date"`
-	Bank    string  `json:"bank"`
-	Action  string  `json:"action"` // "buy" | "return"
+	ID   int64  `json:"id"`
+	Date string `json:"date"`
+	// Bank is the branch's canonical name — a resolved display/entry value, not a
+	// stored column since migration 0008 (ADR-010): writes find-or-create a branch
+	// from this string and store BranchID; loads read the name back through it.
+	Bank     string  `json:"bank"`
+	BranchID int64   `json:"branch_id"` // logical link to branches.id (0 = none)
+	Action   string  `json:"action"`    // "buy" | "return"
 	Denom   string  `json:"denom"`  // dollars|halves|quarters|dimes|nickels|cents
 	Unit    string  `json:"unit"`   // "box" | "roll" | "bag" | "face" | "coin"
 	Amount  float64 `json:"amount"` // quantity in that unit
@@ -145,11 +149,39 @@ type RollTxn struct {
 
 // Trip is a sourcing run; Miles drives the mileage-based gas cost.
 type Trip struct {
-	ID    int64   `json:"id"`
-	Date  string  `json:"date"`
-	Bank  string  `json:"bank"`
-	Miles float64 `json:"miles"`
-	Hours float64 `json:"hours"`
+	ID       int64   `json:"id"`
+	Date     string  `json:"date"`
+	Bank     string  `json:"bank"`      // resolved branch name (see RollTxn.Bank)
+	BranchID int64   `json:"branch_id"` // logical link to branches.id (0 = none)
+	Miles    float64 `json:"miles"`
+	Hours    float64 `json:"hours"`
+}
+
+// Branch is a bank branch as a first-class entity (ADR-010, migration 0008): the
+// address book (phone/hours/fees/denoms/box limits/teller notes) plus the
+// pickup/dropoff eligibility (Buys/Dumps) and cooldown that later drive routing.
+// UID is opaque and server-generated (ADR-009); Lat/Lon stay 0 until geocoded
+// (ADR-011 / om-w2tm). Free-text bank strings from before the cutover survive as
+// rows in branch_aliases, which is how a merge repoints typo forks.
+type Branch struct {
+	ID           int64   `json:"id"`
+	UID          string  `json:"uid"`
+	Name         string  `json:"name"`
+	Institution  string  `json:"institution"`
+	Address      string  `json:"address"`
+	Phone        string  `json:"phone"`
+	Lat          float64 `json:"lat"`
+	Lon          float64 `json:"lon"`
+	Hours        string  `json:"hours"`
+	Buys         bool    `json:"buys"`
+	Dumps        bool    `json:"dumps"`
+	Denoms       string  `json:"denoms"`
+	BoxLimit     int     `json:"box_limit"`
+	BoxLeadDays  int     `json:"box_lead_days"`
+	CoinFeeUSD   float64 `json:"coin_fee_usd"`
+	CooldownDays int     `json:"cooldown_days"`
+	Notes        string  `json:"notes"`
+	Active       bool    `json:"active"`
 }
 
 // Supply is a consumable cost of the hunt (tubes, flips, etc.).

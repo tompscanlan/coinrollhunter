@@ -130,6 +130,30 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 	register(mux, "roll-txns", resource[model.RollTxn]{
 		list: s.ListRollTxns, create: s.InsertRollTxn, update: s.UpdateRollTxn, del: s.DeleteRollTxn,
 	})
+	register(mux, "branches", resource[model.Branch]{
+		list: s.ListBranches, create: s.InsertBranch, update: s.UpdateBranch, del: s.DeleteBranch,
+	})
+	// Fold duplicate branches into one survivor (ADR-010 dedup). More specific than
+	// the generic /api/branches routes, so it takes precedence in the mux.
+	mux.HandleFunc("POST /api/branches/{id}/merge", func(w http.ResponseWriter, r *http.Request) {
+		id, err := pathID(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(err))
+			return
+		}
+		body, err := decode[struct {
+			LoserIDs []int64 `json:"loser_ids"`
+		}](r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(err))
+			return
+		}
+		if err := s.MergeBranches(id, body.LoserIDs); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	register(mux, "trips", resource[model.Trip]{
 		list: s.ListTrips, create: s.InsertTrip, update: s.UpdateTrip, del: s.DeleteTrip,
 	})

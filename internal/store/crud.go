@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 )
@@ -133,9 +134,13 @@ func b2i(b bool) int64 {
 func (s *Store) ListRollTxns() ([]model.RollTxn, error) { return s.loadRollTxns() }
 
 func (s *Store) UpdateRollTxn(id int64, t model.RollTxn) error {
+	bid, err := s.resolveBranchID(t.Bank)
+	if err != nil {
+		return err
+	}
 	res, err := s.db.Exec(
-		`UPDATE roll_txns SET date=?, bank=?, action=?, denom=?, unit=?, amount=?, face_usd=?, source_type=?, notes=? WHERE id=?`,
-		t.Date, t.Bank, t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes, id)
+		`UPDATE roll_txns SET date=?, branch_id=?, action=?, denom=?, unit=?, amount=?, face_usd=?, source_type=?, notes=? WHERE id=?`,
+		t.Date, nullID(bid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes, id)
 	return affected(res, err, "update roll_txn")
 }
 
@@ -146,12 +151,90 @@ func (s *Store) DeleteRollTxn(id int64) error { return s.deleteByID("roll_txns",
 func (s *Store) ListTrips() ([]model.Trip, error) { return s.loadTrips() }
 
 func (s *Store) UpdateTrip(id int64, t model.Trip) error {
-	res, err := s.db.Exec(`UPDATE trips SET date=?, bank=?, miles=?, hours=? WHERE id=?`,
-		t.Date, t.Bank, t.Miles, t.Hours, id)
+	bid, err := s.resolveBranchID(t.Bank)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(`UPDATE trips SET date=?, branch_id=?, miles=?, hours=? WHERE id=?`,
+		t.Date, nullID(bid), t.Miles, t.Hours, id)
 	return affected(res, err, "update trip")
 }
 
 func (s *Store) DeleteTrip(id int64) error { return s.deleteByID("trips", id) }
+
+// --- branches (ADR-010) ------------------------------------------------------
+
+func (s *Store) ListBranches() ([]model.Branch, error) { return s.loadBranches() }
+
+// UpdateBranch updates every column except the immutable uid. Editing the
+// canonical name also records it as an alias, so the old name still resolves.
+func (s *Store) UpdateBranch(id int64, b model.Branch) error {
+	res, err := s.db.Exec(
+		`UPDATE branches SET name=?, institution=?, address=?, phone=?, lat=?, lon=?, hours=?,
+		   buys=?, dumps=?, denoms=?, box_limit=?, box_lead_days=?, coin_fee_usd=?, cooldown_days=?, notes=?, active=?
+		 WHERE id=?`,
+		strings.TrimSpace(b.Name), b.Institution, b.Address, b.Phone, b.Lat, b.Lon, b.Hours,
+		b2i(b.Buys), b2i(b.Dumps), b.Denoms, b.BoxLimit, b.BoxLeadDays, b.CoinFeeUSD,
+		b.CooldownDays, b.Notes, b2i(b.Active), id)
+	if err := affected(res, err, "update branch"); err != nil {
+		return err
+	}
+	if name := strings.TrimSpace(b.Name); name != "" {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO branch_aliases (branch_id, alias) VALUES (?,?)`, id, name); err != nil {
+			return fmt.Errorf("update branch alias: %w", err)
+		}
+	}
+	return nil
+}
+
+// DeleteBranch removes a branch and its aliases. History rows whose branch_id
+// still points here simply resolve to no name until reassigned — the merge path
+// (MergeBranches) is the safe way to retire a duplicate, since it repoints first.
+func (s *Store) DeleteBranch(id int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM branch_aliases WHERE branch_id=?`, id); err != nil {
+		return fmt.Errorf("delete branch aliases: %w", err)
+	}
+	res, err := tx.Exec(`DELETE FROM branches WHERE id=?`, id)
+	if err := affected(res, err, "delete branch"); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// MergeBranches folds each loser branch into survivor: it repoints roll_txns,
+// trips, and aliases from the losers onto survivor, then deletes the loser rows.
+// This is the ADR-010 (b) dedup — the survivor keeps the whole history and every
+// old free-text spelling still resolves through the moved aliases.
+func (s *Store) MergeBranches(survivor int64, losers []int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, loser := range losers {
+		if loser == survivor {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE roll_txns SET branch_id=? WHERE branch_id=?`, survivor, loser); err != nil {
+			return fmt.Errorf("merge roll_txns: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE trips SET branch_id=? WHERE branch_id=?`, survivor, loser); err != nil {
+			return fmt.Errorf("merge trips: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE branch_aliases SET branch_id=? WHERE branch_id=?`, survivor, loser); err != nil {
+			return fmt.Errorf("merge aliases: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM branches WHERE id=?`, loser); err != nil {
+			return fmt.Errorf("merge delete: %w", err)
+		}
+	}
+	return tx.Commit()
+}
 
 // --- supplies ----------------------------------------------------------------
 

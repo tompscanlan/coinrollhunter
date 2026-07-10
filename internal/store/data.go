@@ -1,13 +1,51 @@
 package store
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 )
+
+// newUID returns a lowercase RFC-4122 v4 UUID for a branch's opaque id (ADR-009).
+// Migration 0008's backfill generates the same shape in SQL (no Go step in the
+// migration runner); this is the runtime path for branches created afterward.
+func newUID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// resolveBranchID maps a typed bank name to a branch id, creating the branch (and
+// recording the name as its first alias) when no branch name or alias matches.
+// Mirrors the Holdings grid's find-or-create of an item_type (ADR-003). An empty
+// name resolves to 0 (a NULL branch_id). A newly-typed variant still forks a fresh
+// branch by design; the address-book merge (ADR-010 (b)) is how forks get repointed.
+func (s *Store) resolveBranchID(name string) (int64, error) {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return 0, nil
+	}
+	var id int64
+	err := s.db.QueryRow(
+		`SELECT b.id FROM branches b
+		 LEFT JOIN branch_aliases a ON a.branch_id = b.id
+		 WHERE b.name = ? OR a.alias = ? LIMIT 1`, n, n).Scan(&id)
+	switch {
+	case err == nil:
+		return id, nil
+	case err == sql.ErrNoRows:
+		return s.InsertBranch(model.Branch{Name: n, Buys: true, Dumps: true, Active: true})
+	default:
+		return 0, fmt.Errorf("resolve branch %q: %w", n, err)
+	}
+}
 
 // --- inserts -----------------------------------------------------------------
 
@@ -39,26 +77,61 @@ func (s *Store) InsertHolding(h model.Holding) (int64, error) {
 	return res.LastInsertId()
 }
 
-// InsertRollTxn inserts a roll transaction and returns its new id.
+// InsertRollTxn inserts a roll transaction and returns its new id. The typed bank
+// name find-or-creates a branch (ADR-010); only the resolved branch_id is stored.
 func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
+	bid, err := s.resolveBranchID(t.Bank)
+	if err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(
-		`INSERT INTO roll_txns (date, bank, action, denom, unit, amount, face_usd, source_type, notes)
+		`INSERT INTO roll_txns (date, branch_id, action, denom, unit, amount, face_usd, source_type, notes)
 		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		t.Date, t.Bank, t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
+		t.Date, nullID(bid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
 	if err != nil {
 		return 0, fmt.Errorf("insert roll_txn: %w", err)
 	}
 	return res.LastInsertId()
 }
 
-// InsertTrip inserts a trip and returns its new id.
+// InsertTrip inserts a trip and returns its new id (bank find-or-creates a branch).
 func (s *Store) InsertTrip(t model.Trip) (int64, error) {
-	res, err := s.db.Exec(`INSERT INTO trips (date, bank, miles, hours) VALUES (?,?,?,?)`,
-		t.Date, t.Bank, t.Miles, t.Hours)
+	bid, err := s.resolveBranchID(t.Bank)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.Exec(`INSERT INTO trips (date, branch_id, miles, hours) VALUES (?,?,?,?)`,
+		t.Date, nullID(bid), t.Miles, t.Hours)
 	if err != nil {
 		return 0, fmt.Errorf("insert trip: %w", err)
 	}
 	return res.LastInsertId()
+}
+
+// InsertBranch inserts a branch (server-generated opaque uid) and records its
+// canonical name as an alias so resolveBranchID and merges can find it. Returns
+// the new id.
+func (s *Store) InsertBranch(b model.Branch) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO branches (uid, name, institution, address, phone, lat, lon, hours,
+		   buys, dumps, denoms, box_limit, box_lead_days, coin_fee_usd, cooldown_days, notes, active)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		newUID(), strings.TrimSpace(b.Name), b.Institution, b.Address, b.Phone, b.Lat, b.Lon, b.Hours,
+		b2i(b.Buys), b2i(b.Dumps), b.Denoms, b.BoxLimit, b.BoxLeadDays, b.CoinFeeUSD,
+		b.CooldownDays, b.Notes, b2i(b.Active))
+	if err != nil {
+		return 0, fmt.Errorf("insert branch: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if name := strings.TrimSpace(b.Name); name != "" {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO branch_aliases (branch_id, alias) VALUES (?,?)`, id, name); err != nil {
+			return 0, fmt.Errorf("insert branch alias: %w", err)
+		}
+	}
+	return id, nil
 }
 
 // InsertSupply inserts a supply and returns its new id.
@@ -365,7 +438,11 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 }
 
 func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
-	rows, err := s.db.Query(`SELECT id, date, bank, action, denom, unit, amount, face_usd, source_type, notes FROM roll_txns ORDER BY id`)
+	// Resolve the branch's canonical name through the logical branch_id link, so
+	// grouping/display sees one identity per branch even after a rename or merge.
+	rows, err := s.db.Query(`SELECT r.id, r.date, r.branch_id, b.name, r.action, r.denom, r.unit,
+	  r.amount, r.face_usd, r.source_type, r.notes
+	  FROM roll_txns r LEFT JOIN branches b ON b.id = r.branch_id ORDER BY r.id`)
 	if err != nil {
 		return nil, fmt.Errorf("load roll_txns: %w", err)
 	}
@@ -373,11 +450,13 @@ func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
 	var out []model.RollTxn
 	for rows.Next() {
 		var t model.RollTxn
+		var branchID sql.NullInt64
 		var bank, denom, unit, st, notes sql.NullString
 		var amount sql.NullFloat64
-		if err := rows.Scan(&t.ID, &t.Date, &bank, &t.Action, &denom, &unit, &amount, &t.FaceUSD, &st, &notes); err != nil {
+		if err := rows.Scan(&t.ID, &t.Date, &branchID, &bank, &t.Action, &denom, &unit, &amount, &t.FaceUSD, &st, &notes); err != nil {
 			return nil, err
 		}
+		t.BranchID = branchID.Int64
 		t.Bank, t.Denom, t.Unit, t.SourceType, t.Notes, t.Amount = bank.String, denom.String, unit.String, st.String, notes.String, amount.Float64
 		out = append(out, t)
 	}
@@ -385,7 +464,8 @@ func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
 }
 
 func (s *Store) loadTrips() ([]model.Trip, error) {
-	rows, err := s.db.Query(`SELECT id, date, bank, miles, hours FROM trips ORDER BY id`)
+	rows, err := s.db.Query(`SELECT t.id, t.date, t.branch_id, b.name, t.miles, t.hours
+	  FROM trips t LEFT JOIN branches b ON b.id = t.branch_id ORDER BY t.id`)
 	if err != nil {
 		return nil, fmt.Errorf("load trips: %w", err)
 	}
@@ -393,12 +473,41 @@ func (s *Store) loadTrips() ([]model.Trip, error) {
 	var out []model.Trip
 	for rows.Next() {
 		var t model.Trip
+		var branchID sql.NullInt64
 		var date, bank sql.NullString
-		if err := rows.Scan(&t.ID, &date, &bank, &t.Miles, &t.Hours); err != nil {
+		if err := rows.Scan(&t.ID, &date, &branchID, &bank, &t.Miles, &t.Hours); err != nil {
 			return nil, err
 		}
-		t.Date, t.Bank = date.String, bank.String
+		t.Date, t.BranchID, t.Bank = date.String, branchID.Int64, bank.String
 		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) loadBranches() ([]model.Branch, error) {
+	rows, err := s.db.Query(`SELECT id, uid, name, institution, address, phone, lat, lon, hours,
+	  buys, dumps, denoms, box_limit, box_lead_days, coin_fee_usd, cooldown_days, notes, active
+	  FROM branches ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("load branches: %w", err)
+	}
+	defer rows.Close()
+	var out []model.Branch
+	for rows.Next() {
+		var b model.Branch
+		var inst, addr, phone, hours, denoms, notes sql.NullString
+		var lat, lon, fee sql.NullFloat64
+		var boxLimit, leadDays sql.NullInt64
+		var buys, dumps, active int
+		if err := rows.Scan(&b.ID, &b.UID, &b.Name, &inst, &addr, &phone, &lat, &lon, &hours,
+			&buys, &dumps, &denoms, &boxLimit, &leadDays, &fee, &b.CooldownDays, &notes, &active); err != nil {
+			return nil, err
+		}
+		b.Institution, b.Address, b.Phone, b.Hours, b.Denoms, b.Notes = inst.String, addr.String, phone.String, hours.String, denoms.String, notes.String
+		b.Lat, b.Lon, b.CoinFeeUSD = lat.Float64, lon.Float64, fee.Float64
+		b.BoxLimit, b.BoxLeadDays = int(boxLimit.Int64), int(leadDays.Int64)
+		b.Buys, b.Dumps, b.Active = buys != 0, dumps != 0, active != 0
+		out = append(out, b)
 	}
 	return out, rows.Err()
 }

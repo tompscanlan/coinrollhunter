@@ -31,12 +31,13 @@ func sampleDataset() model.Dataset {
 			{ID: 4, Activity: "crh", Product: "Washington 90% silver quarter", Metal: "silver", Fineness: "90%", Qty: 1, FineOzEach: 0.18084, BasisUSD: 0.25, Acquired: "2025-03-22"},
 		},
 		RollTxns: []model.RollTxn{
-			{ID: 1, Date: "2025-03-08", Bank: "Sample Bank", Action: "buy", Denom: "halves", FaceUSD: 500.00},
-			{ID: 2, Date: "2025-03-20", Bank: "Sample Bank", Action: "buy", Denom: "quarters", FaceUSD: 500.00},
-			{ID: 3, Date: "2025-03-12", Bank: "Sample Bank", Action: "return", FaceUSD: 496.00},
-			{ID: 4, Date: "2025-03-24", Bank: "Sample Bank", Action: "return", FaceUSD: 499.75},
+			// Both buys at one branch (branch_id 1) → branch_count = 1 (ADR-010: distinct branch_id).
+			{ID: 1, Date: "2025-03-08", Bank: "Sample Bank", BranchID: 1, Action: "buy", Denom: "halves", FaceUSD: 500.00},
+			{ID: 2, Date: "2025-03-20", Bank: "Sample Bank", BranchID: 1, Action: "buy", Denom: "quarters", FaceUSD: 500.00},
+			{ID: 3, Date: "2025-03-12", Bank: "Sample Bank", BranchID: 1, Action: "return", FaceUSD: 496.00},
+			{ID: 4, Date: "2025-03-24", Bank: "Sample Bank", BranchID: 1, Action: "return", FaceUSD: 499.75},
 		},
-		Trips:    []model.Trip{{ID: 1, Date: "2025-03-08", Bank: "Sample Bank", Miles: 6, Hours: 0.5}},
+		Trips:    []model.Trip{{ID: 1, Date: "2025-03-08", Bank: "Sample Bank", BranchID: 1, Miles: 6, Hours: 0.5}},
 		Supplies: []model.Supply{{ID: 1, Date: "2025-03-01", Item: "coin tubes", CostUSD: 8.00}},
 		Keepers: []model.Keeper{
 			{ID: 1, Denom: "halves", Count: 12, FaceUSD: 6.00},

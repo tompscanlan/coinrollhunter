@@ -106,7 +106,8 @@ type RealizedLot struct {
 type BoxYield struct {
 	RollTxnID    int64   `json:"roll_txn_id"`
 	Date         string  `json:"date"`
-	Bank         string  `json:"bank"`
+	Bank         string  `json:"bank"`      // resolved branch name (ADR-010)
+	BranchID     int64   `json:"branch_id"` // stable grouping key; survives a rename/merge
 	Denom        string  `json:"denom"`
 	FaceUSD      float64 `json:"face_usd"`
 	FindCount    int     `json:"find_count"`
@@ -229,14 +230,17 @@ func Compute(d model.Dataset) Report {
 	// --- float, kept, cash-in reconciliation (+ activity KPIs, ADR-006) ---
 	var buys, returns float64
 	var buyCount int
-	branches := map[string]bool{}
+	// Count distinct branches by the stable branch_id (ADR-010), not the free-text
+	// name — so a typo fork that's been merged, or a branch that's been renamed,
+	// counts once. Buys with no branch link (branch_id 0) don't count.
+	branches := map[int64]bool{}
 	for _, t := range d.RollTxns {
 		switch t.Action {
 		case "buy":
 			buys += t.FaceUSD
 			buyCount++
-			if t.Bank != "" {
-				branches[t.Bank] = true
+			if t.BranchID != 0 {
+				branches[t.BranchID] = true
 			}
 		case "return":
 			returns += t.FaceUSD
@@ -302,7 +306,7 @@ func Compute(d model.Dataset) Report {
 		if t.Action != "buy" {
 			continue
 		}
-		boxByID[t.ID] = &BoxYield{RollTxnID: t.ID, Date: t.Date, Bank: t.Bank, Denom: t.Denom, FaceUSD: t.FaceUSD}
+		boxByID[t.ID] = &BoxYield{RollTxnID: t.ID, Date: t.Date, Bank: t.Bank, BranchID: t.BranchID, Denom: t.Denom, FaceUSD: t.FaceUSD}
 	}
 	for _, l := range finds {
 		if l.RollTxnID == 0 {
