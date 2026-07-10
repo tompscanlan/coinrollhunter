@@ -41,8 +41,9 @@
   onMount(async () => {
     amount = outstanding // pre-fill with everything still owed back
     try {
-      const [rolls, trips] = await Promise.all([api.rollTxns.list(), api.trips.list()])
+      const [rolls, trips, branches] = await Promise.all([api.rollTxns.list(), api.trips.list(), api.branches.list()])
       banks = distinct([
+        ...branches.map((b) => b.name), // every known branch (ADR-010), reuse over fork
         ...rolls.map((r: RollTxn) => r.bank),
         ...trips.map((t: Trip) => t.bank),
       ])

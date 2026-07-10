@@ -50,8 +50,14 @@
 
   onMount(async () => {
     try {
-      const [rolls, trips] = await Promise.all([api.rollTxns.list(), api.trips.list()])
-      banks = distinct([...rolls.map((r: RollTxn) => r.bank), ...trips.map((t: Trip) => t.bank)])
+      const [rolls, trips, branches] = await Promise.all([api.rollTxns.list(), api.trips.list(), api.branches.list()])
+      // Suggest every known branch (ADR-010) — not just names already on a txn —
+      // so entry reuses an existing branch instead of forking a new one on a typo.
+      banks = distinct([
+        ...branches.map((b) => b.name),
+        ...rolls.map((r: RollTxn) => r.bank),
+        ...trips.map((t: Trip) => t.bank),
+      ])
     } catch {
       /* suggestions optional */
     }
