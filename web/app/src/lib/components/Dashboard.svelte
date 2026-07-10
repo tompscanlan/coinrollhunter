@@ -1,21 +1,19 @@
 <script lang="ts">
-  import type { Report, EnrichedLot, Spot } from '$lib/types'
+  import type { Report, EnrichedLot } from '$lib/types'
   import { verdict } from '$lib/types'
-  import { money, pct, oz, num, today } from '$lib/format'
-  import { api } from '$lib/api'
+  import { money, pct, oz, num } from '$lib/format'
   import Card from '$lib/components/ui/Card.svelte'
-  import Button from '$lib/components/ui/Button.svelte'
   import Badge from '$lib/components/ui/Badge.svelte'
   import StatCard from './StatCard.svelte'
-  import Composition from './Composition.svelte'
-  import StackByType from './StackByType.svelte'
-  import HuntYield from './HuntYield.svelte'
-  import HitRateGrid from './HitRateGrid.svelte'
-  import TrophyFeed from './TrophyFeed.svelte'
   import { cn } from '$lib/utils'
   import { Check, TriangleAlert, RadioTower } from 'lucide-svelte'
 
-  let { report, onRefresh }: { report: Report; onRefresh: () => void } = $props()
+  // Overview owns the *glance + ledger* altitude only (ADR-012): what you can
+  // read without interpreting — is the hunt costing money, what's it worth, is
+  // the float square. Analysis (yield-by-bank, hit-rate, trophies, composition,
+  // stack-by-type) lives in Insights; the spot *editor* lives in Settings. This
+  // view stays read-only.
+  let { report }: { report: Report } = $props()
 
   const r = $derived(report)
   const bullion = $derived(r.lots.filter((l) => l.activity !== 'crh'))
@@ -31,47 +29,11 @@
       .map(([d, n]) => `${num(n)} ${d}`)
       .join(', ') || 'none logged',
   )
-
-  // Inline spot editor.
-  let spotGold = $state(0)
-  let spotSilver = $state(0)
-  let spotPlat = $state(0)
-  let spotPall = $state(0)
-  let spotDate = $state('')
-  let spotBusy = $state(false)
-  let spotErr = $state('')
-  $effect(() => {
-    spotGold = r.spot.gold_usd
-    spotSilver = r.spot.silver_usd
-    spotPlat = r.spot.platinum_usd
-    spotPall = r.spot.palladium_usd
-    spotDate = r.spot.as_of || today()
-  })
-
-  async function saveSpot() {
-    spotBusy = true
-    spotErr = ''
-    try {
-      const s: Spot = {
-        as_of: spotDate || today(),
-        gold_usd: Number(spotGold) || 0,
-        silver_usd: Number(spotSilver) || 0,
-        platinum_usd: Number(spotPlat) || 0,
-        palladium_usd: Number(spotPall) || 0,
-        source: 'manual',
-      }
-      await api.putSpot(s)
-      onRefresh()
-    } catch (e) {
-      spotErr = (e as Error).message
-    } finally {
-      spotBusy = false
-    }
-  }
 </script>
 
 <div class="space-y-6">
-  <!-- meta line + spot freshness chip (ADR-007: a background poller refreshes spot) -->
+  <!-- meta line + spot freshness chip (ADR-007: a background poller refreshes spot).
+       Read-only here; the spot editor moved to Settings (ADR-012 §5). -->
   <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
     <p class="text-sm text-muted-foreground">
       As of <span class="font-medium text-foreground">{r.spot.as_of || '—'}</span>
@@ -80,7 +42,7 @@
     </p>
     <span
       class="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground"
-      title="Spot prices refresh in the background while the app runs (ADR-007). Manual entry is the offline fallback."
+      title="Spot prices refresh in the background while the app runs (ADR-007). Manual entry is the offline fallback in Settings."
     >
       <RadioTower class="size-3" />
       <span>Spot: {r.spot.source || 'none'}</span>
@@ -120,12 +82,6 @@
     />
     <StatCard label="CRH net (cash)" value={money(r.crh_net_real)} sub="finds minus costs" tone={crhTone} />
   </div>
-
-  <!-- live composition snapshot -->
-  <Composition {report} />
-
-  <!-- unified inventory: stack by coin type (bought + found combined) -->
-  <StackByType {report} />
 
   <!-- bullion -->
   <section class="space-y-2">
@@ -260,17 +216,6 @@
     </div>
   </section>
 
-  <!-- hunt yield by bank & box -->
-  {#if r.box_yields?.length}
-    <HuntYield {report} />
-  {/if}
-
-  <!-- greatest hits: finds flagged as trophies (ADR-006) -->
-  <TrophyFeed {report} />
-
-  <!-- hit-rate report: 1 per face $, per denom × category × source (ADR-006) -->
-  <HitRateGrid {report} />
-
   <!-- realized (sold) -->
   {#if r.realized?.length}
     <section class="space-y-2">
@@ -318,60 +263,4 @@
       </Card>
     </section>
   {/if}
-
-  <!-- spot updater -->
-  <section class="space-y-2">
-    <h2 class="text-lg font-semibold">Spot prices</h2>
-    <Card class="flex flex-wrap items-end gap-4 p-4">
-      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
-        Gold $/ozt
-        <input
-          type="number"
-          step="0.01"
-          bind:value={spotGold}
-          class="w-32 rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
-        />
-      </label>
-      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
-        Silver $/ozt
-        <input
-          type="number"
-          step="0.01"
-          bind:value={spotSilver}
-          class="w-32 rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
-        />
-      </label>
-      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
-        Platinum $/ozt
-        <input
-          type="number"
-          step="0.01"
-          bind:value={spotPlat}
-          class="w-32 rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
-        />
-      </label>
-      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
-        Palladium $/ozt
-        <input
-          type="number"
-          step="0.01"
-          bind:value={spotPall}
-          class="w-32 rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
-        />
-      </label>
-      <label class="flex flex-col gap-1 text-xs text-muted-foreground">
-        As of
-        <input
-          type="date"
-          bind:value={spotDate}
-          class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
-        />
-      </label>
-      <Button onclick={saveSpot} disabled={spotBusy}>Update spot</Button>
-      {#if spotErr}<span class="text-sm text-destructive">{spotErr}</span>{/if}
-    </Card>
-    <p class="text-xs text-muted-foreground">
-      Manual entry is the offline fallback; a live spot feed can be wired behind the same endpoint later.
-    </p>
-  </section>
 </div>

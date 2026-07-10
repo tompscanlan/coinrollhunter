@@ -4,6 +4,7 @@
   import { today } from '$lib/format'
   import Dashboard from '$lib/components/Dashboard.svelte'
   import Do from '$lib/components/Do.svelte'
+  import Insights from '$lib/components/Insights.svelte'
   import EditableGrid from '$lib/components/EditableGrid.svelte'
   import Button from '$lib/components/ui/Button.svelte'
   import { cn } from '$lib/utils'
@@ -17,9 +18,9 @@
     type FlatHolding,
   } from '$lib/grids'
   import SettingsPanel from '$lib/components/SettingsPanel.svelte'
-  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, Settings as SettingsIcon } from 'lucide-svelte'
+  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon } from 'lucide-svelte'
 
-  type View = 'overview' | 'do' | 'entry'
+  type View = 'overview' | 'do' | 'insights' | 'edit'
   type DataTab = 'holdings' | 'rolls' | 'trips' | 'supplies' | 'keepers' | 'losses'
 
   let view = $state<View>('overview')
@@ -29,11 +30,23 @@
   let error = $state('')
   let dark = $state(false)
   let settingsOpen = $state(false)
+  let landed = $state(false)
+
+  // A fresh database has no holdings and no roll-txn buys. ADR-012 §4: land such
+  // a user on an obvious action, not a wall of zeros — Overview also shows a
+  // get-started state below.
+  const isEmpty = $derived(!!report && report.lots.length === 0 && report.buy_count === 0)
 
   async function refresh() {
     try {
       report = await api.summary()
       error = ''
+      // First load only: send a brand-new user straight to Do (ADR-012 §4).
+      // Never override a navigation the user has already made.
+      if (!landed) {
+        landed = true
+        if (report.lots.length === 0 && report.buy_count === 0) view = 'do'
+      }
     } catch (e) {
       error = (e as Error).message
     } finally {
@@ -141,9 +154,18 @@
         <button
           class={cn(
             'flex items-center gap-1.5 rounded-md px-4 py-1.5 transition-colors',
-            view === 'entry' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+            view === 'insights' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
           )}
-          onclick={() => (view = 'entry')}
+          onclick={() => (view = 'insights')}
+        >
+          <BarChart3 class="size-4" /> Insights
+        </button>
+        <button
+          class={cn(
+            'flex items-center gap-1.5 rounded-md px-4 py-1.5 transition-colors',
+            view === 'edit' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+          )}
+          onclick={() => (view = 'edit')}
         >
           <Table2 class="size-4" /> Edit
         </button>
@@ -160,11 +182,28 @@
       <p class="text-sm text-muted-foreground">Loading…</p>
     {:else if view === 'overview'}
       {#if report}
-        <Dashboard {report} onRefresh={refresh} />
+        {#if isEmpty}
+          <!-- get-started state: one obvious action, not a wall of zeros (ADR-012 §4) -->
+          <div class="mx-auto mt-6 max-w-md rounded-xl border bg-card p-8 text-center shadow-sm">
+            <div class="text-4xl">🪙</div>
+            <h2 class="mt-3 text-lg font-semibold text-foreground">Start your first hunt</h2>
+            <p class="mt-1.5 text-sm text-muted-foreground">
+              Log a box of coins you picked up from the bank — CoinRollHunter tracks the rest:
+              finds, costs, and whether it's paying off.
+            </p>
+            <Button class="mt-4" onclick={() => (view = 'do')}>Log your first box →</Button>
+          </div>
+        {:else}
+          <Dashboard {report} />
+        {/if}
       {/if}
     {:else if view === 'do'}
       {#if report}
         <Do {report} onChanged={refresh} />
+      {/if}
+    {:else if view === 'insights'}
+      {#if report}
+        <Insights {report} />
       {/if}
     {:else}
       <section class="space-y-4">
@@ -217,7 +256,7 @@
 </div>
 
 {#if settingsOpen}
-  <SettingsPanel onClose={() => (settingsOpen = false)} onSaved={refresh} />
+  <SettingsPanel spot={report?.spot} onClose={() => (settingsOpen = false)} onSaved={refresh} />
 {/if}
 
 {#if sellRow}

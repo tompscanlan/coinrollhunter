@@ -3,17 +3,21 @@
   // factors, mileage, hourly rate, box face — were API-only before this. A
   // modal over GET/PUT /api/settings; saving recomputes the Overview.
   import { api } from '$lib/api'
-  import type { Settings } from '$lib/types'
+  import type { Settings, Spot } from '$lib/types'
   import { DENOMS } from '$lib/presets'
+  import { today } from '$lib/format'
   import Button from '$lib/components/ui/Button.svelte'
 
   let {
     onClose,
     onSaved,
+    spot,
   }: {
     onClose: () => void
     /** Called after a successful save so the parent can recompute the summary. */
     onSaved?: () => void
+    /** Current spot from the report, so the manual editor seeds with live values. */
+    spot?: Spot | null
   } = $props()
 
   let cfg = $state<Settings | null>(null)
@@ -26,6 +30,48 @@
       .then((s) => (cfg = s))
       .catch((e) => (error = (e as Error).message))
   })
+
+  // Manual spot editor (moved off Overview — ADR-012 §5: read views host no
+  // editors). Its own update action, kept separate from Save settings so a
+  // manual entry only overwrites the background-polled spot (ADR-007) when the
+  // user deliberately updates it.
+  let spotGold = $state(0)
+  let spotSilver = $state(0)
+  let spotPlat = $state(0)
+  let spotPall = $state(0)
+  let spotDate = $state('')
+  let spotBusy = $state(false)
+  let spotErr = $state('')
+  let spotDone = $state(false)
+  $effect(() => {
+    spotGold = spot?.gold_usd ?? 0
+    spotSilver = spot?.silver_usd ?? 0
+    spotPlat = spot?.platinum_usd ?? 0
+    spotPall = spot?.palladium_usd ?? 0
+    spotDate = spot?.as_of || today()
+  })
+
+  async function saveSpot() {
+    spotBusy = true
+    spotErr = ''
+    spotDone = false
+    try {
+      await api.putSpot({
+        as_of: spotDate || today(),
+        gold_usd: Number(spotGold) || 0,
+        silver_usd: Number(spotSilver) || 0,
+        platinum_usd: Number(spotPlat) || 0,
+        palladium_usd: Number(spotPall) || 0,
+        source: 'manual',
+      })
+      spotDone = true
+      onSaved?.()
+    } catch (e) {
+      spotErr = (e as Error).message
+    } finally {
+      spotBusy = false
+    }
+  }
 
   async function save() {
     if (!cfg) return
@@ -125,6 +171,41 @@
     {:else if !error}
       <p class="text-sm text-muted-foreground">Loading…</p>
     {/if}
+
+    <section class="space-y-2 border-t pt-4">
+      <h4 class="text-sm font-medium text-foreground">Spot prices</h4>
+      <p class="text-xs text-muted-foreground">
+        A background feed refreshes these while the app runs (ADR-007). Manual entry is the offline
+        fallback — updating here overwrites the current spot with your values.
+      </p>
+      <div class="grid grid-cols-2 gap-3">
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          Gold $/ozt
+          <input type="number" step="0.01" min="0" bind:value={spotGold} class={inputCls} />
+        </label>
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          Silver $/ozt
+          <input type="number" step="0.01" min="0" bind:value={spotSilver} class={inputCls} />
+        </label>
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          Platinum $/ozt
+          <input type="number" step="0.01" min="0" bind:value={spotPlat} class={inputCls} />
+        </label>
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          Palladium $/ozt
+          <input type="number" step="0.01" min="0" bind:value={spotPall} class={inputCls} />
+        </label>
+        <label class="col-span-2 flex flex-col gap-1 text-xs text-muted-foreground">
+          As of
+          <input type="date" bind:value={spotDate} class={inputCls} />
+        </label>
+      </div>
+      <div class="flex items-center gap-2">
+        <Button variant="secondary" onclick={saveSpot} disabled={spotBusy}>Update spot</Button>
+        {#if spotErr}<span class="text-sm text-destructive">{spotErr}</span>
+        {:else if spotDone}<span class="text-xs text-positive">Spot updated.</span>{/if}
+      </div>
+    </section>
 
     <div class="flex justify-end gap-2">
       <Button variant="ghost" onclick={onClose}>Cancel</Button>
