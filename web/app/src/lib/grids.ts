@@ -300,7 +300,11 @@ export const rollTxnsGrid: GridConfig<RollTxn> = {
     { accessorKey: 'date', header: 'Date', meta: { editor: 'date', width: '150px' } },
     { accessorKey: 'bank', header: 'Bank', meta: { editor: 'autocomplete', placeholder: 'Stock Yards', suggestions: () => banks } },
     { accessorKey: 'action', header: 'Action', meta: { editor: 'select', options: ['buy', 'return'], width: '100px' } },
-    { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '110px' } },
+    // A 'return' is a lump of face going back to the bank; its denom is optional
+    // (a mixed deposit — the float nets returns globally, never per-denom). '' binds
+    // to the "Mixed" option and renders it, so a mixed return round-trips cleanly
+    // instead of showing an out-of-range blank select.
+    { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', optionsFn: () => [{ value: '', label: 'Mixed' }, ...DENOMS], width: '110px' } },
     { accessorKey: 'unit', header: 'Unit', meta: { editor: 'select', options: ROLL_UNITS, width: '90px' } },
     // Buy-only attribute: a 'return' is just face going back to the bank, so the
     // cell renders inert ("—") on return rows (om-kn0f).

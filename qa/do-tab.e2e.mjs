@@ -110,6 +110,9 @@ try {
   await page.getByText('Recorded', { exact: false }).first().waitFor({ timeout: 5000 })
   const returns4 = (await api('/roll-txns')).filter((r) => r.action === 'return')
   ok('return recorded', returns4.length === 1 && returns4[0].face_usd === 400, `@ ${returns4[0]?.face_usd}`)
+  // A redeposit is a lump of face going back — the denom defaults to "Mixed" ("") so
+  // a mixed pile records as one sum (single-pool float; the math never reads it).
+  ok('return is denomless (mixed pile — single-pool float)', returns4[0]?.denom === '', `denom ${JSON.stringify(returns4[0]?.denom)}`)
   await page.getByRole('button', { name: 'Done' }).click()
 
   // === 5. Reconcile / close out ===  (record a forgotten keeper, then book the rest)
@@ -236,6 +239,21 @@ try {
   ok('source-type inert on return rows (om-kn0f)',
     returnSourceCells.length >= 1 && returnSourceCells.every((t) => t === '—'),
     JSON.stringify(returnSourceCells))
+
+  // A denomless (mixed) return must bind to the "Mixed" option (value '') and
+  // render it — not an out-of-range blank select. denom is the 2nd select in a
+  // row (action, denom, unit); source(5) is an inert span on return rows.
+  const returnDenomSelects = await page.$$eval('section table tbody tr', (rows) =>
+    rows
+      .filter((r) => r.querySelector('select')?.value === 'return')
+      .map((r) => {
+        const sel = r.querySelectorAll('select')[1]
+        return { value: sel?.value, label: sel?.selectedOptions[0]?.textContent?.trim() }
+      }),
+  )
+  ok('mixed return denom binds to "Mixed" (value "") in Edit grid',
+    returnDenomSelects.length >= 1 && returnDenomSelects.every((c) => c.value === '' && c.label === 'Mixed'),
+    JSON.stringify(returnDenomSelects))
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})

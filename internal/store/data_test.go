@@ -1,8 +1,10 @@
 package store_test
 
 import (
+	"math"
 	"testing"
 
+	"github.com/tompscanlan/coinrollhunter/internal/calc"
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
 )
@@ -77,5 +79,65 @@ func TestResolveDatasetReadPathColumnAlignment(t *testing.T) {
 	}
 	if lot.Metal != "gold" {
 		t.Errorf("Metal = %q, want gold", lot.Metal)
+	}
+}
+
+// TestDenomlessReturnRoundTrips pins the "return a sum without a face" path — a
+// mixed-pile redeposit. A 'return' roll-txn may carry an empty denom: it persists
+// and reads back as "", and the float reconciliation nets it globally, so
+// to_redeposit drops by the full face regardless of denom. This is the single-pool
+// model (ADR-001/005): a return is cash going back to the bank; denomination is a
+// buy-only attribute (box throughput). Guards the mixed-return feature end to end
+// through the store + calc, not just the UI.
+func TestDenomlessReturnRoundTrips(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	if _, err := s.InsertRollTxn(model.RollTxn{
+		Date: "2026-02-01", Bank: "Stock Yards", Action: "buy",
+		Denom: "halves", Unit: "box", Amount: 1, FaceUSD: 500,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The mixed redeposit: a lump sum back to the bank, no denom tracked (Denom "").
+	if _, err := s.InsertRollTxn(model.RollTxn{
+		Date: "2026-02-03", Bank: "Stock Yards", Action: "return",
+		Unit: "face", Amount: 480, FaceUSD: 480,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := s.ResolveDataset()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var ret *model.RollTxn
+	for i := range d.RollTxns {
+		if d.RollTxns[i].Action == "return" {
+			ret = &d.RollTxns[i]
+		}
+	}
+	if ret == nil {
+		t.Fatal("return roll-txn was not read back from the store")
+	}
+	if ret.Denom != "" {
+		t.Errorf("return denom = %q, want \"\" (a denomless mixed return must persist blank)", ret.Denom)
+	}
+	if ret.FaceUSD != 480 {
+		t.Errorf("return face = %v, want 480", ret.FaceUSD)
+	}
+
+	// Single-pool reconciliation: bought 500, returned 480, nothing kept ⇒ $20 float.
+	// The denomless return must net against the float exactly like a denom'd one.
+	r := calc.Compute(d)
+	if got := r.ToRedeposit; math.Abs(got-20) > 1e-9 {
+		t.Errorf("to_redeposit = %v, want 20 (denomless return must net against the float)", got)
+	}
+	if math.Abs(r.Returns-480) > 1e-9 {
+		t.Errorf("returns = %v, want 480", r.Returns)
 	}
 }

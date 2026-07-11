@@ -26,7 +26,11 @@
   // form state
   let bank = $state('')
   let date = $state(today())
-  let denom = $state<string>('halves')
+  // A redeposit is a lump of face going back; the denom is optional. Default to
+  // "" ("Mixed") so a mixed pile (dollars + halves + dimes + quarters) records as
+  // one sum — the reconciliation math nets returns globally and never reads their
+  // denom (ADR-001/005 single-pool float). Pick a specific denom only if you know it.
+  let denom = $state<string>('')
   let amount = $state(0)
   let notes = $state('')
   let banks = $state<string[]>([])
@@ -193,11 +197,12 @@
         </label>
 
         <label class="flex flex-col gap-1 text-xs text-muted-foreground">
-          Denomination
+          Denomination (optional)
           <select
             bind:value={denom}
             class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
           >
+            <option value="">Mixed / whole deposit</option>
             {#each DENOMS as d (d)}<option value={d}>{d}</option>{/each}
           </select>
         </label>
