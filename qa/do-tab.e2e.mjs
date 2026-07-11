@@ -174,12 +174,16 @@ try {
   // spot freshness chip — source label varies (manual seed vs. the ADR-007 poller),
   // so match the chip by its unique title, not the source string.
   ok('spot freshness chip visible (ADR-007)', await page.locator('span[title*="background"]').first().isVisible())
-  // hit-rate report endpoint + grid
+  // hit-rate report: the endpoint (data) plus the grid, which lives on the
+  // Insights tab — the analysis altitude was lifted out of Overview in the ADR-012
+  // IA refactor (commit 9810aa7 / om-bm7n), so navigate there before asserting it.
   const fr = await api('/finds-report')
   ok('finds-report endpoint shape', typeof fr.total_face_searched === 'number' && Array.isArray(fr.denoms),
     `face ${fr.total_face_searched}, denoms ${fr.denoms?.length}`)
-  ok('hit-rate grid heading renders', await page.getByRole('heading', { name: 'Hit rate — 1 per face $' }).isVisible())
   await page.screenshot({ path: `${SHOT}/do-overview.png`, fullPage: true }).catch(() => {})
+  await page.getByRole('button', { name: 'Insights', exact: true }).click()
+  await page.getByRole('heading', { name: 'Hit rate — 1 per face $' }).waitFor({ timeout: 5000 })
+  ok('hit-rate grid heading renders', await page.getByRole('heading', { name: 'Hit rate — 1 per face $' }).isVisible())
 
   // === Holdings grid: category/subcategory/trophy are enterable + persist ===
   await page.getByRole('button', { name: 'Edit' }).click()
@@ -201,8 +205,9 @@ try {
     Array.isArray(sumZeroBasis.lots) && sumZeroBasis.lots.length >= 1,
     `lots ${sumZeroBasis.lots?.length}`)
 
-  // trophy feed surfaces it back on the Overview
-  await page.getByRole('button', { name: 'Overview', exact: true }).click()
+  // trophy feed surfaces it back on the Insights tab (analysis lives in Insights
+  // since the ADR-012 IA refactor — not the read-only Overview).
+  await page.getByRole('button', { name: 'Insights', exact: true }).click()
   await page.getByRole('heading', { name: 'Greatest hits' }).waitFor({ timeout: 5000 })
   ok('trophy feed shows the trophy', (await page.getByText('Mercury dime (trophy)', { exact: false }).count()) > 0)
 
