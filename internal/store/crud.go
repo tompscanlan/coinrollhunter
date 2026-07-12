@@ -62,7 +62,7 @@ func (s *Store) DeleteItemType(id int64) error { return s.deleteByID("item_type"
 
 func (s *Store) ListHoldings() ([]model.Holding, error) {
 	rows, err := s.db.Query(
-		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
+		`SELECT id, uid, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
 		   premium_usd, face_value_usd, acquired, source, location, insured_value, attributes,
 		   notes, category, subcategory, trophy, disposed, disposed_usd
 		 FROM lots ORDER BY id`)
@@ -74,13 +74,17 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 	for rows.Next() {
 		var h model.Holding
 		var rtid sql.NullInt64
-		var wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
+		var uid, wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
 		var trophy int64
-		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity,
+		if err := rows.Scan(&h.ID, &uid, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity,
 			&wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc,
 			&h.InsuredValue, &attr, &notes, &cat, &subcat, &trophy, &disp, &h.DisposedUSD); err != nil {
 			return nil, err
 		}
+		// NullString, not string: lots.uid has no schema-level NOT NULL (ADR-009 (c)),
+		// so a row written by some other tool could still read back NULL. Scanning it
+		// as a plain string would error out the whole list rather than surfacing it.
+		h.UID = uid.String
 		h.RollTxnID = rtid.Int64
 		h.WeightUnit, h.Source, h.Location = wu.String, src.String, loc.String
 		h.Attributes, h.Notes, h.Disposed = attr.String, notes.String, disp.String

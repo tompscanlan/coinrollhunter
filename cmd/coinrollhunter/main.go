@@ -57,6 +57,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "demo:", err)
 			os.Exit(1)
 		}
+	case "backup":
+		// No "backup:" prefix here — store.Backup's errors already carry one, and
+		// the user does not need to be told twice.
+		if err := runBackup(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "version", "-v", "--version":
 		fmt.Printf("coinrollhunter %s\n", version)
 	case "-h", "--help", "help":
@@ -84,6 +91,10 @@ usage:
       Seed a separate database with ~15 months of fictional data and serve it —
       a full dashboard to explore before entering your own. Your real data is
       untouched; --reset regenerates the demo from scratch.
+  coinrollhunter backup [--db crh.db] DEST.db
+      Write a consistent snapshot of your data to a single file — safe to run
+      while the app is open, and safe to copy anywhere. Copying crh.db by hand
+      is not: recent changes may still live in its -wal sidecar.
   coinrollhunter version
       Print the build version.
 `)
@@ -159,6 +170,49 @@ func runServe(args []string) error {
 		spotProvider: *spotProvider,
 		spotInterval: *spotInterval,
 	})
+}
+
+// runBackup writes a consistent snapshot of the database to a single file, while
+// the app is running. The point is that the result is safe to copy anywhere — onto
+// a USB stick, into a sync folder, across to another machine — which a live crh.db
+// is not: its recent commits may still be sitting in a -wal sidecar.
+func runBackup(args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	dbPath := fs.String("db", "", "path to the SQLite database (default: the same one the app uses)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: coinrollhunter backup [--db crh.db] DEST.db")
+	}
+	dest := fs.Arg(0)
+
+	// Default to whatever the app itself would open, so `backup` finds the user's
+	// real data without them having to know where it lives.
+	src := *dbPath
+	if src == "" {
+		var err error
+		if src, err = defaultDBPath(); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("no database at %s", src)
+	}
+
+	// BackupFile, not Open+Backup: Open applies pending migrations, so backing up
+	// through it would upgrade the database you were trying to snapshot *before*
+	// upgrading it — exactly the backup you'd want if an upgrade went wrong.
+	if err := store.BackupFile(src, dest); err != nil {
+		return err
+	}
+	fi, err := os.Stat(dest)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Backed up %s -> %s (%.1f MB)\n", src, dest, float64(fi.Size())/(1<<20))
+	fmt.Println("This is a complete, self-contained database — copy it anywhere.")
+	return nil
 }
 
 // runDemo seeds a separate demo database with the fictional dataset (only when

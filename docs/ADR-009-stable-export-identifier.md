@@ -139,7 +139,13 @@ Export therefore becomes a bundle: per-table CSVs (including `photos.csv`), a `p
 tree, and a `manifest.json` carrying schema version and file list — rather than loose
 CSVs.
 
-### (c) Migration 0008 is additive; on the *altered* tables, `NOT NULL` lives in Go
+### (c) The migration is additive; on the *altered* tables, `NOT NULL` lives in Go
+
+> **Numbering, as shipped.** This section was written as "migration 0008". ADR-010
+> (branches) landed first and took 0008, so the uid + photos migration shipped as
+> **`0009_stable_uids_photos.sql`**. Same SQL, next free number. ADR-010 (c) already
+> anticipated this: it generated `branches.uid` with the same `randomblob` recipe and
+> noted it "unblocks ADR-009's om-hdk5 lots/roll_txns uid backfill".
 
 ```sql
 -- Backfill expression, used once per altered table:

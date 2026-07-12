@@ -61,14 +61,17 @@ func (s *Store) InsertItemType(t model.ItemType) (int64, error) {
 	return res.LastInsertId()
 }
 
-// InsertHolding inserts a specimen row and returns its new id.
+// InsertHolding inserts a specimen row and returns its new id. The uid is
+// server-generated and never taken from the caller: it is the row's permanent
+// identity (ADR-009), and lots.uid has no schema-level NOT NULL to fall back on —
+// this insert path IS the guarantee.
 func (s *Store) InsertHolding(h model.Holding) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO lots (item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
+		`INSERT INTO lots (uid, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		h.ItemTypeID, nullID(h.RollTxnID), h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		newUID(), h.ItemTypeID, nullID(h.RollTxnID), h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location, h.InsuredValue,
 		h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), h.Disposed, h.DisposedUSD)
 	if err != nil {
@@ -85,9 +88,9 @@ func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
 		return 0, err
 	}
 	res, err := s.db.Exec(
-		`INSERT INTO roll_txns (date, branch_id, action, denom, unit, amount, face_usd, source_type, notes)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		t.Date, nullID(bid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
+		`INSERT INTO roll_txns (uid, date, branch_id, action, denom, unit, amount, face_usd, source_type, notes)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		newUID(), t.Date, nullID(bid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
 	if err != nil {
 		return 0, fmt.Errorf("insert roll_txn: %w", err)
 	}
@@ -218,12 +221,16 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	soldBasis := h.BasisUSD * frac
 	soldPremium := h.PremiumUSD * frac
 	soldFace := h.FaceValueUSD * frac
+	// A partial sale carves out a NEW lot row, so it needs its own uid — it is a
+	// distinct specimen from the remainder, and it is the row a receipt or a
+	// slab-label photo would hang off. Easy to miss: nothing here says "insert" in
+	// the caller's vocabulary; the user sold half a lot.
 	if _, err := tx.Exec(
-		`INSERT INTO lots (item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
+		`INSERT INTO lots (uid, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		h.ItemTypeID, nullID(rtid.Int64), h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		newUID(), h.ItemTypeID, nullID(rtid.Int64), h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
 		soldBasis, soldPremium, soldFace, h.Acquired, src.String, loc.String, 0,
 		attr.String, notes.String, cat.String, subcat.String, trophy, date, proceeds); err != nil {
 		return err
@@ -440,7 +447,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
 	// Resolve the branch's canonical name through the logical branch_id link, so
 	// grouping/display sees one identity per branch even after a rename or merge.
-	rows, err := s.db.Query(`SELECT r.id, r.date, r.branch_id, b.name, r.action, r.denom, r.unit,
+	rows, err := s.db.Query(`SELECT r.id, r.uid, r.date, r.branch_id, b.name, r.action, r.denom, r.unit,
 	  r.amount, r.face_usd, r.source_type, r.notes
 	  FROM roll_txns r LEFT JOIN branches b ON b.id = r.branch_id ORDER BY r.id`)
 	if err != nil {
@@ -451,11 +458,12 @@ func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
 	for rows.Next() {
 		var t model.RollTxn
 		var branchID sql.NullInt64
-		var bank, denom, unit, st, notes sql.NullString
+		var uid, bank, denom, unit, st, notes sql.NullString
 		var amount sql.NullFloat64
-		if err := rows.Scan(&t.ID, &t.Date, &branchID, &bank, &t.Action, &denom, &unit, &amount, &t.FaceUSD, &st, &notes); err != nil {
+		if err := rows.Scan(&t.ID, &uid, &t.Date, &branchID, &bank, &t.Action, &denom, &unit, &amount, &t.FaceUSD, &st, &notes); err != nil {
 			return nil, err
 		}
+		t.UID = uid.String // NullString: roll_txns.uid has no schema NOT NULL — see ListHoldings
 		t.BranchID = branchID.Int64
 		t.Bank, t.Denom, t.Unit, t.SourceType, t.Notes, t.Amount = bank.String, denom.String, unit.String, st.String, notes.String, amount.Float64
 		out = append(out, t)

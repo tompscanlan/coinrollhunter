@@ -123,6 +123,26 @@ targets still cross-compile from Linux — which is exactly why Wails/webview_go
 they need CGO + a Windows toolchain and would cost us single-box releases. Still open:
 code-signing (SmartScreen/Gatekeeper still warn).
 
+Added 2026-07-12 (ADR-009 stable uids + backup, om-hdk5): `lots.id` / `roll_txns.id` are
+bare rowid aliases — SQLite hands out `max(rowid)+1`, so a delete+insert **recycles** the
+integer and a photo filed under it is silently adopted by a different coin. **Migration
+0009** (`0009_stable_uids_photos.sql` — ADR-009 says "0008", but ADR-010/branches took that
+number first) adds `uid` to `lots` + `roll_txns`, backfills them in pure SQL with the
+`randomblob` UUIDv4 recipe 0008 proved (non-deterministic, re-evaluates **per row**), and
+creates the **`photos`** table (arbitrary N per owner, `role`+`seq`, owned by a lot *or* a
+roll_txn, path `photos/<owner_uid>/<photo_uid>.<ext>` — nothing mutable in the path).
+**A UNIQUE index does not imply NOT NULL in SQLite**, so on the two ALTERed columns the
+guarantee lives in Go (`newUID()` on all three insert paths — including the easy-to-miss
+one where a *partial sale* carves out a new lot) plus the invariant tests in
+`uid_test.go`. Don't "fix" this with `ALTER COLUMN … SET NOT NULL`: modernc accepts it but
+it isn't SQLite grammar and would bind `crh.db` to one driver. `model.Holding.UID` /
+`model.RollTxn.UID` are scanned as `NullString` and exposed on the API — export (om-9cua)
+and photos (om-6hlp) are now unblocked. Also **`coinrollhunter backup DEST.db`** via
+`VACUUM INTO`: one consistent self-contained file, safe on a *live* database (a plain `cp`
+of `crh.db` can miss commits still in the `-wal` sidecar). It uses `store.BackupFile`, not
+`Open`+`Backup`, because `Open` applies pending migrations — a backup must not upgrade the
+thing it is preserving.
+
 Build notes: `make build` (UI then Go). In this container, Go needs a writable cache —
 `go env -w GOCACHE=/go/cache`. The UI build needs Node 22 + npm registry access. `web/dist`
 is a git-ignored build artifact (only its `.gitkeep` is committed, so `go:embed all:dist`

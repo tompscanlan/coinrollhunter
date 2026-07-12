@@ -7,8 +7,10 @@ package store
 import (
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +49,50 @@ func (s *Store) DB() *sql.DB { return s.db }
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Backup writes a consistent snapshot of the database to dest, safely, while the
+// app is running.
+//
+// Copying crh.db with `cp` is the obvious move and it is wrong: SQLite keeps
+// recently committed pages in a -wal sidecar, so a naive file copy can capture a
+// database missing its most recent transactions, or catch a checkpoint mid-flight
+// and produce a torn file that only fails later. VACUUM INTO takes a read
+// transaction and writes a fully self-contained, defragmented database — one file,
+// no sidecars, no need to stop the server first.
+//
+// It refuses to overwrite an existing file (SQLite's own rule, kept deliberately):
+// a backup command that can silently clobber the previous backup is a footgun in
+// the one place you least want one.
+func (s *Store) Backup(dest string) error { return vacuumInto(s.db, dest) }
+
+// BackupFile snapshots a database file without migrating it — which is the whole
+// point of a backup: it must not alter what it is preserving. Open() applies
+// pending migrations as a side effect, so backing up through it would silently
+// upgrade the very database you were trying to capture *before* upgrading. This
+// opens the file as-is, at whatever schema version it happens to be.
+func BackupFile(src, dest string) error {
+	db, err := sql.Open("sqlite", src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer db.Close()
+	return vacuumInto(db, dest)
+}
+
+func vacuumInto(db *sql.DB, dest string) error {
+	if strings.TrimSpace(dest) == "" {
+		return errors.New("backup: destination path is required")
+	}
+	if _, err := os.Stat(dest); err == nil {
+		return fmt.Errorf("backup: %s already exists (refusing to overwrite a backup)", dest)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("backup: %s: %w", dest, err)
+	}
+	if _, err := db.Exec(`VACUUM INTO ?`, dest); err != nil {
+		return fmt.Errorf("backup to %s: %w", dest, err)
+	}
+	return nil
+}
 
 type migration struct {
 	version int

@@ -64,9 +64,25 @@ Your data is saved to a single SQLite file in your user data directory:
 | **macOS** | `~/Library/Application Support/CoinRollHunter/crh.db` |
 | **Linux** | `~/.local/share/coinrollhunter/crh.db` |
 
-Back it up by copying that file. (If you already have a `crh.db` sitting next to the
-binary — how earlier versions worked — that one keeps being used, so upgrading never
-loses your holdings.)
+(If you already have a `crh.db` sitting next to the binary — how earlier versions
+worked — that one keeps being used, so upgrading never loses your holdings.)
+
+### Backing up
+
+Don't copy `crh.db` by hand while the app is open. SQLite keeps recent changes in a
+`-wal` sidecar file, so a plain copy can miss your latest edits or catch a write
+half-finished. Use:
+
+```bash
+./coinrollhunter backup my-coins-2026-07-12.db
+```
+
+That writes one complete, self-contained database — no sidecars, nothing else needed —
+and it's safe to run with the app still open. Copy the result anywhere: a USB stick, a
+sync folder, another machine. Open it later with `./coinrollhunter serve --db my-coins-2026-07-12.db`.
+
+It won't overwrite an existing backup, and it never modifies the database it's reading —
+so it's also the right thing to run *before* upgrading to a new version.
 
 > **Unpack it first.** Windows will happily run an `.exe` straight from inside the zip
 > preview, but it does that by unpacking to a temporary folder that gets cleaned up later.
