@@ -50,15 +50,40 @@ run it and open the dashboard in your browser.
 ## Download & run
 
 1. Grab the archive for your OS from the [latest release](https://github.com/tompscanlan/coinrollhunter/releases/latest).
-2. Unpack it and run the binary:
-   ```bash
-   ./coinrollhunter serve            # then open http://127.0.0.1:8787
-   ```
-3. That's it — your data is saved to a local `crh.db` next to wherever you run it.
+2. Unpack it.
+3. **Double-click it** — `CoinRollHunter.exe` on Windows, `coinrollhunter` on macOS/Linux.
+
+That's it. The app starts and opens your dashboard in a browser window. No terminal, no
+URL to type. Quit it with the ⏻ button in the top right.
+
+Your data is saved to a single SQLite file in your user data directory:
+
+| | |
+|---|---|
+| **Windows** | `%LOCALAPPDATA%\CoinRollHunter\crh.db` |
+| **macOS** | `~/Library/Application Support/CoinRollHunter/crh.db` |
+| **Linux** | `~/.local/share/coinrollhunter/crh.db` |
+
+Back it up by copying that file. (If you already have a `crh.db` sitting next to the
+binary — how earlier versions worked — that one keeps being used, so upgrading never
+loses your holdings.)
+
+> **Unpack it first.** Windows will happily run an `.exe` straight from inside the zip
+> preview, but it does that by unpacking to a temporary folder that gets cleaned up later.
+> Drag the folder out of the zip before you click.
 
 > **Unsigned binaries.** The releases aren't code-signed yet, so the first launch trips
 > Gatekeeper (macOS: right-click → **Open**, then **Open**) or SmartScreen (Windows:
 > **More info → Run anyway**). The source is right here if you'd rather build it yourself.
+
+### From a terminal
+
+Every subcommand still works. On Windows use `cli\coinrollhunter.exe` — the top-level
+`CoinRollHunter.exe` is built for the GUI subsystem and can't print to a console.
+
+```bash
+./coinrollhunter serve --db crh.db --addr 127.0.0.1:8787
+```
 
 Want to see it populated before entering your own holdings? Run the demo:
 

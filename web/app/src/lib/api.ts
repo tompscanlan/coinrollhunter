@@ -84,4 +84,7 @@ export const api = {
   supplies: crud<Supply>('supplies'),
   keepers: crud<Keeper>('keepers'),
   losses: crud<Loss>('losses'),
+  // Stop the local server. The double-clicked app has no console, so this is the
+  // only way to quit it short of Task Manager (om-9p0l).
+  quit: () => req<void>('POST', '/quit'),
 }

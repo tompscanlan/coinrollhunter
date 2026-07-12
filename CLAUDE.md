@@ -104,6 +104,25 @@ Remaining polish (not yet done): **junk-by-face** entry, **premium** in the Hold
 merchant-of-record monetization wiring. **ADR-004** — stack-over-time vs indexes
 (gold:silver, S&P, CPI) — is deferred; the box-link + appended spot history are the data foundation.
 
+Added 2026-07-12 (zero-friction launch, om-9p0l): the app is for people who do not open
+terminals, and `coinrollhunter` with no args used to print usage and exit 2 — a double-click
+was a console flash and nothing else. Now **no-arg = run the app**: it picks a database, serves,
+and opens the UI (Chromium `--app=` window if Edge/Chrome is there, else the default browser;
+a browser that won't start is logged, never fatal). The DB moved to a per-user data dir
+(`%LOCALAPPDATA%`/`Application Support`/`XDG_DATA_HOME`) — **compat rule: an existing `crh.db`
+in cwd still wins**, so upgrading never looks like data loss. `serveStore` now takes `serveOpts`
+and binds its own listener, which buys single-instance (bind fails → probe `/api/health` → if
+it's us, reopen the browser and exit 0; if it's a stranger, fall back to an ephemeral port) and
+a race-free `onReady` for the browser. **Windows ships two binaries** from one source, because
+the subsystem is baked into the PE: `CoinRollHunter.exe` (`-H=windowsgui`, no console — the one
+you click) and `cli/coinrollhunter.exe` (console, for the subcommands; the GUI build has no
+valid std handles and cannot print). No console ⇒ stdout/stderr go to a log file in the data
+dir, fatal startup errors go to a `MessageBoxW` (pure `syscall`, no CGO), and the UI gets a
+**Quit** button (`POST /api/quit`) since there is no Ctrl-C. All still `CGO_ENABLED=0`, all six
+targets still cross-compile from Linux — which is exactly why Wails/webview_go were rejected:
+they need CGO + a Windows toolchain and would cost us single-box releases. Still open:
+code-signing (SmartScreen/Gatekeeper still warn).
+
 Build notes: `make build` (UI then Go). In this container, Go needs a writable cache —
 `go env -w GOCACHE=/go/cache`. The UI build needs Node 22 + npm registry access. `web/dist`
 is a git-ignored build artifact (only its `.gitkeep` is committed, so `go:embed all:dist`

@@ -12,9 +12,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/tompscanlan/coinrollhunter/internal/api"
@@ -30,9 +32,14 @@ import (
 var version = "dev"
 
 func main() {
+	// No arguments: this is a double-click, not a shell. Run the app rather than
+	// printing usage to a console that is about to close (om-9p0l).
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+		if err := runApp(); err != nil {
+			showFatal("CoinRollHunter could not start", err.Error())
+			os.Exit(1)
+		}
+		return
 	}
 	switch os.Args[1] {
 	case "migrate":
@@ -65,6 +72,10 @@ func usage() {
 	fmt.Fprint(os.Stderr, `coinrollhunter — local-first coins & bullion tracker
 
 usage:
+  coinrollhunter
+      No arguments: start the app and open it in a browser. This is what a
+      double-clicked binary does. The database lives in your user data
+      directory, unless there is already a crh.db in the current directory.
   coinrollhunter migrate --holdings FILE --crh FILE [--db crh.db]
       Import the prototype JSON (pm_holdings.json + crh_ledger.json) into SQLite.
   coinrollhunter serve [--db crh.db] [--addr 127.0.0.1:8787]
@@ -142,7 +153,12 @@ func runServe(args []string) error {
 	}
 	defer s.Close()
 
-	return serveStore(s, *dbPath, *addr, *spotProvider, *spotInterval)
+	return serveStore(s, serveOpts{
+		dbPath:       *dbPath,
+		addr:         *addr,
+		spotProvider: *spotProvider,
+		spotInterval: *spotInterval,
+	})
 }
 
 // runDemo seeds a separate demo database with the fictional dataset (only when
@@ -193,15 +209,57 @@ func runDemo(args []string) error {
 
 	// Spot polling stays off: the demo ships its own price history, and keeping
 	// it deterministic beats mixing in live quotes.
-	return serveStore(s, *dbPath, *addr, "none", 6*time.Hour)
+	return serveStore(s, serveOpts{
+		dbPath:       *dbPath,
+		addr:         *addr,
+		spotProvider: "none",
+		spotInterval: 6 * time.Hour,
+	})
+}
+
+// serveOpts configures serveStore. addr and listener are alternatives: the CLI
+// paths name an address and let the server bind it; the double-click path binds
+// first (so it can react to a port already in use) and hands the listener over.
+type serveOpts struct {
+	dbPath       string
+	addr         string
+	listener     net.Listener
+	spotProvider string
+	spotInterval time.Duration
+	// onReady, if set, is called with the UI's URL once the port is bound and
+	// serving. The launch path opens the browser here rather than on a timer —
+	// the listener is the only honest signal that the UI can answer.
+	onReady func(url string)
 }
 
 // serveStore runs the HTTP server (REST API + embedded UI) over an open store
-// until interrupted — shared by `serve` and `demo`.
-func serveStore(s *store.Store, dbPath, addr, spotProvider string, spotInterval time.Duration) error {
+// until interrupted — shared by `serve`, `demo`, and the double-click path.
+func serveStore(s *store.Store, o serveOpts) error {
+	ln := o.listener
+	if ln == nil {
+		var err error
+		if ln, err = net.Listen("tcp", o.addr); err != nil {
+			return err
+		}
+	}
+	defer ln.Close()
+	addr := ln.Addr().String()
+
+	// Quit from the UI. With no console there is no Ctrl-C, so a GUI user has no
+	// other way to stop the server — it would just linger in Task Manager. The
+	// route is wrapped here rather than added to internal/api: shutting the
+	// process down is the command's business, not the API's.
+	quit := make(chan struct{})
+	var quitOnce sync.Once
+	mux := http.NewServeMux()
+	mux.Handle("/", api.Handler(s, web.FS()))
+	mux.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		quitOnce.Do(func() { close(quit) })
+	})
+
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           api.Handler(s, web.FS()),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -211,19 +269,28 @@ func serveStore(s *store.Store, dbPath, addr, spotProvider string, spotInterval 
 
 	// Background spot polling (ADR-007): keep valuations fresh while we run. Opt out with
 	// --spot-provider=none; any fetch failure is logged and skipped (manual entry remains).
-	if !spot.Disabled(spotProvider) {
-		if prov, err := spot.ByName(spotProvider, nil); err != nil {
+	if !spot.Disabled(o.spotProvider) {
+		if prov, err := spot.ByName(o.spotProvider, nil); err != nil {
 			fmt.Fprintln(os.Stderr, "spot:", err, "— polling disabled")
 		} else {
-			go spot.NewPoller(prov, s, spotInterval).Run(ctx)
+			go spot.NewPoller(prov, s, o.spotInterval).Run(ctx)
 		}
 	}
 
 	errc := make(chan error, 1)
-	go func() {
-		fmt.Printf("coinrollhunter serving on http://%s  (db: %s)\n", addr, dbPath)
-		errc <- srv.ListenAndServe()
-	}()
+	go func() { errc <- srv.Serve(ln) }()
+
+	url := "http://" + addr
+	fmt.Printf("coinrollhunter serving on %s  (db: %s)\n", url, o.dbPath)
+	if o.onReady != nil {
+		o.onReady(url)
+	}
+
+	shutdown := func() error {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	}
 
 	select {
 	case err := <-errc:
@@ -231,11 +298,12 @@ func serveStore(s *store.Store, dbPath, addr, spotProvider string, spotInterval 
 			return nil
 		}
 		return err
+	case <-quit:
+		fmt.Println("quit requested — shutting down…")
+		return shutdown()
 	case <-ctx.Done():
 		fmt.Println("\nshutting down…")
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutCtx)
+		return shutdown()
 	}
 }
 

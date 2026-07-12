@@ -20,7 +20,7 @@
   } from '$lib/grids'
   import type { Branch } from '$lib/types'
   import SettingsPanel from '$lib/components/SettingsPanel.svelte'
-  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon } from 'lucide-svelte'
+  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon, Power } from 'lucide-svelte'
 
   type View = 'overview' | 'do' | 'insights' | 'edit'
   type DataTab = 'holdings' | 'rolls' | 'trips' | 'branches' | 'supplies' | 'keepers' | 'losses'
@@ -33,6 +33,21 @@
   let dark = $state(false)
   let settingsOpen = $state(false)
   let landed = $state(false)
+  let quit = $state(false)
+
+  // Closing the browser window leaves the server running with no console to
+  // Ctrl-C, so it would sit in Task Manager forever. Quitting is a real action
+  // the app has to offer (om-9p0l). Every write is already committed to SQLite,
+  // so there is nothing to save — but it does end the session, hence the confirm.
+  async function quitApp() {
+    if (!confirm('Quit CoinRollHunter? Your data is already saved.')) return
+    quit = true
+    try {
+      await api.quit()
+    } catch {
+      // The server closing the connection mid-response is the success case.
+    }
+  }
 
   // A fresh database has no holdings and no roll-txn buys. ADR-012 §4: land such
   // a user on an obvious action, not a wall of zeros — Overview also shows a
@@ -139,6 +154,17 @@
   }
 </script>
 
+{#if quit}
+  <!-- The server is gone, so the page cannot do anything anymore. Say so plainly
+       rather than leaving a live-looking dashboard whose every click fails. -->
+  <div class="flex min-h-svh flex-col items-center justify-center gap-3 px-4 text-center">
+    <span class="text-4xl">🪙</span>
+    <h1 class="text-xl font-bold text-primary">CoinRollHunter has closed</h1>
+    <p class="text-sm text-muted-foreground">
+      Your data is saved. You can close this window — start the app again any time.
+    </p>
+  </div>
+{:else}
 <div class="mx-auto min-h-svh max-w-6xl px-4 pb-20 pt-6">
   <!-- header -->
   <header class="flex items-center justify-between gap-3">
@@ -158,6 +184,9 @@
       </Button>
       <Button variant="ghost" size="icon" title="Toggle theme" onclick={() => (dark = !dark)}>
         {#if dark}<Sun class="size-4" />{:else}<Moon class="size-4" />{/if}
+      </Button>
+      <Button variant="ghost" size="icon" title="Quit CoinRollHunter" onclick={quitApp}>
+        <Power class="size-4" />
       </Button>
     </div>
   </header>
@@ -295,6 +324,7 @@
     {/if}
   </main>
 </div>
+{/if}
 
 {#if settingsOpen}
   <SettingsPanel spot={report?.spot} onClose={() => (settingsOpen = false)} onSaved={refresh} />
