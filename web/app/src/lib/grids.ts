@@ -22,6 +22,7 @@ import type { ItemType, Holding, RollTxn, Trip, Branch, Supply, Keeper, Loss } f
 // these so typing offers your own existing entries (plus the built-in presets).
 let catalog: ItemType[] = [] // item_types — powers Product autocomplete + autofill
 let holdingSources: string[] = [] // distinct dealer/source names from holdings
+let holdingLocations: string[] = [] // distinct custody locations from holdings
 let banks: string[] = [] // distinct bank names, unioned across roll txns + trips
 // Find-taxonomy autocomplete: the documented ADR-006 vocab unioned with whatever
 // category/subcategory strings already exist in your holdings (open vocabulary).
@@ -121,6 +122,7 @@ export interface FlatHolding {
   face_value_usd: number
   acquired: string
   source: string
+  location?: string // custody: where the specimen physically is (home safe, SDB, depository)
   from_box: string // roll_txn id (as string) this CRH find came from; '' = none
   category?: string // CRH find taxonomy (ADR-006) — only meaningful for activity='crh'
   subcategory?: string
@@ -169,6 +171,9 @@ function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Hol
     face_value_usd: Number(row.face_value_usd) || 0,
     acquired: row.acquired,
     source: row.source,
+    // Custody. Carried explicitly: the PUT replaces the whole row, so a location
+    // left out here is a location erased on the next edit of that lot.
+    location: row.location ?? '',
     category: row.category ?? '',
     subcategory: row.subcategory ?? '',
     trophy: Boolean(row.trophy),
@@ -205,6 +210,10 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'face_value_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px' } },
     { accessorKey: 'acquired', header: 'Acquired', meta: { editor: 'date', width: '150px' } },
     { accessorKey: 'source', header: 'Source', meta: { editor: 'autocomplete', placeholder: 'APMEX', suggestions: () => holdingSources } },
+    // Custody — where the thing actually is. Free text over your own vocabulary
+    // (same open-vocabulary autocomplete as Source): "home safe" and "SDB #214" are
+    // both fine, and answering "where IS the 1943-S?" beats a taxonomy nobody fills in.
+    { accessorKey: 'location', header: 'Location', meta: { editor: 'autocomplete', placeholder: 'home safe', suggestions: () => holdingLocations } },
     { accessorKey: 'from_box', header: 'From box (CRH)', meta: { editor: 'select', optionsFn: boxOptions, width: '190px' } },
     // CRH find taxonomy (ADR-006) — denom-scoped open vocabulary; the dropdowns
     // suggest the documented buckets plus whatever you've already used.
@@ -220,6 +229,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     ])
     catalog = types
     holdingSources = distinct(holdings.map((h) => h.source))
+    holdingLocations = distinct(holdings.map((h) => h.location))
     // Seed the taxonomy dropdowns from the documented vocab + your own entries.
     findCategories = distinct([...FIND_CATEGORIES, ...holdings.map((h) => h.category)])
     findSubcategories = distinct([...FIND_SUBCATEGORIES, ...holdings.map((h) => h.subcategory)])
@@ -247,6 +257,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         face_value_usd: h.face_value_usd,
         acquired: h.acquired,
         source: h.source,
+        location: h.location ?? '', // omitempty on the wire — blank stays blank, never "undefined"
         from_box: h.roll_txn_id ? String(h.roll_txn_id) : '',
         category: h.category ?? '',
         subcategory: h.subcategory ?? '',
@@ -278,6 +289,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     face_value_usd: 0,
     acquired: today(),
     source: '',
+    location: '',
     from_box: '',
     category: '',
     subcategory: '',

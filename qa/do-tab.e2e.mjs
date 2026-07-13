@@ -254,6 +254,65 @@ try {
   ok('mixed return denom binds to "Mixed" (value "") in Edit grid',
     returnDenomSelects.length >= 1 && returnDenomSelects.every((c) => c.value === '' && c.label === 'Mixed'),
     JSON.stringify(returnDenomSelects))
+
+  // === Holdings grid: custody Location (om-yhbr) ===
+  // "Where IS the 1943-S?" — lots.location has been in the schema since migration
+  // 0001 and wired through model/store/API, but was never surfaced. It mirrors
+  // Source: free text with a datalist over your own distinct values (ADR-006).
+  const goHoldings = async () => {
+    // exact: the Edit view also renders an "edits save instantly…" hint button.
+    await page.getByRole('button', { name: 'Edit', exact: true }).click()
+    await page.getByRole('button', { name: 'Holdings', exact: true }).click()
+    await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  }
+  // Existing rows only — the trailing new-row draft has no Delete button.
+  const locCells = () =>
+    page.locator('tbody tr:has(button[title="Delete row"]) input[list="dl-holdings-location"]')
+  const commit = async (input, value) => {
+    await input.fill(value)
+    await input.blur() // onchange → saveRow
+    await page.waitForTimeout(500)
+  }
+
+  await goHoldings()
+  ok('Holdings grid shows a Location column',
+    (await page.locator('section table thead th', { hasText: 'Location' }).count()) === 1)
+
+  // Empty stays empty: an unfiled lot renders blank — not "null", not a placeholder value.
+  const emptyLocs = await locCells().evaluateAll((els) => els.map((e) => e.value))
+  ok('a lot with no location renders blank (not "null"/"undefined")',
+    emptyLocs.length >= 1 && emptyLocs.every((v) => v === ''), JSON.stringify(emptyLocs))
+
+  await commit(locCells().first(), 'home safe')
+  const filed = (await api('/lots')).filter((l) => l.location === 'home safe')
+  ok('editing Location persists to lots.location', filed.length === 1, `${filed.length} lot(s) @ home safe`)
+
+  // …and survives a reload (it is stored, not just held in the grid's memory).
+  await page.reload({ waitUntil: 'networkidle' })
+  await goHoldings()
+  const reloaded = await locCells().first().inputValue()
+  ok('Location survives a reload', reloaded === 'home safe', `input "${reloaded}"`)
+
+  // Autocomplete: the Location cell is bound to the grid's shared suggestion
+  // datalist, wired exactly like Source — a `suggestions` closure over your own
+  // distinct values (ADR-006 open vocabulary).
+  //
+  // The datalist's *contents* are deliberately NOT asserted here. EditableGrid
+  // renders the datalist once at mount, before load() has filled the suggestion
+  // caches, so NO autocomplete in the app (Source, Product, Category, Bank, and
+  // therefore Location) currently offers your own entries — only the static
+  // presets. That is a shared-renderer bug that predates this column and spans six
+  // grids; it is tracked as om-rubx, and Location starts suggesting the moment it
+  // lands, with no change here.
+  const wiredToDatalist =
+    (await locCells().first().getAttribute('list')) === 'dl-holdings-location' &&
+    (await page.locator('datalist#dl-holdings-location').count()) === 1
+  ok('Location is wired to the shared suggestion datalist (exactly as Source is)', wiredToDatalist)
+
+  // Free text still wins: a value that is not in the suggestion list saves fine.
+  await commit(locCells().nth(1), 'safe deposit box 214')
+  ok('a novel (unsuggested) Location saves as free text',
+    (await api('/lots')).some((l) => l.location === 'safe deposit box 214'))
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})
