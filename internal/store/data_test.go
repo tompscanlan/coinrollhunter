@@ -141,3 +141,84 @@ func TestDenomlessReturnRoundTrips(t *testing.T) {
 		t.Errorf("returns = %v, want 480", r.Returns)
 	}
 }
+
+// TestHoldingLocationRoundTrips pins custody (lots.location) through insert, read
+// back, and update. The column has existed since migration 0001 and the Holdings
+// grid now edits it (om-yhbr) — "where IS the 1943-S?" is only answerable while the
+// write path carries it. Both crud.go statements name their columns positionally,
+// so dropping `location` from either one would still compile and still pass every
+// count-based test while silently blanking the field on the next edit of a row.
+// Empty must also survive as empty: a lot you have not filed anywhere is blank, not
+// a placeholder.
+func TestHoldingLocationRoundTrips(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	itID, err := s.InsertItemType(model.ItemType{
+		Name: "90% half (1964 & earlier)", Metal: "silver", FineOzEach: 0.3617, Fineness: "90%",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filed := model.Holding{
+		ItemTypeID: itID, Activity: "bullion", Qty: 1, BasisUSD: 20,
+		Acquired: "2026-03-01", Source: "Coin show table 12", Location: "home safe",
+	}
+	filedID, err := s.InsertHolding(filed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A lot you have not filed anywhere: location stays empty end to end.
+	unfiled := model.Holding{
+		ItemTypeID: itID, Activity: "crh", Qty: 1, BasisUSD: 0.5, Acquired: "2026-03-02",
+	}
+	unfiledID, err := s.InsertHolding(unfiled)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := func() map[int64]model.Holding {
+		hs, err := s.ListHoldings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := make(map[int64]model.Holding, len(hs))
+		for _, h := range hs {
+			m[h.ID] = h
+		}
+		return m
+	}
+
+	got := byID()
+	if got[filedID].Location != "home safe" {
+		t.Errorf("inserted location = %q, want %q", got[filedID].Location, "home safe")
+	}
+	if got[unfiledID].Location != "" {
+		t.Errorf("unfiled location = %q, want \"\" (empty stays empty)", got[unfiledID].Location)
+	}
+
+	// Moving a lot (the Holdings-grid edit path) must persist the new custody...
+	moved := got[filedID]
+	moved.Location = "safe deposit box 214"
+	if err := s.UpdateHolding(filedID, moved); err != nil {
+		t.Fatal(err)
+	}
+	// ...and an unrelated edit must not blank a neighbor's location.
+	touched := got[unfiledID]
+	touched.Qty = 2
+	if err := s.UpdateHolding(unfiledID, touched); err != nil {
+		t.Fatal(err)
+	}
+
+	got = byID()
+	if got[filedID].Location != "safe deposit box 214" {
+		t.Errorf("updated location = %q, want %q", got[filedID].Location, "safe deposit box 214")
+	}
+	if got[unfiledID].Location != "" {
+		t.Errorf("unfiled location after update = %q, want \"\"", got[unfiledID].Location)
+	}
+}
