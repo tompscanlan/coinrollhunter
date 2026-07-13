@@ -6,13 +6,17 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
+	"github.com/tompscanlan/coinrollhunter/internal/export"
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
 )
@@ -42,6 +46,37 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, calc.ComputeFindsReport(d))
+	})
+
+	// export: the whole database as a zip the user can open in a spreadsheet — CSVs,
+	// a lossless data.json, and the photo originals (internal/export). A browser can
+	// only take a single file, hence the zip; `coinrollhunter export DIR` writes the
+	// same bundle as a plain directory. This is data, so unlike POST /api/quit it
+	// belongs in the API rather than in the command.
+	mux.HandleFunc("GET /api/export", func(w http.ResponseWriter, r *http.Request) {
+		// Built into a temp file, not straight down the wire: once bytes are on the
+		// socket the status is spent, and a half-written zip that says 200 is worse
+		// than an error. A bundle carrying a collection's photos is also not something
+		// to hold in memory.
+		f, err := os.CreateTemp("", "coinrollhunter-export-*.zip")
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		defer os.Remove(f.Name())
+		defer f.Close()
+
+		if err := export.WriteZip(s, f); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			writeErr(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+export.Filename(time.Now())+`"`)
+		io.Copy(w, f)
 	})
 
 	// spot: GET history, GET latest, POST append/upsert

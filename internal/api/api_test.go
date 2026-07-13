@@ -1,15 +1,19 @@
 package api_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tompscanlan/coinrollhunter/internal/api"
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
@@ -121,4 +125,51 @@ func countLots(t *testing.T, base string) int {
 		t.Fatal(err)
 	}
 	return len(lots)
+}
+
+// The download the UI's "Export my data" button pulls: a real zip, named for the day
+// it was made, with the whole bundle inside. The bundle's own contents are the
+// export package's tests to keep; this asserts the HTTP contract around them.
+func TestExportEndpointServesAZipBundle(t *testing.T) {
+	srv := newServer(t)
+	resp, err := http.Get(srv.URL + "/api/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("Content-Type = %q, want application/zip", ct)
+	}
+	cd := resp.Header.Get("Content-Disposition")
+	if !strings.HasPrefix(cd, "attachment;") {
+		t.Errorf("Content-Disposition = %q — the browser would render it, not save it", cd)
+	}
+	if !strings.Contains(cd, "coinrollhunter-export-"+time.Now().Format("2006-01-02")+".zip") {
+		t.Errorf("Content-Disposition = %q, want today's dated bundle name", cd)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("the download is not a readable zip: %v", err)
+	}
+	got := map[string]bool{}
+	for _, f := range zr.File {
+		got[f.Name] = true
+	}
+	for _, want := range []string{
+		"item_type.csv", "lots.csv", "roll_txns.csv", "keepers.csv", "trips.csv", "supplies.csv",
+		"losses.csv", "branches.csv", "branch_aliases.csv", "spot.csv", "settings.csv", "photos.csv",
+		"data.json", "manifest.json", "photos/",
+	} {
+		if !got[want] {
+			t.Errorf("the downloaded bundle is missing %s", want)
+		}
+	}
 }
