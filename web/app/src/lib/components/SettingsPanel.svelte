@@ -230,7 +230,9 @@
       </div>
       <p class="text-xs text-muted-foreground">
         This is the copy you can <em>read</em>. For a copy the app can be <em>restored</em> from,
-        run <code>coinrollhunter backup</code>.
+        run <code>coinrollhunter backup</code>. Prefer a plain folder to a zip?
+        <code>coinrollhunter export DIR</code> writes the same bundle into an empty directory you
+        choose — it never overwrites files already there.
       </p>
     </section>
 

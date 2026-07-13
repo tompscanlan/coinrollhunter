@@ -35,6 +35,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -295,13 +296,15 @@ func guardEntryName(name string) error {
 // (PhotoRoot of the user's real database), passed explicitly so it can never be confused
 // with the store's own path.
 //
-// The bundle is written DIRECTLY into dir (no staging dir, no rename). On failure it removes
-// ONLY what it created — the whole directory if it created dir, else just the top-level
-// entries it wrote — so a retry is never blocked by a partial. On SUCCESS it touches nothing
-// else. This deliberately does NOT rename over dir: a rename would delete anything a
-// concurrent process dropped into dir after the emptiness check (a data-loss race), replace a
-// destination that is a SYMLINK to a synced/removable target with a local directory (the
-// bundle never reaching the real target), and fail outright for `export .`.
+// The bundle is written DIRECTLY into dir (no staging dir, no rename). Files are opened with
+// O_EXCL, so a name that collides with something that appeared after the emptiness check is a
+// loud error, never a silent overwrite. On failure it removes EXACTLY the files it wrote and
+// prunes only the (now-empty) directories it created — never a pre-existing directory, never a
+// symlink, never a subtree, so a file a concurrent process added is always left intact. On
+// SUCCESS it touches nothing else. This deliberately does NOT rename over dir: a rename would
+// delete anything dropped into dir after the check (a data-loss race), replace a destination
+// that is a SYMLINK to a synced/removable target with a local directory (the bundle never
+// reaching the real target), and fail outright for `export .`.
 func WriteDir(ctx context.Context, s *store.Store, photoRoot, dir string) error {
 	entries, err := os.ReadDir(dir)
 	dirExisted := true
@@ -321,18 +324,15 @@ func WriteDir(ctx context.Context, s *store.Store, photoRoot, dir string) error 
 	}
 
 	rec := &recordingDirSink{inner: dirSink(dir)}
-	if err := write(ctx, s, photoRoot, rec); err != nil {
-		// Clean up only what we created — never a pre-existing directory or a symlink.
-		if !dirExisted {
-			os.RemoveAll(dir)
-		} else {
-			for name := range rec.topLevel {
-				os.RemoveAll(filepath.Join(dir, name))
-			}
-		}
-		return err
+	werr := write(ctx, s, photoRoot, rec)
+	if werr == nil {
+		return nil
 	}
-	return nil
+	// Remove exactly what we wrote, and nothing of anyone else's.
+	if cerr := rec.cleanup(dir, dirExisted); cerr != nil {
+		return fmt.Errorf("%w; also, cleaning up the failed export left files behind (%v) — you may need to remove leftovers in %s by hand", werr, cerr, dir)
+	}
+	return werr
 }
 
 // dirSink writes a bundle entry as a file under a directory, creating parents (the
@@ -350,27 +350,84 @@ func (d dirSink) Create(name string) (io.Writer, error) {
 	if strings.HasSuffix(name, "/") { // a reserved-but-empty directory
 		return io.Discard, os.MkdirAll(p, 0o755)
 	}
-	return os.Create(p)
+	// O_EXCL, not os.Create's O_TRUNC: the no-clobber check guaranteed the directory empty at
+	// the start, so O_EXCL only ever fires on a file that appeared CONCURRENTLY — a loud error
+	// instead of silently truncating someone else's file.
+	return os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 }
 
-// recordingDirSink is dirSink plus a record of the top-level names created, so a failed
-// WriteDir into a pre-existing directory can remove exactly what it wrote and nothing of the
-// user's. Top-level: "item_type.csv" for a CSV, "photos" for anything under "photos/".
+// recordingDirSink is dirSink plus a precise record of the FILES and DIRECTORIES it actually
+// created, so a failed WriteDir can undo exactly its own output and nothing of a concurrent
+// writer's. It records only when the underlying Create SUCCEEDS: a file that failed O_EXCL
+// (already there — someone else's) is never in the set, so cleanup can never remove it.
 type recordingDirSink struct {
-	inner    dirSink
-	topLevel map[string]struct{}
+	inner dirSink
+	files []string            // relative paths of files created, in order
+	dirs  []string            // relative paths of directories created (never the root dir)
+	seen  map[string]struct{} // dedupe dirs
 }
 
 func (r *recordingDirSink) Create(name string) (io.Writer, error) {
-	if r.topLevel == nil {
-		r.topLevel = map[string]struct{}{}
+	w, err := r.inner.Create(name)
+	if err != nil {
+		return nil, err
 	}
-	top := name
-	if i := strings.IndexByte(name, '/'); i >= 0 {
-		top = name[:i]
+	clean := strings.TrimSuffix(name, "/")
+	if strings.HasSuffix(name, "/") {
+		r.recordDir(clean) // a reserved directory entry, e.g. "photos/"
+	} else {
+		r.files = append(r.files, filepath.FromSlash(clean))
+		if i := strings.LastIndexByte(clean, '/'); i >= 0 {
+			r.recordDir(clean[:i]) // and every parent directory it lives under
+		}
 	}
-	r.topLevel[top] = struct{}{}
-	return r.inner.Create(name)
+	return w, nil
+}
+
+// recordDir remembers a created subdirectory and all of its ancestors (in slash form). The
+// root dir is never recorded here — WriteDir decides separately whether it created that.
+func (r *recordingDirSink) recordDir(rel string) {
+	if r.seen == nil {
+		r.seen = map[string]struct{}{}
+	}
+	for rel != "" {
+		if _, ok := r.seen[rel]; !ok {
+			r.seen[rel] = struct{}{}
+			r.dirs = append(r.dirs, filepath.FromSlash(rel))
+		}
+		if i := strings.LastIndexByte(rel, '/'); i >= 0 {
+			rel = rel[:i]
+		} else {
+			rel = ""
+		}
+	}
+}
+
+// cleanup undoes a failed export: it removes exactly the files it wrote, then prunes the
+// directories it created that are now empty (deepest first), and finally the root dir if it
+// created that and it is now empty. It uses os.Remove, never os.RemoveAll — so a directory
+// still holding a file a concurrent process added is left in place, with that file intact
+// (and a later export's no-clobber check will then, correctly, report the directory not
+// empty). It returns an error only if removing one of OUR OWN files failed unexpectedly — the
+// case that would leave a partial behind (e.g. an open handle on Windows) — so WriteDir can
+// tell the user the destination may need manual cleanup.
+func (r *recordingDirSink) cleanup(dir string, dirExisted bool) error {
+	var firstErr error
+	for _, f := range r.files {
+		if err := os.Remove(filepath.Join(dir, f)); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Deepest paths first, so a child is pruned before its parent is tried.
+	dirs := append([]string(nil), r.dirs...)
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, d := range dirs {
+		os.Remove(filepath.Join(dir, d)) // empty-only; a non-empty (concurrent) dir is left alone
+	}
+	if !dirExisted {
+		os.Remove(dir) // empty-only; if concurrent content remains, dir correctly stays
+	}
+	return firstErr
 }
 
 // --- the builder ---------------------------------------------------------------
@@ -675,42 +732,56 @@ func (r jsonRow) MarshalJSON() ([]byte, error) {
 
 // --- writing, with a checksum as we go -----------------------------------------
 
-func writeCSV(out sink, name string, cols []string, rows [][]any) (string, error) {
+// writeCSV/writeJSON both CLOSE the file on every return path — including a write error —
+// via a deferred close. A file left open cannot be removed on Windows, so a leftover from a
+// failed export would block the next retry (a sharing violation). The checksum comes from
+// the running hash and is read before the close.
+func writeCSV(out sink, name string, cols []string, rows [][]any) (sum string, err error) {
 	w, err := create(out, name)
 	if err != nil {
 		return "", err
 	}
+	defer func() {
+		if cerr := w.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("export %s: %w", name, cerr)
+		}
+	}()
 	cw := csv.NewWriter(w)
 	rec := make([]string, len(cols))
-	if err := cw.Write(cols); err != nil {
+	if err = cw.Write(cols); err != nil {
 		return "", fmt.Errorf("export %s: %w", name, err)
 	}
 	for _, r := range rows {
 		for i, v := range r {
 			rec[i] = cell(v)
 		}
-		if err := cw.Write(rec); err != nil {
+		if err = cw.Write(rec); err != nil {
 			return "", fmt.Errorf("export %s: %w", name, err)
 		}
 	}
 	cw.Flush()
-	if err := cw.Error(); err != nil {
+	if err = cw.Error(); err != nil {
 		return "", fmt.Errorf("export %s: %w", name, err)
 	}
-	return w.close(name)
+	return w.sum(), nil
 }
 
-func writeJSON(out sink, name string, v any) (string, error) {
+func writeJSON(out sink, name string, v any) (sum string, err error) {
 	w, err := create(out, name)
 	if err != nil {
 		return "", err
 	}
+	defer func() {
+		if cerr := w.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("export %s: %w", name, cerr)
+		}
+	}()
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
+	if err = enc.Encode(v); err != nil {
 		return "", fmt.Errorf("export %s: %w", name, err)
 	}
-	return w.close(name)
+	return w.sum(), nil
 }
 
 // create opens a bundle entry and tees everything written to it through a sha256, so
@@ -737,15 +808,18 @@ func (hw *hashWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// close finishes the entry (the directory sink hands back a real file; the zip
-// writer does not) and returns its checksum.
-func (hw *hashWriter) close(name string) (string, error) {
+// sum is the checksum of everything written so far. Read it before Close — the hash
+// accumulates during Write and is independent of the file handle.
+func (hw *hashWriter) sum() string { return hex.EncodeToString(hw.h.Sum(nil)) }
+
+// Close closes the underlying entry (the directory sink hands back a real file; the zip
+// writer's entry is not a Closer, so this is a no-op there). Callers defer it, so the file
+// handle is released on the error path too — an open handle can't be removed on Windows.
+func (hw *hashWriter) Close() error {
 	if c, ok := hw.w.(io.Closer); ok {
-		if err := c.Close(); err != nil {
-			return "", fmt.Errorf("export %s: %w", name, err)
-		}
+		return c.Close()
 	}
-	return hex.EncodeToString(hw.h.Sum(nil)), nil
+	return nil
 }
 
 // --- photos ---------------------------------------------------------------------
@@ -859,13 +933,17 @@ func copyPhoto(out sink, src, rel string) (copied bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("export %s: %w", rel, err)
 	}
-	if _, err := w.Write(data); err != nil {
-		return false, fmt.Errorf("export %s: %w", rel, err)
-	}
+	// Close on every path, including the write error below — a file left open can't be
+	// removed on Windows, so a leftover would block the retry.
 	if c, ok := w.(io.Closer); ok {
-		if err := c.Close(); err != nil {
-			return false, fmt.Errorf("export %s: %w", rel, err)
-		}
+		defer func() {
+			if cerr := c.Close(); cerr != nil && err == nil {
+				err = fmt.Errorf("export %s: %w", rel, cerr)
+			}
+		}()
+	}
+	if _, err = w.Write(data); err != nil {
+		return false, fmt.Errorf("export %s: %w", rel, err)
 	}
 	return true, nil
 }

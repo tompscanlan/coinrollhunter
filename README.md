@@ -159,6 +159,12 @@ they come straight from the data.)
 Exporting never touches your database. The command reads a throwaway snapshot, so pointing it at
 an old archive can't quietly upgrade the file you were trying to preserve.
 
+`coinrollhunter export DIR` writes into an **empty directory you choose** (it refuses a directory
+that already has files in it). If a file with the same name as one of the bundle's turns up in
+that directory *while the export is running*, it stops with an error rather than overwriting it;
+and if an export fails partway, it removes only the files it wrote — never anything that was
+already there or that another program put there.
+
 > **Unpack it first.** Windows will happily run an `.exe` straight from inside the zip
 > preview, but it does that by unpacking to a temporary folder that gets cleaned up later.
 > Drag the folder out of the zip before you click.

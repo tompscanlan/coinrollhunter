@@ -8,6 +8,7 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -1348,5 +1349,138 @@ func TestASuccessfulExportDoesNotDestroyFilesAddedDuringIt(t *testing.T) {
 	// The export succeeded and must NOT have deleted the bystander file.
 	if got, err := os.ReadFile(bystander); err != nil || string(got) != "do not delete me" {
 		t.Errorf("a successful export destroyed a file added to the directory during the export (err=%v) — the no-clobber race is back", err)
+	}
+}
+
+// --- round 6: harden write-in-place against a racing writer in the TARGET dir ----------
+
+// #3 (structural): every file a sink opens must be CLOSED before WriteDir's cleanup runs —
+// on the error path too. An open handle can't be removed on Windows, so a leftover partial
+// would block every retry. This asserts the close-ordering directly, independent of platform.
+type closeSpyWriter struct {
+	failWrite bool
+	closed    bool
+}
+
+func (w *closeSpyWriter) Write(p []byte) (int, error) {
+	if w.failWrite {
+		return 0, fmt.Errorf("simulated disk-full")
+	}
+	return len(p), nil
+}
+func (w *closeSpyWriter) Close() error { w.closed = true; return nil }
+
+type spySink struct{ w *closeSpyWriter }
+
+func (s spySink) Create(string) (io.Writer, error) { return s.w, nil }
+
+func TestBundleWritersCloseTheirFileEvenWhenTheWriteFails(t *testing.T) {
+	// writeCSV
+	{
+		w := &closeSpyWriter{failWrite: true}
+		if _, err := writeCSV(spySink{w}, "item_type.csv", []string{"a"}, [][]any{{int64(1)}}); err == nil {
+			t.Error("writeCSV: expected the write error to surface")
+		}
+		if !w.closed {
+			t.Error("writeCSV left the file OPEN after a write error — Windows cleanup would fail on it")
+		}
+	}
+	// writeJSON
+	{
+		w := &closeSpyWriter{failWrite: true}
+		if _, err := writeJSON(spySink{w}, "data.json", map[string]int{"a": 1}); err == nil {
+			t.Error("writeJSON: expected the write error to surface")
+		}
+		if !w.closed {
+			t.Error("writeJSON left the file OPEN after a write error")
+		}
+	}
+	// copyPhoto
+	{
+		src := filepath.Join(t.TempDir(), "p.jpg")
+		if err := os.WriteFile(src, []byte("bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		w := &closeSpyWriter{failWrite: true}
+		if _, err := copyPhoto(spySink{w}, src, "photos/o/p.jpg"); err == nil {
+			t.Error("copyPhoto: expected the write error to surface")
+		}
+		if !w.closed {
+			t.Error("copyPhoto left the file OPEN after a write error")
+		}
+	}
+}
+
+// #1: a file appearing in the destination AFTER the no-clobber check must NOT be silently
+// overwritten. With O_EXCL, the collision is a loud error and the concurrent file is intact.
+func TestExportRefusesToOverwriteAFileThatAppearsMidExport(t *testing.T) {
+	s := seeded(t)
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(dir, 0o755); err != nil { // empty when the no-clobber check runs
+		t.Fatal(err)
+	}
+	// After the check passes (during the read phase), a concurrent process drops a file whose
+	// name collides with a bundle file.
+	afterFirstTableRead = func() {
+		_ = os.WriteFile(filepath.Join(dir, "item_type.csv"), []byte("CONCURRENT — DO NOT OVERWRITE"), 0o644)
+	}
+	t.Cleanup(func() { afterFirstTableRead = nil })
+
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), dir); err == nil {
+		t.Fatal("export overwrote a file that appeared mid-export — a silent truncate")
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "item_type.csv"))
+	if err != nil {
+		t.Fatalf("the concurrent file was removed: %v", err)
+	}
+	if string(got) != "CONCURRENT — DO NOT OVERWRITE" {
+		t.Errorf("the concurrent file was overwritten: %q", got)
+	}
+}
+
+// #2: a mid-export failure must clean up ONLY the files we wrote — never a concurrent file,
+// even one under a directory we created. Here a concurrent manifest.json (dropped mid-export)
+// triggers the O_EXCL failure at the end; a top-level bystander and a bystander under our
+// photos/ dir must both survive, while our own outputs are removed.
+func TestFailureCleanupRemovesOnlyOurFilesNotConcurrentOnes(t *testing.T) {
+	s := seeded(t)
+	// A photo of ours, so photos/<owner>/<uid>.jpg is written and tracked.
+	writePhoto(t, s, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "lot", "ours", "obverse", "jpg", []byte("our photo"))
+
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	afterFirstTableRead = func() {
+		// Concurrent content that must survive cleanup:
+		_ = os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("keep me"), 0o644)
+		_ = os.MkdirAll(filepath.Join(dir, "photos"), 0o755)
+		_ = os.WriteFile(filepath.Join(dir, "photos", "intruder.txt"), []byte("keep me too"), 0o644)
+		// A concurrent manifest.json collides at the very end -> O_EXCL failure after all our
+		// files are written.
+		_ = os.WriteFile(filepath.Join(dir, "manifest.json"), []byte("{}"), 0o644)
+	}
+	t.Cleanup(func() { afterFirstTableRead = nil })
+
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), dir); err == nil {
+		t.Fatal("expected the concurrent manifest.json collision to fail the export")
+	}
+
+	// Concurrent files survive.
+	if b, err := os.ReadFile(filepath.Join(dir, "notes.txt")); err != nil || string(b) != "keep me" {
+		t.Errorf("cleanup deleted a concurrent top-level file (err=%v)", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "photos", "intruder.txt")); err != nil || string(b) != "keep me too" {
+		t.Errorf("cleanup deleted a concurrent file under a directory we created (err=%v)", err)
+	}
+	// Our own outputs are gone.
+	if _, err := os.Stat(filepath.Join(dir, "item_type.csv")); !os.IsNotExist(err) {
+		t.Errorf("cleanup left our item_type.csv behind (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "data.json")); !os.IsNotExist(err) {
+		t.Errorf("cleanup left our data.json behind (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "photos", "ours", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jpg")); !os.IsNotExist(err) {
+		t.Errorf("cleanup left our photo file behind (err=%v)", err)
 	}
 }

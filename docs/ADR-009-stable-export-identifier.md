@@ -295,16 +295,23 @@ Properties successive adversarial reviews turned from intention into guarantee:
   with a generic, undebuggable error. Export detects it first and errors naming the table, the
   column, and the row (its `uid`, else its identifying column) — so the user fixes one cell
   rather than losing the export to a mystery.
-- **The directory export writes in place and cleans up only its own output on failure.** After
-  the emptiness check it writes the bundle directly into the destination; on failure it removes
-  only what it created (the whole directory if it created it, else just the top-level entries it
-  wrote), so a partial never blocks a retry, and on success it touches nothing else. It
-  deliberately does NOT stage-and-rename over the destination: a rename would delete anything a
-  concurrent process dropped into the directory after the check (a data-loss race), replace a
-  destination that is a *symlink* to a synced/removable target with a local directory (the bundle
-  silently never reaching the real target), and fail outright for `export .`. Write-in-place has
-  none of those failure modes. (The zip download stays as it was — it already builds to a temp
-  file and commits only on success, which is correct for a single file.)
+- **The directory export writes in place, refuses to overwrite, and cleans up only its own
+  output.** After the emptiness check it writes the bundle directly into the destination. Files
+  are opened with `O_CREATE|O_EXCL` — the directory was empty at the check, so `O_EXCL` only ever
+  fires on a file that appeared *concurrently*, which is a loud error, never a silent overwrite.
+  Every file it opens is closed before cleanup runs, on the error path too (an open handle can't
+  be removed on Windows, which would leave a partial that blocks the retry). On failure it removes
+  *exactly* the files it wrote and prunes only the now-empty directories it created (`os.Remove`,
+  never `os.RemoveAll` — never a whole subtree, never a pre-existing directory or symlink), so a
+  file a concurrent process added is always left intact; if cleanup itself can't remove one of our
+  own files, the error says the destination may need manual cleanup rather than reporting a clean
+  failure over a leftover. On success it touches nothing else. It deliberately does NOT
+  stage-and-rename over the destination: a rename would delete anything dropped into the directory
+  after the check (a data-loss race), replace a destination that is a *symlink* to a
+  synced/removable target with a local directory (the bundle silently never reaching the real
+  target), and fail outright for `export .`. Write-in-place has none of those failure modes. (The
+  zip download stays as it was — it already builds to a temp file and commits only on success,
+  which is correct for a single file.)
 - **The settings table is an open key/value bag, so export flags what it does not recognise.**
   Nothing is dropped (that would be data loss), but any key beyond the six known tunables is
   named in `unexpected_settings[]`, so a credential a future feature parks there surfaces in

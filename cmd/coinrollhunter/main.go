@@ -107,7 +107,8 @@ usage:
       Write everything you own into DIR as spreadsheets you can open anywhere:
       a CSV per table, a data.json that keeps the types, and your photos in a
       folder beside them. That is "leave with your data"; backup is "restore my
-      app". DIR must be empty or new.
+      app". DIR must be empty or new; export won't overwrite files already there,
+      and if it fails partway it removes only the files it wrote.
   coinrollhunter version
       Print the build version.
 `)
@@ -180,6 +181,7 @@ func runExport(args []string) error {
 	fmt.Printf("Exported %s -> %s\n", src, dest)
 	fmt.Println("A CSV per table, a data.json that keeps the types, your photos in photos/, and a manifest.")
 	fmt.Println("Open the CSVs in any spreadsheet. Nothing here needs CoinRollHunter to read it.")
+	fmt.Println("These are the only files written here; export won't touch anything else in the directory.")
 	return nil
 }
 
