@@ -239,11 +239,13 @@ func ResolveDBPath(dbPath string) string {
 // only take a single file, and Explorer opens a zip as a folder while macOS
 // auto-extracts it — so a zip is the right artifact on every platform we ship.
 //
-// photoRoot is the directory the photo files live in (PhotoRoot of the user's real
-// database), passed explicitly so it can never be confused with the store's own path.
-func WriteZip(s *store.Store, photoRoot string, w io.Writer) error {
+// ctx carries the caller's cancellation (the HTTP request), so a browser that navigates
+// away releases the store's connection instead of holding it to the end. photoRoot is the
+// directory the photo files live in (PhotoRoot of the user's real database), passed
+// explicitly so it can never be confused with the store's own path.
+func WriteZip(ctx context.Context, s *store.Store, photoRoot string, w io.Writer) error {
 	zw := zip.NewWriter(w)
-	if err := write(s, photoRoot, zipSink{zw}); err != nil {
+	if err := write(ctx, s, photoRoot, zipSink{zw}); err != nil {
 		return err
 	}
 	return zw.Close()
@@ -289,53 +291,47 @@ func guardEntryName(name string) error {
 // reason it keeps it: a command that can silently overwrite the thing you were trying
 // to save is a footgun in the one place you least want one.
 //
-// photoRoot is the directory the photo files live in (PhotoRoot of the user's real
-// database), passed explicitly so it can never be confused with the store's own path.
+// ctx carries the caller's cancellation. photoRoot is the directory the photo files live in
+// (PhotoRoot of the user's real database), passed explicitly so it can never be confused
+// with the store's own path.
 //
-// The write is ATOMIC: the bundle is staged in a sibling temp directory and renamed into
-// place only on full success. So ANY mid-export failure — a non-finite number, a broken
-// sink, a full disk — leaves the destination absent, never a half-written partial. That
-// matters because the no-clobber rule above would otherwise refuse every retry of a
-// destination left non-empty by a failed run, wedging the user.
-func WriteDir(s *store.Store, photoRoot, dir string) error {
+// The bundle is written DIRECTLY into dir (no staging dir, no rename). On failure it removes
+// ONLY what it created — the whole directory if it created dir, else just the top-level
+// entries it wrote — so a retry is never blocked by a partial. On SUCCESS it touches nothing
+// else. This deliberately does NOT rename over dir: a rename would delete anything a
+// concurrent process dropped into dir after the emptiness check (a data-loss race), replace a
+// destination that is a SYMLINK to a synced/removable target with a local directory (the
+// bundle never reaching the real target), and fail outright for `export .`.
+func WriteDir(ctx context.Context, s *store.Store, photoRoot, dir string) error {
 	entries, err := os.ReadDir(dir)
+	dirExisted := true
 	switch {
 	case err == nil && len(entries) > 0:
 		return fmt.Errorf("export: %s is not empty (refusing to overwrite what is already there)", dir)
-	case err != nil && !errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist):
+		dirExisted = false
+	case err != nil:
 		return fmt.Errorf("export: %s: %w", dir, err)
 	}
 
-	// Stage in a sibling of dir (same filesystem, so the rename is atomic and cheap). A
-	// dot prefix keeps a leftover from ever looking like a real bundle.
-	parent := filepath.Dir(dir)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("export: %s: %w", parent, err)
-	}
-	staging, err := os.MkdirTemp(parent, ".crh-export-*")
-	if err != nil {
-		return fmt.Errorf("export: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			os.RemoveAll(staging)
+	if !dirExisted {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("export: %s: %w", dir, err)
 		}
-	}()
+	}
 
-	if err := write(s, photoRoot, dirSink(staging)); err != nil {
+	rec := &recordingDirSink{inner: dirSink(dir)}
+	if err := write(ctx, s, photoRoot, rec); err != nil {
+		// Clean up only what we created — never a pre-existing directory or a symlink.
+		if !dirExisted {
+			os.RemoveAll(dir)
+		} else {
+			for name := range rec.topLevel {
+				os.RemoveAll(filepath.Join(dir, name))
+			}
+		}
 		return err
 	}
-	// Move the finished bundle into place. dir is absent or an empty directory (the
-	// no-clobber check guaranteed it); remove the empty one so the rename lands cleanly
-	// on every platform.
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("export: %s: %w", dir, err)
-	}
-	if err := os.Rename(staging, dir); err != nil {
-		return fmt.Errorf("export: %s: %w", dir, err)
-	}
-	committed = true
 	return nil
 }
 
@@ -357,45 +353,126 @@ func (d dirSink) Create(name string) (io.Writer, error) {
 	return os.Create(p)
 }
 
+// recordingDirSink is dirSink plus a record of the top-level names created, so a failed
+// WriteDir into a pre-existing directory can remove exactly what it wrote and nothing of the
+// user's. Top-level: "item_type.csv" for a CSV, "photos" for anything under "photos/".
+type recordingDirSink struct {
+	inner    dirSink
+	topLevel map[string]struct{}
+}
+
+func (r *recordingDirSink) Create(name string) (io.Writer, error) {
+	if r.topLevel == nil {
+		r.topLevel = map[string]struct{}{}
+	}
+	top := name
+	if i := strings.IndexByte(name, '/'); i >= 0 {
+		top = name[:i]
+	}
+	r.topLevel[top] = struct{}{}
+	return r.inner.Create(name)
+}
+
 // --- the builder ---------------------------------------------------------------
 
-// querier is what read/copyPhotos/unexpectedSettingKeys run their queries through.
-// Both *sql.DB and *sql.Tx satisfy it, which is what lets write route every read of an
-// export through ONE transaction.
+// querier is what read/readPhotoRows/unexpectedSettingKeys run their queries through.
+// Both *sql.DB and *sql.Tx satisfy it, which is what lets the read phase route every read
+// of an export through ONE transaction.
 type querier interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// write builds one bundle into one sink. Both public entry points come through here,
-// so the zip and the directory cannot drift apart. photoRoot is where the photo files
-// live on disk — passed in, never derived from the store (see PhotoRoot).
-//
-// Every read runs inside ONE read transaction. On the CLI that is belt-and-suspenders
-// (it already reads a throwaway snapshot), but the browser path reads the LIVE store, and
-// twelve separate queries could otherwise straddle a write — shipping a bundle whose lot
-// points at an item_type_uid that isn't in item_type.csv. The store is MaxOpenConns(1), so
-// an open read tx holds the single connection and any concurrent write serializes AFTER
-// the export: there is no interleave window, which is the guarantee.
-func write(s *store.Store, photoRoot string, out sink) error {
-	tx, err := s.DB().BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return fmt.Errorf("export: begin read transaction: %w", err)
-	}
-	defer tx.Rollback() // read-only: rollback is the whole lifecycle, never a commit
+// tableData is one table read fully into memory during the read phase.
+type tableData struct {
+	name string
+	cols []string
+	rows [][]any
+}
 
+// photoRow is one photos-table row: enough to find its file on disk and name its bundle
+// entry. The file itself is copied later, outside the transaction.
+type photoRow struct {
+	ownerUID, uid, ext string
+}
+
+// snapshot is the whole export, read into memory inside one transaction. Holding
+// everything here lets the transaction close before any file I/O — so the export does not
+// pin the store's single connection (freezing the UI and the spot poller) while it writes
+// CSVs and copies photos.
+type snapshot struct {
+	schemaVersion      int
+	unexpectedSettings []string
+	tables             []tableData
+	photoRows          []photoRow
+}
+
+// afterFirstTableRead is a test-only seam, invoked inside the read transaction right after
+// the first table is read into memory. It lets a test hold the export mid-read and prove a
+// concurrent write blocks THEN (while the tx is open). Nil in production.
+var afterFirstTableRead func()
+
+// readSnapshot reads the entire export into memory inside ONE read transaction, then
+// releases it (the deferred rollback fires when this function returns — before the caller
+// touches the filesystem). Every DB read of the export happens here, so the bundle is a
+// consistent snapshot: on the live browser path, twelve separate queries could otherwise
+// straddle a write and ship a lot whose item_type_uid isn't in item_type.csv. The store is
+// MaxOpenConns(1), so while this runs the open tx holds the single connection and any
+// concurrent write serializes after it — no interleave window.
+func readSnapshot(ctx context.Context, s *store.Store) (*snapshot, error) {
+	tx, err := s.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("export: begin read transaction: %w", err)
+	}
+	defer tx.Rollback() // read-only, and released as this function returns — before file I/O
+
+	snap := &snapshot{unexpectedSettings: []string{}}
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&snap.schemaVersion); err != nil {
+		return nil, fmt.Errorf("export: read schema version: %w", err)
+	}
+	if snap.unexpectedSettings, err = unexpectedSettingKeys(tx); err != nil {
+		return nil, err
+	}
+	for i, tb := range tables {
+		cols, rows, err := read(tx, tb)
+		if err != nil {
+			return nil, err
+		}
+		snap.tables = append(snap.tables, tableData{name: tb.name, cols: cols, rows: rows})
+		if i == 0 && afterFirstTableRead != nil {
+			afterFirstTableRead()
+		}
+	}
+	if snap.photoRows, err = readPhotoRows(tx); err != nil {
+		return nil, err
+	}
+	return snap, nil
+}
+
+// write builds one bundle into one sink. Both public entry points come through here, so the
+// zip and the directory cannot drift apart. It reads everything under one transaction
+// (readSnapshot), THEN — with the transaction already closed — writes the files and copies
+// the photos. photoRoot is where the photo files live on disk, passed in, never derived
+// from the store (see PhotoRoot).
+func write(ctx context.Context, s *store.Store, photoRoot string, out sink) error {
+	snap, err := readSnapshot(ctx, s)
+	if err != nil {
+		return err
+	}
+	return writeBundle(snap, photoRoot, out)
+}
+
+// writeBundle renders the in-memory snapshot to the sink. No database access happens here —
+// the transaction is already released, so the store is free for the UI and the poller while
+// the (potentially slow) file I/O runs.
+func writeBundle(snap *snapshot, photoRoot string, out sink) error {
 	m := manifest{
 		FormatVersion:      FormatVersion,
+		DBSchemaVersion:    snap.schemaVersion,
 		ExportedAt:         time.Now().UTC().Format(time.RFC3339),
 		Photos:             manifestPhotoDir{Dir: "photos/"},
 		Missing:            []string{},
-		UnexpectedSettings: []string{},
-	}
-	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&m.DBSchemaVersion); err != nil {
-		return fmt.Errorf("export: read schema version: %w", err)
-	}
-	if m.UnexpectedSettings, err = unexpectedSettingKeys(tx); err != nil {
-		return err
+		UnexpectedSettings: snap.unexpectedSettings,
 	}
 
 	// data.json is the lossless half of the bundle. CSV cannot tell a NULL from an
@@ -404,21 +481,18 @@ func write(s *store.Store, photoRoot string, out sink) error {
 	// in the bundle. It is also what a future importer reads.
 	data := map[string][]jsonRow{}
 
-	for _, tb := range tables {
-		cols, rows, err := read(tx, tb)
+	for _, td := range snap.tables {
+		csvSum, err := writeCSV(out, td.name+".csv", td.cols, td.rows)
 		if err != nil {
 			return err
 		}
-		csvSum, err := writeCSV(out, tb.name+".csv", cols, rows)
-		if err != nil {
-			return err
-		}
-		m.Files = append(m.Files, manifestFile{Name: tb.name + ".csv", Rows: len(rows), SHA256: csvSum})
+		m.Files = append(m.Files, manifestFile{Name: td.name + ".csv", Rows: len(td.rows), SHA256: csvSum})
 
-		data[tb.name] = make([]jsonRow, 0, len(rows))
-		for _, r := range rows {
-			data[tb.name] = append(data[tb.name], jsonRow{cols: cols, vals: r})
+		rows := make([]jsonRow, 0, len(td.rows))
+		for _, r := range td.rows {
+			rows = append(rows, jsonRow{cols: td.cols, vals: r})
 		}
+		data[td.name] = rows
 	}
 
 	sum, err := writeJSON(out, "data.json", data)
@@ -431,7 +505,7 @@ func write(s *store.Store, photoRoot string, out sink) error {
 	}
 	m.Files = append(m.Files, manifestFile{Name: "data.json", Rows: total, SHA256: sum})
 
-	if m.Photos.Count, m.Missing, err = copyPhotos(tx, photoRoot, out); err != nil {
+	if m.Photos.Count, m.Missing, err = copyPhotos(photoRoot, snap.photoRows, out); err != nil {
 		return err
 	}
 	_, err = writeJSON(out, "manifest.json", m)
@@ -676,11 +750,32 @@ func (hw *hashWriter) close(name string) (string, error) {
 
 // --- photos ---------------------------------------------------------------------
 
-// copyPhotos copies every photo file from root into the bundle. Originals only: the
-// resized derivatives the app renders from are a regenerable cache, not the user's data,
-// and shipping both would double the bundle for nothing. It returns how many files were
-// actually written, and the relative paths of any that were referenced by a row but NOT
-// put in the bundle (absent, unreadable, or refused as unsafe).
+// readPhotoRows reads the photos table into memory (inside the read transaction). Only the
+// row list — owner_uid/uid/ext — is needed to find each file and name its bundle entry; the
+// files themselves are copied later, outside the transaction, by copyPhotos.
+func readPhotoRows(q querier) ([]photoRow, error) {
+	rs, err := q.Query(`SELECT owner_uid, uid, ext FROM photos ORDER BY owner_uid, seq, uid`)
+	if err != nil {
+		return nil, fmt.Errorf("export photos: %w", err)
+	}
+	defer rs.Close()
+	var out []photoRow
+	for rs.Next() {
+		var pr photoRow
+		if err := rs.Scan(&pr.ownerUID, &pr.uid, &pr.ext); err != nil {
+			return nil, fmt.Errorf("export photos: %w", err)
+		}
+		out = append(out, pr)
+	}
+	return out, rs.Err()
+}
+
+// copyPhotos copies each photo file from root into the bundle. It runs OUTSIDE the read
+// transaction (the row list was captured inside it), so the (potentially slow) file I/O does
+// not pin the store's single connection. Originals only: the resized derivatives the app
+// renders from are a regenerable cache, not the user's data. Returns how many files were
+// written, and the relative paths of any that were referenced by a row but NOT put in the
+// bundle (absent, unreadable, or refused as unsafe).
 //
 // root is passed in (PhotoRoot of the user's real database), never derived from the store
 // being read — the CLI reads a throwaway copy, and deriving the root from the copy's path
@@ -698,32 +793,22 @@ func (hw *hashWriter) close(name string) (string, error) {
 //     carrying a separator, "..", or another unsafe token could write OUTSIDE the bundle.
 //     Such a row is refused (recorded in missing[]), never written — checked here at the
 //     source (safeSegment), and again at the sink (guardEntryName) as a second line.
-func copyPhotos(q querier, root string, out sink) (int, []string, error) {
+func copyPhotos(root string, rows []photoRow, out sink) (int, []string, error) {
 	missing := []string{}
 	if _, err := out.Create("photos/"); err != nil { // reserved even when empty
 		return 0, missing, fmt.Errorf("export photos/: %w", err)
 	}
 
-	rs, err := q.Query(`SELECT owner_uid, uid, ext FROM photos ORDER BY owner_uid, seq, uid`)
-	if err != nil {
-		return 0, missing, fmt.Errorf("export photos: %w", err)
-	}
-	defer rs.Close()
-
 	n := 0
-	for rs.Next() {
-		var ownerUID, uid, ext string
-		if err := rs.Scan(&ownerUID, &uid, &ext); err != nil {
-			return 0, missing, fmt.Errorf("export photos: %w", err)
-		}
-		rel := "photos/" + ownerUID + "/" + uid + "." + ext
+	for _, pr := range rows {
+		rel := "photos/" + pr.ownerUID + "/" + pr.uid + "." + pr.ext
 		// A path segment that could climb out of the bundle (or break os.Create on the
 		// user's platform) is refused, not written. root == "" (in-memory) has no files.
-		if root == "" || !safeSegment(ownerUID) || !safeSegment(uid) || !safeSegment(ext) {
+		if root == "" || !safeSegment(pr.ownerUID) || !safeSegment(pr.uid) || !safeSegment(pr.ext) {
 			missing = append(missing, rel)
 			continue
 		}
-		copied, err := copyPhoto(out, filepath.Join(root, ownerUID, uid+"."+ext), rel)
+		copied, err := copyPhoto(out, filepath.Join(root, pr.ownerUID, pr.uid+"."+pr.ext), rel)
 		if err != nil {
 			return 0, missing, err // the SINK failed — the bundle itself can't be written
 		}
@@ -733,7 +818,7 @@ func copyPhotos(q querier, root string, out sink) (int, []string, error) {
 		}
 		n++
 	}
-	return n, missing, rs.Err()
+	return n, missing, nil
 }
 
 // safeSegment reports whether a photo path segment is safe to use as a directory or file

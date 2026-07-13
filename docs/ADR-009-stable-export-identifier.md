@@ -267,11 +267,18 @@ Properties successive adversarial reviews turned from intention into guarantee:
   call `backup` runs on live databases — a plain byte copy is what `store.Backup`'s own
   docstring calls wrong), migrates and reads the *copy*, and discards it. The source is only
   ever read.
-- **The reads are snapshot-consistent.** Every table is read inside one read transaction. On
-  the CLI that is redundant (it reads a private snapshot), but the browser path reads the *live*
-  store, and twelve separate queries could otherwise straddle a concurrent write and emit a lot
-  whose `item_type_uid` is not in `item_type.csv`. The store is `MaxOpenConns(1)`, so an open
-  read transaction holds the one connection and any write serializes after — no interleave window.
+- **The reads are snapshot-consistent, and the transaction is released before file I/O.** The
+  export runs in two phases: a read phase that pulls every table (plus the settings keys and the
+  photo row list) into memory inside ONE read transaction, then — with the transaction closed — a
+  write phase that renders the CSVs/`data.json`/manifest and copies the photo files. On the CLI
+  the transaction is redundant (it reads a private snapshot); on the *live* browser path it is the
+  guarantee — twelve separate queries could otherwise straddle a concurrent write and emit a lot
+  whose `item_type_uid` is not in `item_type.csv`. The store is `MaxOpenConns(1)`, so during the
+  read phase the open transaction holds the one connection and any concurrent write serializes
+  after it — no interleave window. Crucially the (potentially slow) file writing and photo copying
+  happen *after* the transaction is released, so the export does not freeze the UI and the spot
+  poller for its whole duration; and the caller's `context` flows into `BeginTx`, so a cancelled
+  HTTP download releases the connection instead of holding it to the end.
 - **The photo root is passed in, never derived from the store being read, and symlink-resolved.**
   Photos live beside the user's *real* database; the CLI reads a *copy*. Deriving the photo
   directory from the copy's path (an empty temp dir) silently dropped every photo — two
@@ -288,10 +295,16 @@ Properties successive adversarial reviews turned from intention into guarantee:
   with a generic, undebuggable error. Export detects it first and errors naming the table, the
   column, and the row (its `uid`, else its identifying column) — so the user fixes one cell
   rather than losing the export to a mystery.
-- **The directory export is atomic.** The bundle is staged in a sibling temp directory and renamed
-  into place only on full success, so any mid-export failure — a non-finite number, a broken sink,
-  a full disk — leaves the destination absent rather than a partial that the no-clobber rule would
-  then refuse to overwrite, wedging every retry.
+- **The directory export writes in place and cleans up only its own output on failure.** After
+  the emptiness check it writes the bundle directly into the destination; on failure it removes
+  only what it created (the whole directory if it created it, else just the top-level entries it
+  wrote), so a partial never blocks a retry, and on success it touches nothing else. It
+  deliberately does NOT stage-and-rename over the destination: a rename would delete anything a
+  concurrent process dropped into the directory after the check (a data-loss race), replace a
+  destination that is a *symlink* to a synced/removable target with a local directory (the bundle
+  silently never reaching the real target), and fail outright for `export .`. Write-in-place has
+  none of those failure modes. (The zip download stays as it was — it already builds to a temp
+  file and commits only on success, which is correct for a single file.)
 - **The settings table is an open key/value bag, so export flags what it does not recognise.**
   Nothing is dropped (that would be data loss), but any key beyond the six known tunables is
   named in `unexpected_settings[]`, so a credential a future feature parks there surfaces in

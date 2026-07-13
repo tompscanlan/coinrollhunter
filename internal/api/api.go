@@ -68,8 +68,9 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 
 		// This handler holds the user's REAL, already-migrated store, so the photo root is
 		// simply beside its path — no throwaway copy involved (that is the CLI's concern).
-		// Resolve symlinks so a DB reached through a link still finds its photos.
-		if err := export.WriteZip(s, export.PhotoRoot(export.ResolveDBPath(s.Path())), f); err != nil {
+		// Resolve symlinks so a DB reached through a link still finds its photos. The request
+		// context flows in, so a browser that navigates away releases the DB connection.
+		if err := export.WriteZip(r.Context(), s, export.PhotoRoot(export.ResolveDBPath(s.Path())), f); err != nil {
 			writeErr(w, err)
 			return
 		}

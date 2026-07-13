@@ -3,6 +3,7 @@ package export
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
@@ -60,7 +61,7 @@ func seeded(t *testing.T) *store.Store {
 func bundleDir(t *testing.T, s *store.Store) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "bundle")
-	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err != nil {
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), dir); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -565,7 +566,7 @@ func TestATraversalPhotoPathCannotEscapeTheBundle(t *testing.T) {
 
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "bundle")
-	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err != nil {
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), dir); err != nil {
 		t.Fatalf("export should complete, refusing the row — got %v", err)
 	}
 
@@ -867,7 +868,7 @@ func TestZipAndDirectoryAreTheSameBundle(t *testing.T) {
 	dir := bundleDir(t, s)
 
 	var buf bytes.Buffer
-	if err := WriteZip(s, PhotoRoot(s.Path()), &buf); err != nil {
+	if err := WriteZip(context.Background(), s, PhotoRoot(s.Path()), &buf); err != nil {
 		t.Fatal(err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
@@ -970,10 +971,10 @@ func TestWriteDirRefusesANonEmptyDirectory(t *testing.T) {
 	s := seeded(t)
 	root := PhotoRoot(s.Path())
 	dir := filepath.Join(t.TempDir(), "bundle")
-	if err := WriteDir(s, root, dir); err != nil {
+	if err := WriteDir(context.Background(), s, root, dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteDir(s, root, dir); err == nil {
+	if err := WriteDir(context.Background(), s, root, dir); err == nil {
 		t.Fatal("a second export over the same directory succeeded — the first bundle was silently overwritten")
 	}
 
@@ -982,7 +983,7 @@ func TestWriteDirRefusesANonEmptyDirectory(t *testing.T) {
 	if err := os.MkdirAll(empty, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteDir(s, root, empty); err != nil {
+	if err := WriteDir(context.Background(), s, root, empty); err != nil {
 		t.Errorf("refused an EMPTY directory the user pointed at: %v", err)
 	}
 }
@@ -1063,18 +1064,68 @@ func (p *pausableSink) Create(name string) (io.Writer, error) {
 	return p.inner.Create(name)
 }
 
-// Export reads twelve tables with twelve separate queries. On the CLI that is safe —
-// it reads a throwaway snapshot. But the BROWSER path (GET /api/export) reads the LIVE
-// store, and a write landing between the item_type read and the lots read would produce
-// a bundle whose lot points at an item_type_uid that isn't in item_type.csv. The reads
-// must therefore share one read transaction, which (the store is MaxOpenConns(1)) holds
-// the single connection so any concurrent write serializes AFTER the export — there is
-// no interleave window at all.
+// Export reads twelve tables. On the CLI that is safe (it reads a throwaway snapshot), but
+// the BROWSER path reads the LIVE store, and a write landing between the item_type read and
+// the lots read would ship a bundle whose lot points at an item_type_uid absent from
+// item_type.csv. The reads must share one read transaction, which (the store is
+// MaxOpenConns(1)) holds the single connection so any concurrent write serializes AFTER the
+// reads — no interleave window.
 //
-// This test pins that: it pauses the export right after item_type is read, then proves a
-// concurrent write CANNOT complete until the export finishes. With per-query reads on the
-// live store, the write slips in during the pause and the test fails.
-func TestExportReadsAreSnapshotConsistent(t *testing.T) {
+// This pins it in the READ phase: pause inside the read transaction, right after the first
+// table is read, and prove a concurrent write CANNOT complete until the reads finish. Per-
+// query reads on the live store would let the write slip in during the pause.
+func TestExportReadsBlockConcurrentWrites(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"}); err != nil {
+		t.Fatal(err)
+	}
+
+	paused := make(chan struct{})
+	resume := make(chan struct{})
+	afterFirstTableRead = func() {
+		close(paused)
+		<-resume
+	}
+	t.Cleanup(func() { afterFirstTableRead = nil })
+
+	done := make(chan error, 1)
+	go func() {
+		var buf bytes.Buffer
+		done <- WriteZip(context.Background(), s, PhotoRoot(s.Path()), &buf)
+	}()
+
+	<-paused // the export has read the first table and is holding the read transaction
+
+	wDone := make(chan struct{})
+	go func() {
+		// Blocks on the single connection until the read tx releases it — unless the reads
+		// aren't transactional, in which case the connection is free now and this returns.
+		_, _ = s.InsertItemType(model.ItemType{Kind: "coin", Name: "Late Arrival", Metal: "silver"})
+		close(wDone)
+	}()
+
+	select {
+	case <-wDone:
+		close(resume)
+		<-done
+		t.Fatal("a concurrent write completed DURING the read phase — the reads are not snapshot-consistent (no wrapping read transaction)")
+	case <-time.After(750 * time.Millisecond):
+		// Correct: the write is blocked behind the export's read transaction.
+	}
+
+	close(resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	<-wDone // the previously-blocked write completes now that the tx is released
+}
+
+// The inverse, and the proof that finding #2 is fixed: once the read transaction is closed,
+// the (potentially slow) file writing and photo copying must NOT hold the store's single
+// connection. So a concurrent write DURING the write phase proceeds immediately — the UI and
+// the spot poller aren't frozen for the whole export. The pause is now on a file Create,
+// which happens after the tx has been released.
+func TestExportFileWritesDoNotBlockConcurrentWrites(t *testing.T) {
 	s := newStore(t)
 	if _, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"}); err != nil {
 		t.Fatal(err)
@@ -1086,40 +1137,35 @@ func TestExportReadsAreSnapshotConsistent(t *testing.T) {
 	}
 	ps := &pausableSink{
 		inner:   dirSink(dir),
-		pauseOn: "item_type.csv",
+		pauseOn: "item_type.csv", // the first FILE written — the tx is already closed by now
 		paused:  make(chan struct{}),
 		resume:  make(chan struct{}),
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- write(s, PhotoRoot(s.Path()), ps) }()
+	go func() { done <- write(context.Background(), s, PhotoRoot(s.Path()), ps) }()
 
-	<-ps.paused // export has read item_type and is (should be) holding a read tx
+	<-ps.paused // paused mid-WRITE — the read transaction is already released
 
-	// A concurrent write must not be able to complete while the export is mid-read.
 	wDone := make(chan struct{})
 	go func() {
-		// This blocks on the single connection until the export's read tx releases it —
-		// unless the export is reading per-query on the live store, in which case the
-		// connection is free right now and this returns immediately.
-		_, _ = s.InsertItemType(model.ItemType{Kind: "coin", Name: "Late Arrival", Metal: "silver"})
+		_, _ = s.InsertItemType(model.ItemType{Kind: "coin", Name: "During Write", Metal: "silver"})
 		close(wDone)
 	}()
 
 	select {
 	case <-wDone:
-		close(ps.resume) // unblock the export so we don't wedge, then fail
+		// Correct: the connection is free during the write phase, so the write completes.
+	case <-time.After(2 * time.Second):
+		close(ps.resume)
 		<-done
-		t.Fatal("a concurrent write completed DURING the export — the reads are not snapshot-consistent (no wrapping read transaction)")
-	case <-time.After(750 * time.Millisecond):
-		// Correct: the write is blocked behind the export's read transaction.
+		t.Fatal("a concurrent write BLOCKED during the file-writing phase — the export still holds the DB connection while doing I/O (finding #2 not fixed)")
 	}
 
 	close(ps.resume)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	<-wDone // the previously-blocked write completes now that the tx is released
 }
 
 // --- #4a: a non-finite number is a loud, precise error, not a silent null -------
@@ -1157,10 +1203,10 @@ func TestANonFiniteNumberFailsLoudlyNamingTheRow(t *testing.T) {
 	}
 
 	// Directory sink.
-	assertNamed(t, WriteDir(s, PhotoRoot(s.Path()), filepath.Join(t.TempDir(), "bundle")))
+	assertNamed(t, WriteDir(context.Background(), s, PhotoRoot(s.Path()), filepath.Join(t.TempDir(), "bundle")))
 	// Zip sink — same builder, same guarantee.
 	var buf bytes.Buffer
-	assertNamed(t, WriteZip(s, PhotoRoot(s.Path()), &buf))
+	assertNamed(t, WriteZip(context.Background(), s, PhotoRoot(s.Path()), &buf))
 }
 
 // --- #4b: the directory sink is atomic — a failure leaves no partial to block a retry ---
@@ -1186,7 +1232,7 @@ func TestADirExportFailureLeavesNoPartialToBlockRetry(t *testing.T) {
 	}
 
 	dir := filepath.Join(t.TempDir(), "bundle")
-	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err == nil {
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), dir); err == nil {
 		t.Fatal("expected the export to fail on the +Inf value")
 	}
 	// The destination must be absent or empty — NOT a partial bundle.
@@ -1198,10 +1244,109 @@ func TestADirExportFailureLeavesNoPartialToBlockRetry(t *testing.T) {
 	if _, err := s.DB().Exec(`DELETE FROM spot WHERE as_of='2026-03-04'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err != nil {
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), dir); err != nil {
 		t.Fatalf("retry after fixing the bad row failed — a partial bundle was left behind: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
 		t.Errorf("the retry did not produce a complete bundle: %v", err)
+	}
+}
+
+// --- FIX A: write-in-place (no atomic rename) — cleanup on failure, never destroy ------
+
+// Exporting into a directory that is a SYMLINK to another location must write the files
+// through the link into the real target and LEAVE THE SYMLINK in place. The round-4 atomic
+// rename did the opposite: RemoveAll(dir) deleted the link and Rename installed a local
+// directory at its name, so the bundle never reached the synced/removable target while the
+// command exited 0. Write-in-place fixes it — we open files under dir, which the OS resolves
+// through the link into the target.
+func TestExportIntoASymlinkedDirLandsInTheTargetAndKeepsTheLink(t *testing.T) {
+	s := seeded(t)
+
+	base := t.TempDir()
+	target := filepath.Join(base, "real-target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "bundle") // a symlink standing in for the export destination
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), link); err != nil {
+		t.Fatal(err)
+	}
+
+	// The link is still a link (not replaced by a real directory).
+	fi, err := os.Lstat(link)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the destination symlink was replaced by a real directory (mode %v) — the bundle never reached the real target", fi.Mode())
+	}
+	// The files landed in the REAL target, through the link.
+	if _, err := os.Stat(filepath.Join(target, "manifest.json")); err != nil {
+		t.Errorf("the bundle did not land in the symlink's target: %v", err)
+	}
+}
+
+// `export .` — into an empty current directory — must succeed. The round-4 code did
+// RemoveAll(dir) on success, and Go rejects RemoveAll(".") outright, so `export .` failed.
+// Write-in-place never removes the destination on success, so "." works.
+func TestExportIntoDotSucceeds(t *testing.T) {
+	s := seeded(t)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	if err := os.Chdir(empty); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(cwd) })
+
+	if err := WriteDir(context.Background(), s, PhotoRoot(s.Path()), "."); err != nil {
+		t.Fatalf("export . failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(empty, "manifest.json")); err != nil {
+		t.Errorf("export . did not write the bundle into the current directory: %v", err)
+	}
+}
+
+// The no-clobber race: the emptiness check runs at the start, but the round-4 code did
+// RemoveAll(dir) at the END (on success), so anything a concurrent process dropped into dir
+// during the long export was silently deleted. Write-in-place removes nothing on success, so
+// a file that appears mid-export survives. Proven deterministically: pause the export mid-
+// write, drop a file into dir, resume, and assert the file is still there afterward.
+func TestASuccessfulExportDoesNotDestroyFilesAddedDuringIt(t *testing.T) {
+	s := seeded(t)
+
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(dir, 0o755); err != nil { // pre-existing empty dir (a synced folder)
+		t.Fatal(err)
+	}
+	ps := &pausableSink{
+		inner:   &recordingDirSink{inner: dirSink(dir)},
+		pauseOn: "data.json", // partway through the write phase
+		paused:  make(chan struct{}),
+		resume:  make(chan struct{}),
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- write(context.Background(), s, PhotoRoot(s.Path()), ps) }()
+
+	<-ps.paused
+	// A concurrent process drops a file into the destination AFTER the emptiness check.
+	bystander := filepath.Join(dir, "notes-from-another-app.txt")
+	if err := os.WriteFile(bystander, []byte("do not delete me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	close(ps.resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	// The export succeeded and must NOT have deleted the bystander file.
+	if got, err := os.ReadFile(bystander); err != nil || string(got) != "do not delete me" {
+		t.Errorf("a successful export destroyed a file added to the directory during the export (err=%v) — the no-clobber race is back", err)
 	}
 }
