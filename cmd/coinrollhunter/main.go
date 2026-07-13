@@ -12,10 +12,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -141,7 +143,24 @@ func runExport(args []string) error {
 		return fmt.Errorf("no database at %s", src)
 	}
 
-	s, err := store.Open(src)
+	// Read-only over the user's data, structurally — not just by convention. store.Open
+	// applies pending migrations as a side effect (store.go), so opening src directly
+	// would UPGRADE an old snapshot (a v9 archive) to the latest schema on disk before
+	// reading it. That is the exact trap BackupFile avoids by opening raw. So export
+	// never opens the user's file as a database at all: it copies the bytes to a
+	// throwaway, migrates and reads the COPY, and discards it. The source is opened
+	// only to be read, at any schema version, on any path.
+	tmpDir, err := os.MkdirTemp("", "coinrollhunter-export")
+	if err != nil {
+		return fmt.Errorf("export: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	work := filepath.Join(tmpDir, "source-copy.db")
+	if err := copyFile(src, work); err != nil {
+		return fmt.Errorf("export: %w", err)
+	}
+
+	s, err := store.Open(work)
 	if err != nil {
 		return err
 	}
@@ -154,6 +173,27 @@ func runExport(args []string) error {
 	fmt.Println("A CSV per table, a data.json that keeps the types, your photos in photos/, and a manifest.")
 	fmt.Println("Open the CSVs in any spreadsheet. Nothing here needs CoinRollHunter to read it.")
 	return nil
+}
+
+// copyFile copies src to dst byte-for-byte. Used to take a throwaway snapshot of the
+// user's database before migrating and reading it, so export never mutates the
+// original. The store is not in WAL mode (store.Open sets only foreign_keys), so the
+// main file is self-contained and a plain copy is a faithful snapshot.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func runMigrate(args []string) error {

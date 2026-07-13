@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -160,4 +163,101 @@ func TestExportWritesABundleAndRefusesToClobberIt(t *testing.T) {
 	if err := runExport([]string{"--db", db}); err == nil {
 		t.Error("export with no destination succeeded — it must say where it would have written")
 	}
+}
+
+// EXPORT MUST NOT MUTATE THE USER'S DATABASE. The obvious implementation —
+// store.Open(src) — is wrong: Open applies pending migrations as a side effect, so
+// exporting an OLD snapshot (a v9 archive from before migration 0010) would silently
+// upgrade it to v10 on disk before reading it. That is the exact defect BackupFile
+// exists to avoid: it opens raw, precisely so a backup never upgrades the thing it is
+// preserving. Export owes the user the same promise — it is read-only over their data.
+//
+// This test builds a genuine v9-schema database (all tables, but item_type has no uid
+// and user_version is 9), exports it, and asserts the SOURCE FILE is byte-for-byte
+// what it was: still v9, still no uid column. It fails on an Open(src) implementation
+// and passes on copy-migrate-the-copy.
+func TestExportDoesNotUpgradeAnOldSourceDatabase(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "v9.db")
+
+	// A full, real schema at the latest version…
+	s, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeID, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertHolding(model.Holding{ItemTypeID: typeID, Activity: "crh", Qty: 1, BasisUSD: 0.1, Acquired: "2026-07-01"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// …wound back to look exactly like a database last touched before 0010 shipped:
+	// drop item_type.uid and its index, and set the schema version to 9. This is what a
+	// user's archived export-from-an-old-release would be on disk today.
+	raw, err := sql.Open("sqlite", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`DROP INDEX idx_item_type_uid`,
+		`ALTER TABLE item_type DROP COLUMN uid`,
+		`PRAGMA user_version = 9`,
+	} {
+		if _, err := raw.Exec(stmt); err != nil {
+			raw.Close()
+			t.Fatalf("building the v9 fixture (%s): %v", stmt, err)
+		}
+	}
+	raw.Close()
+
+	before := fileSHA(t, db)
+
+	bundle := filepath.Join(dir, "bundle")
+	if err := runExport([]string{"--db", db, bundle}); err != nil {
+		t.Fatalf("export of a v9 database failed: %v", err)
+	}
+
+	// The bundle is still correct — the throwaway copy was migrated, so item_type_uid
+	// is emitted and joins resolve. (The bundle's own contents are tested exhaustively
+	// in internal/export; here we just confirm export produced a real one.)
+	if _, err := os.Stat(filepath.Join(bundle, "manifest.json")); err != nil {
+		t.Errorf("no manifest in the bundle: %v", err)
+	}
+
+	// THE POINT: the user's file is untouched. Same bytes, same schema version, no uid.
+	if after := fileSHA(t, db); after != before {
+		t.Error("the source database file CHANGED during export — export is not read-only over the user's data")
+	}
+	check, err := sql.Open("sqlite", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var version int
+	if err := check.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 9 {
+		t.Errorf("export upgraded the source database to schema version %d — it must stay 9", version)
+	}
+	var uidCols int
+	if err := check.QueryRow(`SELECT count(*) FROM pragma_table_info('item_type') WHERE name='uid'`).Scan(&uidCols); err != nil {
+		t.Fatal(err)
+	}
+	if uidCols != 0 {
+		t.Error("export added a uid column to the source item_type table — it migrated the user's data")
+	}
+}
+
+func fileSHA(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
