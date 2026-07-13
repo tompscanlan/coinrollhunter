@@ -222,3 +222,69 @@ func TestHoldingLocationRoundTrips(t *testing.T) {
 		t.Errorf("unfiled location after update = %q, want \"\"", got[unfiledID].Location)
 	}
 }
+
+// TestHoldingLocationSurvivesAPartialSale pins custody through the third, easy-to-miss
+// write path: a partial sale does not update a row, it carves out a NEW lot for the sold
+// portion and shrinks the original (data.go SellHolding). That INSERT re-lists every
+// column by hand, so location can be dropped from it while both the insert and the update
+// paths still round-trip perfectly — the field would simply evaporate from a lot the
+// moment you sold part of it. Sell half the tube and BOTH halves must still say where
+// they are: the remainder is still in the safe, and the sold lot is what a receipt, an
+// estate sheet or an insurance schedule (om-cnx3) prints from.
+func TestHoldingLocationSurvivesAPartialSale(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	itID, err := s.InsertItemType(model.ItemType{
+		Name: "1 oz Silver Eagle", Metal: "silver", FineOzEach: 1, Fineness: ".999",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lotID, err := s.InsertHolding(model.Holding{
+		ItemTypeID: itID, Activity: "bullion", Qty: 10, BasisUSD: 300, PremiumUSD: 50,
+		Acquired: "2026-01-15", Source: "Blue Moon Bullion", Location: "home safe",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sell 4 of the 10 — the carve-out path, not the full-disposal path.
+	if err := s.SellHolding(lotID, 4, 240, "2026-04-01"); err != nil {
+		t.Fatal(err)
+	}
+
+	hs, err := s.ListHoldings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hs) != 2 {
+		t.Fatalf("got %d lots after a partial sale, want 2 (the sold carve-out + the remainder)", len(hs))
+	}
+
+	var sold, kept *model.Holding
+	for i := range hs {
+		if hs[i].Disposed != "" {
+			sold = &hs[i]
+		} else {
+			kept = &hs[i]
+		}
+	}
+	if sold == nil || kept == nil {
+		t.Fatalf("want one disposed lot and one live lot, got %+v", hs)
+	}
+	if sold.Qty != 4 || kept.Qty != 6 {
+		t.Errorf("qty split = sold %v / kept %v, want 4 / 6", sold.Qty, kept.Qty)
+	}
+	if sold.Location != "home safe" {
+		t.Errorf("sold carve-out location = %q, want %q (the sale must inherit the lot's custody)",
+			sold.Location, "home safe")
+	}
+	if kept.Location != "home safe" {
+		t.Errorf("retained remainder location = %q, want %q (selling part of a lot must not unfile the rest)",
+			kept.Location, "home safe")
+	}
+}

@@ -310,9 +310,23 @@ try {
   ok('Location is wired to the shared suggestion datalist (exactly as Source is)', wiredToDatalist)
 
   // Free text still wins: a value that is not in the suggestion list saves fine.
-  await commit(locCells().nth(1), 'safe deposit box 214')
+  //
+  // Target a LIVE lot. Row 1 is the gold eagle that step 6 sold in full, and editing
+  // a disposed lot through the grid RESURRECTS it — toHolding() omits disposed/
+  // disposed_usd and the PUT is a full replace, so the sale record is destroyed
+  // (om-kyq7 owns that bug and its regression test). Row 2 is the Mercury dime,
+  // which is still held.
+  await commit(locCells().nth(2), 'safe deposit box 214')
   ok('a novel (unsuggested) Location saves as free text',
     (await api('/lots')).some((l) => l.location === 'safe deposit box 214'))
+
+  // Fixture integrity: none of the above may have touched a sold lot. If a future
+  // edit here retargets a disposed row, om-kyq7 silently eats the sale and every
+  // check appended after this point inherits a corrupted fixture — so pin it.
+  const sumAfterLoc = await api('/summary')
+  ok('editing Location left the recorded sale intact',
+    (sumAfterLoc.realized || []).length === 1 && Math.abs(sumAfterLoc.realized_gain - 250) < 0.01,
+    `realized ${sumAfterLoc.realized?.length}, gain ${sumAfterLoc.realized_gain}`)
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})
