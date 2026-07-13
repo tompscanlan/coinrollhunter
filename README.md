@@ -145,7 +145,14 @@ difference (and keeps numbers as numbers), so it's the file to hand to a program
 - `db_schema_version` — which database migration the columns reflect.
 
 It also lists every file with its row count and its SHA-256, so you (or a future importer) can
-check a bundle is intact years from now, with no app and no network.
+check a bundle is intact years from now, with no app and no network. Two more lists round it
+out: `missing` names any photo a row points to that wasn't on disk to include (a corrupt or
+moved file is noted here, never silently skipped, and it never stops the rest of the export),
+and `unexpected_settings` names any setting beyond the app's known handful — a tripwire so a
+value that doesn't belong in an export you share can't slip out unnoticed.
+
+Exporting never touches your database. The command reads a throwaway copy, so pointing it at an
+old archive can't quietly upgrade the file you were trying to preserve.
 
 > **Unpack it first.** Windows will happily run an `.exe` straight from inside the zip
 > preview, but it does that by unpacking to a temporary folder that gets cleaned up later.

@@ -241,9 +241,27 @@ options is an export with a way to silently produce an incomplete file), plus:
 - **`manifest.json`** — `format_version` (of the bundle) and `db_schema_version` (the
   `PRAGMA user_version`), plus per-file row counts and SHA-256. An importer that meets a
   `format_version` above what it understands must **refuse the bundle whole**, never
-  partially import it.
+  partially import it. It also carries a `missing[]` list (photo files a row referenced but
+  that were not on disk, or a row whose path was unsafe and refused) and an
+  `unexpected_settings[]` list (any settings key beyond the known tunables — see below).
 - **`photos/<owner_uid>/<photo_uid>.<ext>`** — the **originals only**. Resized derivatives
   are a regenerable cache, not the user's data.
+
+Three properties the adversarial review turned from intention into guarantee:
+
+- **Export is read-only over the user's database, structurally.** The CLI does not open the
+  source file as a database — `store.Open` would migrate it (an old archive would be silently
+  upgraded before being read). It copies the bytes to a throwaway, migrates and reads the
+  *copy*, and discards it. Same reasoning as `BackupFile`, which opens raw so a backup never
+  upgrades what it preserves.
+- **A single missing photo file does not fail the whole export.** The rest of the collection
+  is what the user came for; one corrupt row must not deny it. A gone file (or a row whose
+  `owner_uid`/`uid`/`ext` carries a path separator or `..`, which is refused to stop it
+  escaping the bundle) is recorded in `missing[]` and export carries on — loud, not fatal.
+- **The settings table is an open key/value bag, so export flags what it does not recognise.**
+  Nothing is dropped (that would be data loss), but any key beyond the six known tunables is
+  named in `unexpected_settings[]`, so a credential a future feature parks there surfaces in
+  the manifest instead of leaking into a file the user shares.
 
 Three consequences worth writing down, because they were not obvious:
 

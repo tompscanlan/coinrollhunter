@@ -491,30 +491,120 @@ func TestASoftDeletedPhotoCannotSlipOutOfTheBundle(t *testing.T) {
 	}
 }
 
-// A photos row whose file is gone is a corrupt state, and the bundle must not be
-// handed over as if it were complete. Fail loudly, naming the file.
-func TestAMissingPhotoFileFailsTheExport(t *testing.T) {
+// A photos row whose file is gone is a corrupt state — but ONE such row must not
+// take the whole export down with it. The rest of the collection (every CSV, the
+// data.json, and every photo that IS on disk) is exactly what the user came to
+// retrieve, and a hard failure hands them nothing. So: record the gap in the
+// manifest by name, and export everything else normally. Absence stays loud (it is
+// named in manifest.missing) without being fatal.
+func TestAMissingPhotoFileIsRecordedNotFatal(t *testing.T) {
 	s := newStore(t)
-	if _, err := s.DB().Exec(
-		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES ('p1','lot','o1','obverse',0,'jpg')`); err != nil {
+	typeID, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	err := WriteDir(s, filepath.Join(t.TempDir(), "bundle"))
-	if err == nil {
-		t.Fatal("export succeeded with a photos row whose file is missing — the bundle silently lacks an image")
+	if _, err := s.InsertHolding(model.Holding{ItemTypeID: typeID, Activity: "crh", Qty: 1, BasisUSD: 0.1, Acquired: "2026-07-01"}); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "photos/o1/p1.jpg") {
-		t.Errorf("the error does not name the missing file: %v", err)
+	// One photo with a real file on disk, one whose file is gone.
+	writePhoto(t, s, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "lot", "o1", "obverse", "jpg", []byte("present"))
+	if _, err := s.DB().Exec(
+		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES ('gone-uid','lot','o1','reverse',1,'jpg')`); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := bundleDir(t, s) // must NOT error
+
+	// The whole bundle is here: every CSV, data.json, manifest, the photo that exists.
+	for _, name := range []string{"lots.csv", "item_type.csv", "data.json", "manifest.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("a missing photo took down the whole bundle — %s is absent: %v", name, err)
+		}
+	}
+	if _, err := os.ReadFile(filepath.Join(dir, "photos", "o1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jpg")); err != nil {
+		t.Errorf("the photo that WAS on disk did not make it into the bundle: %v", err)
+	}
+	// And both photos are still in photos.csv — export drops no rows.
+	if got := len(rows(t, dir, "photos.csv")); got != 2 {
+		t.Errorf("photos.csv has %d rows, want 2 (a missing FILE must not drop the ROW)", got)
+	}
+
+	// The gap is named in the manifest, loudly — the absent file, and only it.
+	m := readManifest(t, dir)
+	if len(m.Missing) != 1 || m.Missing[0] != "photos/o1/gone-uid.jpg" {
+		t.Errorf("manifest.missing = %v, want exactly [photos/o1/gone-uid.jpg]", m.Missing)
+	}
+	// photos.count is the files actually IN the bundle, not the row count.
+	if m.Photos.Count != 1 {
+		t.Errorf("manifest photos.count = %d, want 1 (one file present, one missing)", m.Photos.Count)
+	}
+}
+
+// #3, defense against a corrupt or hostile database: a photos row whose owner_uid,
+// uid or ext contains a path separator or ".." must NOT be able to write a file
+// outside the bundle. photos/<owner_uid>/<photo_uid>.<ext> is built from raw column
+// values; owner_uid = "../../../../etc" would otherwise escape the bundle root
+// entirely. The traversal row is refused (named in manifest.missing), and nothing
+// lands outside the bundle.
+func TestATraversalPhotoPathCannotEscapeTheBundle(t *testing.T) {
+	s := newStore(t)
+	// A row that tries to climb out of the bundle and drop a file next to it.
+	if _, err := s.DB().Exec(
+		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES ('evil','lot','../../escaped','obverse',0,'jpg')`); err != nil {
+		t.Fatal(err)
+	}
+	// Give it a real file at the honest location, so the only way it escapes is if the
+	// exporter builds the traversal path.
+	honest := filepath.Join(filepath.Dir(s.Path()), "photos", "../../escaped")
+	if err := os.MkdirAll(honest, 0o755); err == nil {
+		_ = os.WriteFile(filepath.Join(honest, "evil.jpg"), []byte("pwned"), 0o644)
+	}
+
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "bundle")
+	if err := WriteDir(s, dir); err != nil {
+		t.Fatalf("export should complete, refusing the row — got %v", err)
+	}
+
+	// Nothing was written outside the bundle root.
+	walkSaw := false
+	filepath.WalkDir(parent, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		if strings.HasPrefix(rel, "..") {
+			walkSaw = true
+			t.Errorf("export wrote OUTSIDE the bundle: %s", p)
+		}
+		return nil
+	})
+	if walkSaw {
+		t.Fatal("path traversal escaped the bundle root")
+	}
+	// And the refusal is recorded, not silent.
+	m := readManifest(t, dir)
+	if len(m.Missing) != 1 {
+		t.Errorf("manifest.missing = %v, want the refused traversal row named", m.Missing)
 	}
 }
 
 // --- A8: the settings canary ----------------------------------------------------
 
-// Settings are exported unredacted, because an allow-list would silently DROP rows
-// and that is data loss. The safety comes from here instead: the day someone parks a
-// credential in the settings table, this test fails and forces a redaction decision
-// rather than leaking it into a file the user emails to a dealer.
-func TestSettingsHoldExactlyTheSixKnownKeys(t *testing.T) {
+// The known tunables PutSettings writes (data.go), sorted. Nothing else is expected to
+// live in the settings table; anything that does is flagged in the manifest.
+var knownSettingKeysSorted = []string{
+	"box_face_usd",
+	"hourly_rate_usd",
+	"irs_mileage_rate_usd_per_mile",
+	"silver_buyback_factor_40pct",
+	"silver_buyback_factor_90pct",
+	"value_time",
+}
+
+// Happy path: with only the known tunables in the settings table, the manifest flags
+// nothing. This proves the guard does not cry wolf over normal data.
+func TestSettingsWithOnlyKnownKeysFlagsNothing(t *testing.T) {
 	s := seeded(t)
 	if err := s.PutSettings(model.DefaultSettings()); err != nil {
 		t.Fatal(err)
@@ -526,19 +616,52 @@ func TestSettingsHoldExactlyTheSixKnownKeys(t *testing.T) {
 	for _, r := range rows(t, dir, "settings.csv") {
 		got = append(got, r[col(sh, "key")])
 	}
-	want := []string{
-		"box_face_usd",
-		"hourly_rate_usd",
-		"irs_mileage_rate_usd_per_mile",
-		"silver_buyback_factor_40pct",
-		"silver_buyback_factor_90pct",
-		"value_time",
-	}
 	sort.Strings(got)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("the settings table no longer holds exactly the six known tunables.\n  got:  %v\n  want: %v\n"+
-			"If a new setting was added: fine, add it here. If something SECRET was added: it is now in "+
-			"every export the user sends anyone. Redact it.", got, want)
+	if strings.Join(got, ",") != strings.Join(knownSettingKeysSorted, ",") {
+		t.Errorf("PutSettings wrote keys other than the six known tunables.\n  got:  %v\n  want: %v", got, knownSettingKeysSorted)
+	}
+	if m := readManifest(t, dir); len(m.UnexpectedSettings) != 0 {
+		t.Errorf("the manifest flagged known tunables as unexpected: %v", m.UnexpectedSettings)
+	}
+}
+
+// The real guard. The scout verified no secret lives in settings TODAY, but GetSettings
+// reads ANY key (data.go) — the table is an open k/v bag, and a future feature could park
+// a token there. An allow-list that DROPPED unknown keys would be data loss; instead the
+// exporter carries them (leaving with your data means all of it) AND names anything beyond
+// the known tunables in manifest.unexpected_settings. So a credential parked in settings
+// surfaces loudly at export time instead of leaking silently, and the decision to redact
+// is forced consciously.
+//
+// Crucially this drives the DATA path, not PutSettings: the rogue key is written straight
+// to the table, exactly the way a real leak would arrive. The old test used PutSettings,
+// which only ever writes the six — so it could never actually exercise an unknown key.
+func TestARogueSettingsKeyIsFlaggedNotDropped(t *testing.T) {
+	s := seeded(t)
+	if err := s.PutSettings(model.DefaultSettings()); err != nil {
+		t.Fatal(err)
+	}
+	// Bypass PutSettings entirely — write directly, the way a leak would.
+	if _, err := s.DB().Exec(`INSERT INTO settings (key, value) VALUES ('spot_api_token','sk-live-not-a-tunable')`); err != nil {
+		t.Fatal(err)
+	}
+	dir := bundleDir(t, s)
+
+	// NOT dropped: the row is still in the export (no silent data loss).
+	sh := header(t, dir, "settings.csv")
+	found := false
+	for _, r := range rows(t, dir, "settings.csv") {
+		if r[col(sh, "key")] == "spot_api_token" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the rogue key was DROPPED from settings.csv — that is silent data loss")
+	}
+	// Flagged: the manifest names it, so it cannot leak unnoticed.
+	m := readManifest(t, dir)
+	if len(m.UnexpectedSettings) != 1 || m.UnexpectedSettings[0] != "spot_api_token" {
+		t.Errorf("manifest.unexpected_settings = %v, want [spot_api_token] — a parked credential must be flagged", m.UnexpectedSettings)
 	}
 }
 

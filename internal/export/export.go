@@ -163,6 +163,16 @@ type manifest struct {
 	ExportedAt      string           `json:"exported_at"`
 	Files           []manifestFile   `json:"files"`
 	Photos          manifestPhotoDir `json:"photos"`
+	// Files a row referenced but that are NOT in the bundle: a photo whose file was gone
+	// from disk, or a row whose path was unsafe and refused. Absence stays loud (named
+	// here) without being fatal — one corrupt row must not deny the user the rest of their
+	// data. Always present (empty when nothing is missing) so a consumer can rely on it.
+	Missing []string `json:"missing"`
+	// Keys found in the settings table that are NOT one of the known tunables (see
+	// knownSettingKeys). Nothing is dropped — that would be data loss — but a credential
+	// parked in the open k/v settings bag surfaces here instead of leaking silently.
+	// Always present (empty in the normal case).
+	UnexpectedSettings []string `json:"unexpected_settings"`
 }
 
 // manifestFile is what lets a user (or an importer) verify a bundle is intact years
@@ -193,10 +203,41 @@ type sink interface {
 // auto-extracts it — so a zip is the right artifact on every platform we ship.
 func WriteZip(s *store.Store, w io.Writer) error {
 	zw := zip.NewWriter(w)
-	if err := write(s, zw); err != nil {
+	if err := write(s, zipSink{zw}); err != nil {
 		return err
 	}
 	return zw.Close()
+}
+
+// zipSink is the zip writer as a bundle sink, with the same entry-name guard the
+// directory sink applies — so a ".." in an entry name cannot ride into the archive
+// and traverse on someone else's extraction.
+type zipSink struct{ zw *zip.Writer }
+
+func (z zipSink) Create(name string) (io.Writer, error) {
+	if err := guardEntryName(name); err != nil {
+		return nil, err
+	}
+	return z.zw.Create(name)
+}
+
+// guardEntryName is the last line of defense for both sinks: it rejects any bundle
+// entry name that is absolute or contains a ".." segment. Legitimate names are built
+// from fixed strings and validated uids; this catches a bad photo path before it can
+// escape the bundle root (dir sink) or become a traversal entry (zip sink). Photo
+// segments are also checked at the source (safeSegment), so this should never fire for
+// them — it is belt-and-suspenders, and it also covers the hardcoded file names.
+func guardEntryName(name string) error {
+	trimmed := strings.TrimSuffix(name, "/") // a reserved directory entry ("photos/")
+	if trimmed == "" || strings.HasPrefix(name, "/") || strings.ContainsAny(name, "\\\x00") {
+		return fmt.Errorf("export: unsafe bundle path %q", name)
+	}
+	for _, seg := range strings.Split(trimmed, "/") {
+		if seg == ".." {
+			return fmt.Errorf("export: unsafe bundle path %q", name)
+		}
+	}
+	return nil
 }
 
 // WriteDir writes the same bundle into dir as plain files. It refuses to write into a
@@ -222,6 +263,9 @@ func WriteDir(s *store.Store, dir string) error {
 type dirSink string
 
 func (d dirSink) Create(name string) (io.Writer, error) {
+	if err := guardEntryName(name); err != nil {
+		return nil, err
+	}
 	p := filepath.Join(string(d), filepath.FromSlash(name))
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return nil, err
@@ -238,13 +282,18 @@ func (d dirSink) Create(name string) (io.Writer, error) {
 // so the zip and the directory cannot drift apart.
 func write(s *store.Store, out sink) error {
 	m := manifest{
-		FormatVersion: FormatVersion,
-		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
-		Photos:        manifestPhotoDir{Dir: "photos/"},
+		FormatVersion:      FormatVersion,
+		ExportedAt:         time.Now().UTC().Format(time.RFC3339),
+		Photos:             manifestPhotoDir{Dir: "photos/"},
+		Missing:            []string{},
+		UnexpectedSettings: []string{},
 	}
 	var err error
 	if m.DBSchemaVersion, err = s.Version(); err != nil {
 		return fmt.Errorf("export: read schema version: %w", err)
+	}
+	if m.UnexpectedSettings, err = unexpectedSettingKeys(s); err != nil {
+		return err
 	}
 
 	// data.json is the lossless half of the bundle. CSV cannot tell a NULL from an
@@ -280,11 +329,46 @@ func write(s *store.Store, out sink) error {
 	}
 	m.Files = append(m.Files, manifestFile{Name: "data.json", Rows: total, SHA256: sum})
 
-	if m.Photos.Count, err = copyPhotos(s, out); err != nil {
+	if m.Photos.Count, m.Missing, err = copyPhotos(s, out); err != nil {
 		return err
 	}
 	_, err = writeJSON(out, "manifest.json", m)
 	return err
+}
+
+// knownSettingKeys is the fixed set of tunables the app itself stores (store.PutSettings,
+// data.go). The settings table is an open key/value bag — GetSettings reads any key — so
+// this is the reference the canary compares against.
+var knownSettingKeys = map[string]bool{
+	"value_time":                    true,
+	"hourly_rate_usd":               true,
+	"irs_mileage_rate_usd_per_mile": true,
+	"silver_buyback_factor_40pct":   true,
+	"silver_buyback_factor_90pct":   true,
+	"box_face_usd":                  true,
+}
+
+// unexpectedSettingKeys returns any settings key that is not one of the known tunables,
+// sorted. It DROPS nothing — the keys are still exported (leaving with your data means all
+// of it) — but it names them in the manifest so a credential parked in settings surfaces
+// loudly instead of leaking silently. Verified today there is none; this keeps it honest.
+func unexpectedSettingKeys(s *store.Store) ([]string, error) {
+	rs, err := s.DB().Query(`SELECT key FROM settings ORDER BY key`)
+	if err != nil {
+		return nil, fmt.Errorf("export settings: %w", err)
+	}
+	defer rs.Close()
+	out := []string{}
+	for rs.Next() {
+		var k string
+		if err := rs.Scan(&k); err != nil {
+			return nil, fmt.Errorf("export settings: %w", err)
+		}
+		if !knownSettingKeys[k] {
+			out = append(out, k)
+		}
+	}
+	return out, rs.Err()
 }
 
 // read runs one table's query and returns its CSV header and its rows, with every
@@ -327,7 +411,11 @@ func read(s *store.Store, tb table) ([]string, [][]any, error) {
 		}
 		for i, v := range vals {
 			if b, ok := v.([]byte); ok {
-				vals[i] = string(b) // otherwise JSON base64-encodes it
+				// []byte -> string so JSON emits text, not base64. This is lossless ONLY
+				// because every column is TEXT/INTEGER/REAL: json.Marshal substitutes
+				// U+FFFD for invalid UTF-8, so the day a BLOB column is added the "lossless
+				// data.json" claim would need base64 (or a bytes path) for that column.
+				vals[i] = string(b)
 			}
 		}
 		out = append(out, vals)
@@ -461,23 +549,32 @@ func (hw *hashWriter) close(name string) (string, error) {
 
 // --- photos ---------------------------------------------------------------------
 
-// copyPhotos copies every photo file into the bundle and returns how many. Originals
-// only: the resized derivatives the app renders from are a regenerable cache, not the
-// user's data, and shipping both would double the bundle for nothing.
+// copyPhotos copies every photo file into the bundle. Originals only: the resized
+// derivatives the app renders from are a regenerable cache, not the user's data, and
+// shipping both would double the bundle for nothing. It returns how many files were
+// actually written, and the relative paths of any that were referenced by a row but
+// NOT put in the bundle.
 //
-// A photos row whose file is missing FAILS the export, by name. It is tempting to
-// skip it and carry on — and that is exactly the silent drop this bead exists to
-// prevent. A bundle handed over as complete, minus a coin's only picture, is worse
-// than an error the user can act on.
-func copyPhotos(s *store.Store, out sink) (int, error) {
+// Two things must NOT happen, and both took a review to get right:
+//
+//   - A single missing file must not take the whole export down. The rest of the
+//     collection is exactly what the user came to retrieve; a hard failure hands them
+//     nothing. So a gone file is RECORDED in missing[] and export carries on. Absence
+//     stays loud (named in the manifest) without being fatal.
+//   - A row's path is built from raw column values, so an owner_uid or uid or ext
+//     carrying a "/" or ".." could write OUTSIDE the bundle. Such a row is refused
+//     (recorded in missing[]), never written — checked here at the source, and again
+//     at the sink (guardEntryName) as a second line.
+func copyPhotos(s *store.Store, out sink) (int, []string, error) {
+	missing := []string{}
 	if _, err := out.Create("photos/"); err != nil { // reserved even when empty
-		return 0, fmt.Errorf("export photos/: %w", err)
+		return 0, missing, fmt.Errorf("export photos/: %w", err)
 	}
 	root := photoRoot(s)
 
 	rs, err := s.DB().Query(`SELECT owner_uid, uid, ext FROM photos ORDER BY owner_uid, seq, uid`)
 	if err != nil {
-		return 0, fmt.Errorf("export photos: %w", err)
+		return 0, missing, fmt.Errorf("export photos: %w", err)
 	}
 	defer rs.Close()
 
@@ -485,34 +582,59 @@ func copyPhotos(s *store.Store, out sink) (int, error) {
 	for rs.Next() {
 		var ownerUID, uid, ext string
 		if err := rs.Scan(&ownerUID, &uid, &ext); err != nil {
-			return 0, fmt.Errorf("export photos: %w", err)
+			return 0, missing, fmt.Errorf("export photos: %w", err)
 		}
 		rel := "photos/" + ownerUID + "/" + uid + "." + ext
-		if err := copyPhoto(out, filepath.Join(root, ownerUID, uid+"."+ext), rel); err != nil {
-			return 0, err
+		// A path segment that could climb out of the bundle is refused, not written.
+		if !safeSegment(ownerUID) || !safeSegment(uid) || !safeSegment(ext) {
+			missing = append(missing, rel)
+			continue
+		}
+		copied, err := copyPhoto(out, filepath.Join(root, ownerUID, uid+"."+ext), rel)
+		if err != nil {
+			return 0, missing, err
+		}
+		if !copied {
+			missing = append(missing, rel) // its file was gone from disk
+			continue
 		}
 		n++
 	}
-	return n, rs.Err()
+	return n, missing, rs.Err()
 }
 
-func copyPhoto(out sink, src, rel string) error {
+// safeSegment reports whether a photo path segment is safe to use as a directory or
+// file name — no path separator, no "..", not empty. A UUID or a "jpg" always passes;
+// this exists to refuse a corrupt or hostile row before it becomes a path.
+func safeSegment(s string) bool {
+	return s != "" && !strings.ContainsAny(s, `/\`) && !strings.Contains(s, "..") && !strings.Contains(s, "\x00")
+}
+
+// copyPhoto copies one photo file into the bundle. It reports whether the file was
+// there to copy: a file gone from disk is a gap to record (copied=false, no error), not
+// a reason to fail the whole export. A real I/O error mid-copy is still returned.
+func copyPhoto(out sink, src, rel string) (copied bool, err error) {
 	f, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("export %s: the photo is in your database but its file is missing from disk: %w", rel, err)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil // recorded by the caller as missing
+		}
+		return false, fmt.Errorf("export %s: %w", rel, err)
 	}
 	defer f.Close()
 	w, err := out.Create(rel)
 	if err != nil {
-		return fmt.Errorf("export %s: %w", rel, err)
+		return false, fmt.Errorf("export %s: %w", rel, err)
 	}
 	if _, err := io.Copy(w, f); err != nil {
-		return fmt.Errorf("export %s: %w", rel, err)
+		return false, fmt.Errorf("export %s: %w", rel, err)
 	}
 	if c, ok := w.(io.Closer); ok {
-		return c.Close()
+		if err := c.Close(); err != nil {
+			return false, fmt.Errorf("export %s: %w", rel, err)
+		}
 	}
-	return nil
+	return true, nil
 }
 
 // photoRoot is where the app keeps photo files: beside the database (ADR-009). An
