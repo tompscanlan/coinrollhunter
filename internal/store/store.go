@@ -23,7 +23,8 @@ var migrationsFS embed.FS
 
 // Store wraps the database handle.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies any
@@ -36,7 +37,7 @@ func Open(path string) (*Store, error) {
 	// SQLite tolerates only one writer; keep a single connection to avoid
 	// "database is locked" under the pure-Go driver.
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
@@ -46,6 +47,11 @@ func Open(path string) (*Store, error) {
 
 // DB exposes the underlying handle (for the API/CRUD layer).
 func (s *Store) DB() *sql.DB { return s.db }
+
+// Path is the file this store was opened from — ":memory:" for a test store. Photos
+// live beside it (ADR-009: photos/<owner_uid>/<photo_uid>.<ext>), and the database
+// handle alone cannot say where that is, so the exporter asks here.
+func (s *Store) Path() string { return s.path }
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }

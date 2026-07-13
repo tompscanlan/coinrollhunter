@@ -151,10 +151,10 @@ type RollTxn struct {
 	Bank     string  `json:"bank"`
 	BranchID int64   `json:"branch_id"` // logical link to branches.id (0 = none)
 	Action   string  `json:"action"`    // "buy" | "return"
-	Denom   string  `json:"denom"`  // dollars|halves|quarters|dimes|nickels|cents
-	Unit    string  `json:"unit"`   // "box" | "roll" | "bag" | "face" | "coin"
-	Amount  float64 `json:"amount"` // quantity in that unit
-	FaceUSD float64 `json:"face_usd"`
+	Denom    string  `json:"denom"`     // dollars|halves|quarters|dimes|nickels|cents
+	Unit     string  `json:"unit"`      // "box" | "roll" | "bag" | "face" | "coin"
+	Amount   float64 `json:"amount"`    // quantity in that unit
+	FaceUSD  float64 `json:"face_usd"`
 	// SourceType is how the coin was wrapped/acquired — the high-signal yield axis from
 	// ADR-006, orthogonal to Unit: machine_roll|customer_roll|box|bag|loose ("" = unknown).
 	SourceType string `json:"source_type,omitempty"`
