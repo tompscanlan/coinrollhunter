@@ -20,14 +20,26 @@ import type { ItemType, Holding, RollTxn, Trip, Branch, Supply, Keeper, Loss } f
 // --- Autocomplete caches -----------------------------------------------------
 // Refreshed by each grid's load(); the column suggestion/autofill closures read
 // these so typing offers your own existing entries (plus the built-in presets).
-let catalog: ItemType[] = [] // item_types — powers Product autocomplete + autofill
-let holdingSources: string[] = [] // distinct dealer/source names from holdings
-let holdingLocations: string[] = [] // distinct custody locations from holdings
-let banks: string[] = [] // distinct bank names, unioned across roll txns + trips
+//
+// $state, and this module is .svelte.ts, because these caches are filled AFTER the
+// grid mounts — load() has to go to the network first. They were plain `let`s, and a
+// plain `let` is invisible to the renderer: EditableGrid's shared <datalist> sits under
+// {#each columns}, columns never changes, so the block was evaluated once at mount —
+// before load() resolved — and never again. Anything already non-empty at module scope
+// (the static presets) showed up; everything the user had actually typed never did. So
+// "open vocabulary over your own entries" (ADR-006) was, in practice, presets-only, in
+// every grid at once. Reactive state is what makes the datalist re-render when the
+// values behind it arrive; the alternative — having the template touch some unrelated
+// reactive variable to fake a dependency — is a line that reads like dead code and dies
+// in the first cleanup, taking every autocomplete in the app with it.
+let catalog = $state<ItemType[]>([]) // item_types — powers Product autocomplete + autofill
+let holdingSources = $state<string[]>([]) // distinct dealer/source names from holdings
+let holdingLocations = $state<string[]>([]) // distinct custody locations from holdings
+let banks = $state<string[]>([]) // distinct bank names, unioned across roll txns + trips
 // Find-taxonomy autocomplete: the documented ADR-006 vocab unioned with whatever
 // category/subcategory strings already exist in your holdings (open vocabulary).
-let findCategories: string[] = [...FIND_CATEGORIES]
-let findSubcategories: string[] = [...FIND_SUBCATEGORIES]
+let findCategories = $state<string[]>([...FIND_CATEGORIES])
+let findSubcategories = $state<string[]>([...FIND_SUBCATEGORIES])
 
 const distinct = (xs: (string | undefined)[]) =>
   [...new Set(xs.map((s) => (s ?? '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
@@ -84,8 +96,10 @@ async function loadCachingBanks<T extends { bank: string }>(list: () => Promise<
   return rows
 }
 
-// Box picker for CRH finds: the buy roll-txns you can attribute a find to.
-let boxOpts: { value: string; label: string }[] = [{ value: '', label: '— (none)' }]
+// Box picker for CRH finds: the buy roll-txns you can attribute a find to. $state for
+// the same reason as the caches above — this one happened to survive only because the
+// row loop it renders inside re-runs when the grid's rows land.
+let boxOpts = $state<{ value: string; label: string }[]>([{ value: '', label: '— (none)' }])
 const fmtBox = (t: RollTxn) =>
   [`#${t.id}`, t.bank, t.denom, (t.date || '').slice(5)].filter(Boolean).join(' · ')
 const boxOptions = () => boxOpts

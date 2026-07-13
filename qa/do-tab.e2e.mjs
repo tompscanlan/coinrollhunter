@@ -321,15 +321,8 @@ try {
 
   // Autocomplete: the Location cell is bound to the grid's shared suggestion
   // datalist, wired exactly like Source — a `suggestions` closure over your own
-  // distinct values (ADR-006 open vocabulary).
-  //
-  // The datalist's *contents* are deliberately NOT asserted here. EditableGrid
-  // renders the datalist once at mount, before load() has filled the suggestion
-  // caches, so NO autocomplete in the app (Source, Product, Category, Bank, and
-  // therefore Location) currently offers your own entries — only the static
-  // presets. That is a shared-renderer bug that predates this column and spans six
-  // grids; it is tracked as om-rubx, and Location starts suggesting the moment it
-  // lands, with no change here.
+  // distinct values (ADR-006 open vocabulary). Its *contents* are asserted at the
+  // end of this file, with every other autocomplete in the app (om-rubx).
   const wiredToDatalist =
     (await locCells().first().getAttribute('list')) === 'dl-holdings-location' &&
     (await page.locator('datalist#dl-holdings-location').count()) === 1
@@ -383,6 +376,70 @@ try {
   ok('realized P&L survives an edit to the sold lot',
     (sumAfterEdit.realized || []).length === 1 && Math.abs(sumAfterEdit.realized_gain - 250) < 0.01,
     `realized ${sumAfterEdit.realized?.length}, gain ${sumAfterEdit.realized_gain}`)
+
+  // === Autocomplete offers YOUR OWN values, not just the presets (om-rubx) ===
+  // Every suggestion cache is filled by load() — i.e. after mount, once the network
+  // answers. They were plain module-level `let`s, invisible to the renderer, and the
+  // shared <datalist> lives under {#each columns}, a list that never changes: so the
+  // block was evaluated exactly once, BEFORE load() resolved, and never again. Whatever
+  // was already non-empty at module scope (the static presets) showed up; everything the
+  // user had actually typed never did — in every grid at once. A probe of the old build
+  // read: source [], location [], product = the 7 SILVER_PRESETS and nothing else. The
+  // Bank field's entire purpose (nudge reuse of a branch you already have, instead of
+  // forking a new one on a typo) was silently not happening.
+  //
+  // The caches are $state now, so the datalist re-renders when the values behind it
+  // land. Assert that, against values this very suite typed in.
+  await page.reload({ waitUntil: 'networkidle' })
+  await goHoldings()
+
+  const dlOptions = (id) =>
+    page.locator(`datalist#${id} option`).evaluateAll((els) => els.map((e) => e.value))
+  const lots = await api('/lots')
+  const own = (field) => [...new Set(lots.map((l) => l[field]).filter(Boolean))]
+
+  const locOpts = await dlOptions('dl-holdings-location')
+  ok('Location autocomplete offers the locations you entered',
+    own('location').length > 0 && own('location').every((v) => locOpts.includes(v)),
+    `datalist ${JSON.stringify(locOpts)}`)
+
+  const srcOpts = await dlOptions('dl-holdings-source')
+  ok('Source autocomplete offers the sources you entered',
+    own('source').length > 0 && own('source').every((v) => srcOpts.includes(v)),
+    `datalist ${JSON.stringify(srcOpts)} vs lots ${JSON.stringify(own('source'))}`)
+
+  // Product is the sharp one: on the old build this held the 7 presets and nothing
+  // else, so a catalog entry you had just created did not suggest. Both must be there.
+  const prodOpts = await dlOptions('dl-holdings-product')
+  const catalogNames = (await api('/item-types')).map((t) => t.name)
+  ok('Product autocomplete offers your catalog AND the presets',
+    catalogNames.length > 0 &&
+      catalogNames.every((n) => prodOpts.includes(n)) &&
+      prodOpts.includes('90% dime (pre-1965)'),
+    `${prodOpts.length} options; catalog ${JSON.stringify(catalogNames)}`)
+
+  // Category must be probed with a category that is NOT one of the ten ADR-006 presets.
+  // Every category this suite happens to enter ("Silver") is also a preset, so it shows
+  // up in the datalist even on the broken build and proves nothing. Open vocabulary means
+  // a word we never shipped comes back — so use one.
+  const NOVEL_CAT = 'Civil War token'
+  await apiPut(`/lots/${lots[0].id}`, { category: NOVEL_CAT })
+  await page.reload({ waitUntil: 'networkidle' })
+  await goHoldings()
+  const catOpts = await dlOptions('dl-holdings-category')
+  ok('Category autocomplete offers a category of your own, not just the ADR-006 vocab',
+    catOpts.includes(NOVEL_CAT) && catOpts.length >= 11,
+    `datalist ${JSON.stringify(catOpts)}`)
+
+  // Bank, on a different grid: the branch you bought from must suggest itself back.
+  await page.getByRole('button', { name: 'Roll txns', exact: true }).click()
+  await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  // id is derived from the grid TITLE ('Roll transactions'), not the tab label.
+  const bankOpts = await dlOptions('dl-roll-transactions-bank')
+  const usedBanks = [...new Set((await api('/roll-txns')).map((r) => r.bank).filter(Boolean))]
+  ok('Bank autocomplete offers the branches you have actually used',
+    usedBanks.length > 0 && usedBanks.every((b) => bankOpts.includes(b)),
+    `datalist ${JSON.stringify(bankOpts)} vs used ${JSON.stringify(usedBanks)}`)
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})

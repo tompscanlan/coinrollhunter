@@ -167,4 +167,22 @@ committing in that gap would be undone by the merge's stale write-back. The inva
 rests on is pinned schema-driven in `internal/store/merge_invariants_test.go`: **the read path must
 return every column the write path writes**, or a merge silently zeroes the difference.
 
+Added 2026-07-13 (autocomplete actually suggests, om-rubx): **`web/app/src/lib/grids.ts` is now
+`grids.svelte.ts`, and the suggestion caches are `$state`.** No autocomplete in the app had ever
+offered a value the user typed — only the built-in presets. The caches (catalog / holdingSources /
+holdingLocations / findCategories / banks / boxOpts) are filled by each grid's `load()`, i.e.
+*after* mount; they were plain module-level `let`s, invisible to the renderer, and EditableGrid's
+shared `<datalist>` sits under `{#each columns}` — a list that never changes — so the block was
+evaluated exactly once, **before** `load()` resolved, and never again. Whatever was already
+non-empty at module scope (the 7 `SILVER_PRESETS`, the 10 `FIND_CATEGORIES`) rendered; everything
+else was empty forever. A probe of the old build: source `[]`, location `[]`, product = the presets
+and nothing else. So ADR-006's "open vocabulary over your own entries" was, in practice,
+presets-only, in **six grids at once** — and the Bank field's whole purpose (nudge reuse of a
+branch you have instead of forking a new one on a typo) was silently not happening. Reactive state
+is the fix rather than having the template touch an unrelated reactive var to fake a dependency:
+that line reads like dead code and dies in the first cleanup, taking every autocomplete with it.
+**Note for new grid work:** a module that holds state the UI must react to has to be `.svelte.ts`,
+or the renderer cannot see it change. The `boxOpts` select survived only by accident — it renders
+inside the row loop, which re-runs when the rows land.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.

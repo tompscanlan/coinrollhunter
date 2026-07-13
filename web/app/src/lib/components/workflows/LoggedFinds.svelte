@@ -7,7 +7,7 @@
   import { onMount } from 'svelte'
   import type { Report, RollTxn, ItemType } from '$lib/types'
   import { api } from '$lib/api'
-  import { holdingsGrid, productAutofillFrom, productSuggestionsFrom } from '$lib/grids'
+  import { holdingsGrid, productAutofillFrom, productSuggestionsFrom } from '$lib/grids.svelte'
   import { money, today } from '$lib/format'
   import { DENOMS, ROLL_UNITS, SOURCE_TYPES, SILVER_PRESETS, COIN_FACE, faceFor } from '$lib/presets'
   import Card from '$lib/components/ui/Card.svelte'

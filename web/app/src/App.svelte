@@ -17,7 +17,7 @@
     keepersGrid,
     lossesGrid,
     type FlatHolding,
-  } from '$lib/grids'
+  } from '$lib/grids.svelte'
   import type { Branch } from '$lib/types'
   import SettingsPanel from '$lib/components/SettingsPanel.svelte'
   import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon, Power } from 'lucide-svelte'

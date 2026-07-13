@@ -6,7 +6,7 @@
   import { onMount } from 'svelte'
   import type { Report, ItemType } from '$lib/types'
   import { api } from '$lib/api'
-  import { holdingsGrid, productAutofillFrom, productSuggestionsFrom } from '$lib/grids'
+  import { holdingsGrid, productAutofillFrom, productSuggestionsFrom } from '$lib/grids.svelte'
   import { money, oz, today } from '$lib/format'
   import { METALS } from '$lib/presets'
   import Card from '$lib/components/ui/Card.svelte'
