@@ -219,6 +219,12 @@ func (s *Store) DeleteBranch(id int64) error {
 // This is the ADR-010 (b) dedup — the survivor keeps the whole history and every
 // old free-text spelling still resolves through the moved aliases.
 func (s *Store) MergeBranches(survivor int64, losers []int64) error {
+	// Under the store write lock, for the same reason as SellHolding: this repoints
+	// rows in other tables, and a partial update merging one of those rows concurrently
+	// would write back the pre-merge branch_id and undo the repoint.
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

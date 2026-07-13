@@ -148,4 +148,23 @@ Build notes: `make build` (UI then Go). In this container, Go needs a writable c
 is a git-ignored build artifact (only its `.gitkeep` is committed, so `go:embed all:dist`
 always resolves) — a bare `go build` without `make ui` first serves an empty UI.
 
+Added 2026-07-13 (PUT is a merge, om-kyq7): **the generic `PUT /api/<table>/{id}` no longer
+replaces a row — it merges onto it.** This closes shipped data loss. The Holdings grid models
+only some of a lot's columns, and `toHolding()` rebuilt the whole row from that flat view, so
+editing *any* cell (a quantity!) wrote back an empty `notes`, a zero `insured_value`/`attributes`,
+and blew away the `disposed`/`disposed_usd` of a lot that had been sold — resurrecting the sale.
+`notes` has a real producer (`internal/legacy/import.go` — the spreadsheet on-ramp), so this hit
+new users on their first correction, silently, with the destroyed field not even on screen.
+The fix is structural rather than "carry every column in the client", which would re-break the
+moment anyone adds a column: `api.register`'s PUT now decodes the body **onto the stored row**
+(`decodeOnto`), so a client can only overwrite what it *names* — clearing a field still works,
+you just have to say `"notes": ""`. `T` is constrained to **`model.Entity`** (an `EntityID()`
+accessor) so the merge can fetch the row it addresses, which also means a new resource *cannot*
+be registered back into full-replace semantics by accident. A merge is a read-modify-write, so it
+runs under a new **store write lock** (`Store.WithWrite`; `SellHolding` and `MergeBranches` take
+it too) — `SetMaxOpenConns(1)` serializes statements but not a SELECT-then-UPDATE pair, and a sale
+committing in that gap would be undone by the merge's stale write-back. The invariant this all
+rests on is pinned schema-driven in `internal/store/merge_invariants_test.go`: **the read path must
+return every column the write path writes**, or a merge silently zeroes the difference.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.

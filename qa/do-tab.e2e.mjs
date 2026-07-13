@@ -18,6 +18,16 @@ const ok = (n, cond, extra = '') => {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${n}${extra ? '  — ' + extra : ''}`)
 }
 const api = (p) => fetch(BASE + '/api' + p).then((r) => r.json())
+// Seeds a field the UI has no editor for (notes, insured_value…) so a later grid edit
+// has something to destroy. PUT is a merge, so naming three fields touches only those.
+const apiPut = async (p, body) => {
+  const r = await fetch(BASE + '/api' + p, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`PUT ${p} → ${r.status}`)
+}
 
 const browser = await chromium.launch()
 const page = await browser.newPage()
@@ -326,23 +336,53 @@ try {
   ok('Location is wired to the shared suggestion datalist (exactly as Source is)', wiredToDatalist)
 
   // Free text still wins: a value that is not in the suggestion list saves fine.
-  //
-  // Target a LIVE lot. Row 1 is the gold eagle that step 6 sold in full, and editing
-  // a disposed lot through the grid RESURRECTS it — toHolding() omits disposed/
-  // disposed_usd and the PUT is a full replace, so the sale record is destroyed
-  // (om-kyq7 owns that bug and its regression test). Row 2 is the Mercury dime,
-  // which is still held.
   await commit(locCells().nth(2), 'safe deposit box 214')
   ok('a novel (unsuggested) Location saves as free text',
     (await api('/lots')).some((l) => l.location === 'safe deposit box 214'))
 
-  // Fixture integrity: none of the above may have touched a sold lot. If a future
-  // edit here retargets a disposed row, om-kyq7 silently eats the sale and every
-  // check appended after this point inherits a corrupted fixture — so pin it.
   const sumAfterLoc = await api('/summary')
   ok('editing Location left the recorded sale intact',
     (sumAfterLoc.realized || []).length === 1 && Math.abs(sumAfterLoc.realized_gain - 250) < 0.01,
     `realized ${sumAfterLoc.realized?.length}, gain ${sumAfterLoc.realized_gain}`)
+
+  // === Holdings grid: an edit cannot destroy a column it cannot see (om-kyq7) ===
+  // The shipped bug: toHolding() rebuilt the whole lot from the grid's flat view and
+  // the PUT was a full replace, so editing ANY cell — a quantity, a location — blanked
+  // every column the grid does not model. notes (which the spreadsheet import fills, so
+  // this hit new users on their first correction), insured_value, attributes; and on a
+  // sold lot it wiped the disposal, resurrecting a completed sale. Nothing on screen
+  // showed the damage. PUT is a merge now: a field the client never names is a field it
+  // cannot destroy.
+  //
+  // The gesture below is the innocent one, and the earlier checks in this file used to
+  // have to route AROUND it: type where a coin lives, on a row that happens to be a
+  // completed sale. Disposed lots are not visually distinct in this grid, so a user has
+  // no cue at all (that UX question is its own bead).
+  const sold = (await api('/lots')).find((l) => l.disposed)
+  ok('fixture: the gold eagle sale is on the books', !!sold, sold ? `lot ${sold.id}` : 'none disposed')
+
+  // Give it the invisible fields a real user would have — an import writes notes.
+  const NOTES = "grandfather's, do not sell"
+  const ATTRS = '{"grade":"MS65"}'
+  await apiPut(`/lots/${sold.id}`, { notes: NOTES, insured_value: 4500, attributes: ATTRS })
+
+  await page.reload({ waitUntil: 'networkidle' })
+  await goHoldings()
+  const soldRow = (await api('/lots')).findIndex((l) => l.id === sold.id)
+  await commit(locCells().nth(soldRow), 'wall safe')
+
+  const edited = (await api('/lots')).find((l) => l.id === sold.id)
+  ok('the Location edit itself lands', edited?.location === 'wall safe', `location "${edited?.location}"`)
+  ok('a grid edit does not wipe notes', edited?.notes === NOTES, JSON.stringify(edited?.notes))
+  ok('a grid edit does not wipe insured_value', edited?.insured_value === 4500, String(edited?.insured_value))
+  ok('a grid edit does not wipe attributes', edited?.attributes === ATTRS, String(edited?.attributes))
+  ok('a grid edit does not resurrect a sold lot',
+    edited?.disposed === sold.disposed && edited?.disposed_usd === sold.disposed_usd,
+    `disposed "${edited?.disposed}" @ ${edited?.disposed_usd}`)
+  const sumAfterEdit = await api('/summary')
+  ok('realized P&L survives an edit to the sold lot',
+    (sumAfterEdit.realized || []).length === 1 && Math.abs(sumAfterEdit.realized_gain - 250) < 0.01,
+    `realized ${sumAfterEdit.realized?.length}, gain ${sumAfterEdit.realized_gain}`)
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})

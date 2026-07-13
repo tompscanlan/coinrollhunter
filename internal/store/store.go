@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -25,6 +26,21 @@ var migrationsFS embed.FS
 type Store struct {
 	db   *sql.DB
 	path string
+	// wmu serializes read-modify-write sequences against each other. SetMaxOpenConns(1)
+	// serializes individual statements, but not a SELECT and a later UPDATE: another
+	// writer can commit in the gap, and the RMW then writes back its stale snapshot.
+	// The API's partial update (api.register's PUT) is exactly such a sequence — a sale
+	// landing mid-merge would otherwise be undone by the merge's pre-sale read.
+	wmu sync.Mutex
+}
+
+// WithWrite runs fn while holding the store's write lock, making a read-modify-write
+// sequence atomic with respect to the other writers that take it. Not reentrant: fn
+// must not call another WithWrite (or a store method that takes the lock itself).
+func (s *Store) WithWrite(fn func() error) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	return fn()
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies any

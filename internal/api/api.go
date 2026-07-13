@@ -160,16 +160,16 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 	})
 
 	// CRUD resources
-	register(mux, "item-types", resource[model.ItemType]{
+	register(mux, s, "item-types", resource[model.ItemType]{
 		list: s.ListItemTypes, create: s.InsertItemType, update: s.UpdateItemType, del: s.DeleteItemType,
 	})
-	register(mux, "lots", resource[model.Holding]{
+	register(mux, s, "lots", resource[model.Holding]{
 		list: s.ListHoldings, create: s.InsertHolding, update: s.UpdateHolding, del: s.DeleteHolding,
 	})
-	register(mux, "roll-txns", resource[model.RollTxn]{
+	register(mux, s, "roll-txns", resource[model.RollTxn]{
 		list: s.ListRollTxns, create: s.InsertRollTxn, update: s.UpdateRollTxn, del: s.DeleteRollTxn,
 	})
-	register(mux, "branches", resource[model.Branch]{
+	register(mux, s, "branches", resource[model.Branch]{
 		list: s.ListBranches, create: s.InsertBranch, update: s.UpdateBranch, del: s.DeleteBranch,
 	})
 	// Fold duplicate branches into one survivor (ADR-010 dedup). More specific than
@@ -193,16 +193,16 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	register(mux, "trips", resource[model.Trip]{
+	register(mux, s, "trips", resource[model.Trip]{
 		list: s.ListTrips, create: s.InsertTrip, update: s.UpdateTrip, del: s.DeleteTrip,
 	})
-	register(mux, "supplies", resource[model.Supply]{
+	register(mux, s, "supplies", resource[model.Supply]{
 		list: s.ListSupplies, create: s.InsertSupply, update: s.UpdateSupply, del: s.DeleteSupply,
 	})
-	register(mux, "keepers", resource[model.Keeper]{
+	register(mux, s, "keepers", resource[model.Keeper]{
 		list: s.ListKeepers, create: s.InsertKeeper, update: s.UpdateKeeper, del: s.DeleteKeeper,
 	})
-	register(mux, "losses", resource[model.Loss]{
+	register(mux, s, "losses", resource[model.Loss]{
 		list: s.ListLosses, create: s.InsertLoss, update: s.UpdateLoss, del: s.DeleteLoss,
 	})
 
@@ -245,7 +245,11 @@ type resource[T any] struct {
 }
 
 // register wires GET/POST /api/<name> and PUT/DELETE /api/<name>/{id}.
-func register[T any](mux *http.ServeMux, name string, r resource[T]) {
+//
+// PUT is a MERGE, not a replace (see the PUT handler). T is constrained to
+// model.Entity so the merge can find the row it addresses — which also means a new
+// resource cannot be registered without opting into merge semantics.
+func register[T model.Entity](mux *http.ServeMux, s *store.Store, name string, r resource[T]) {
 	base := "/api/" + name
 
 	mux.HandleFunc("GET "+base, func(w http.ResponseWriter, _ *http.Request) {
@@ -271,18 +275,48 @@ func register[T any](mux *http.ServeMux, name string, r resource[T]) {
 		writeJSON(w, http.StatusCreated, map[string]int64{"id": id})
 	})
 
+	// PUT is a MERGE, not a full replace: the body is decoded ONTO the stored row, so a
+	// field the client does not send is a field it cannot destroy.
+	//
+	// It used to decode onto a zero T and write that, which made every PUT a full
+	// replace — and the Holdings grid models only some of a lot's columns, so editing
+	// any cell wrote back an empty string for notes and a zero for insured_value and
+	// attributes. A user who imported a spreadsheet lost their notes to a quantity fix,
+	// silently and with no undo. Replace semantics put that gun on the table for every
+	// partial client; merge semantics take it away for all of them at once.
+	//
+	// Clearing a field still works — you just have to say so ("notes": ""), which is
+	// the difference between intent and collateral damage.
 	mux.HandleFunc("PUT "+base+"/{id}", func(w http.ResponseWriter, req *http.Request) {
 		id, err := pathID(req)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errBody(err))
 			return
 		}
-		v, err := decode[T](req)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, errBody(err))
+		// Read-modify-write, so it runs under the store write lock: a sale committing
+		// between the read and the write would be undone by the write-back.
+		var badBody error
+		err = s.WithWrite(func() error {
+			items, err := r.list()
+			if err != nil {
+				return err
+			}
+			cur, ok := byID(items, id)
+			if !ok {
+				return store.ErrNotFound
+			}
+			merged, err := decodeOnto(req, cur)
+			if err != nil {
+				badBody = err
+				return err
+			}
+			return r.update(id, merged)
+		})
+		if badBody != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(badBody))
 			return
 		}
-		if err := r.update(id, v); err != nil {
+		if err != nil {
 			writeErr(w, err)
 			return
 		}
@@ -311,6 +345,27 @@ func decode[T any](r *http.Request) (T, error) {
 	dec.DisallowUnknownFields()
 	err := dec.Decode(&v)
 	return v, err
+}
+
+// decodeOnto decodes the request body onto cur rather than onto a zero value, so a
+// field the body does not name keeps the value it already has. This is the whole of
+// the PUT merge: encoding/json leaves absent keys untouched in the destination.
+func decodeOnto[T any](r *http.Request, cur T) (T, error) {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&cur)
+	return cur, err
+}
+
+// byID finds the row with the given id among items.
+func byID[T model.Entity](items []T, id int64) (T, bool) {
+	for _, it := range items {
+		if it.EntityID() == id {
+			return it, true
+		}
+	}
+	var zero T
+	return zero, false
 }
 
 func pathID(r *http.Request) (int64, error) {

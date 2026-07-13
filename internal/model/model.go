@@ -300,3 +300,26 @@ func DefaultSettings() Settings {
 		},
 	}
 }
+
+// --- row identity ------------------------------------------------------------
+
+// Entity is a table row that knows its own primary key.
+//
+// The API's generic PUT is a MERGE: it decodes the request body onto the stored
+// row, so a client can only overwrite the fields it actually names (see
+// api.register). To do that it must first fetch the row being addressed — hence
+// this. Requiring it at the type level is deliberate: a resource cannot be
+// registered without an id accessor, so no future table can quietly fall back to
+// the full-replace behavior that silently blanked lots.notes.
+type Entity interface {
+	EntityID() int64
+}
+
+func (t ItemType) EntityID() int64 { return t.ID }
+func (h Holding) EntityID() int64  { return h.ID }
+func (r RollTxn) EntityID() int64  { return r.ID }
+func (t Trip) EntityID() int64     { return t.ID }
+func (b Branch) EntityID() int64   { return b.ID }
+func (s Supply) EntityID() int64   { return s.ID }
+func (k Keeper) EntityID() int64   { return k.ID }
+func (l Loss) EntityID() int64     { return l.ID }

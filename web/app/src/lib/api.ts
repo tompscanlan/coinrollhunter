@@ -39,11 +39,16 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 /** CRUD bundle for one resource table. `T` is the row type; create/update take a
-    row sans id. The Go API returns {id} on create. */
+    row sans id. The Go API returns {id} on create.
+
+    `update` takes a PARTIAL row because PUT is a merge: the server decodes the body
+    onto the stored row, so a field you omit is a field you keep. A client that models
+    only some columns — the Holdings grid, which never shows notes or insured_value —
+    sends only what it knows and cannot blank the rest. To clear a field, name it. */
 export interface Crud<T extends { id: number }> {
   list(): Promise<T[]>
   create(row: Omit<T, 'id'>): Promise<number>
-  update(id: number, row: Omit<T, 'id'>): Promise<void>
+  update(id: number, row: Partial<Omit<T, 'id'>>): Promise<void>
   remove(id: number): Promise<void>
 }
 

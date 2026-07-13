@@ -251,3 +251,167 @@ func dbSHA(t *testing.T, path string) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
+
+// PUT is a merge, not a replace. This is the pin for the shipped data-loss bug: the
+// Holdings grid models only some of a lot's columns, and a full-replace PUT rewrote
+// the whole row from that partial view — so editing a quantity blanked the notes a
+// user's spreadsheet import had just filled in. No warning, no undo, and the field is
+// not even on screen, so nobody finds out until they go looking.
+//
+// The body below is deliberately shaped like the real client's: exactly the columns
+// the grid edits, and not one more.
+func TestPutMergeKeepsColumnsTheClientNeverNamed(t *testing.T) {
+	srv := newServer(t)
+
+	// A lot with the fields no grid shows: notes (the import writes these), plus
+	// insured_value and attributes (latent today; the estate sheet surfaces them).
+	full := model.Holding{
+		ItemTypeID: 1, Activity: "bullion", Qty: 2, BasisUSD: 99.50, Acquired: "2026-02-02",
+		Source: "LCS", Location: "home safe", Notes: "grandfather's, do not sell",
+		InsuredValue: 1234.56, Attributes: `{"grade":"MS65"}`,
+	}
+	id := createLot(t, srv.URL, full)
+
+	// The gesture: bump the quantity in the grid. The client sends only what it models.
+	putLot(t, srv.URL, id, map[string]any{
+		"item_type_id": 1, "activity": "bullion", "qty": 3, "basis_usd": 99.50,
+		"acquired": "2026-02-02", "source": "LCS", "location": "home safe",
+		"face_value_usd": 0, "premium_usd": 0,
+	}, http.StatusOK)
+
+	got := getLot(t, srv.URL, id)
+	if got.Qty != 3 {
+		t.Errorf("qty = %v, want 3 (the edit must land)", got.Qty)
+	}
+	if got.Notes != full.Notes {
+		t.Errorf("notes = %q, want %q — a quantity edit destroyed the user's notes", got.Notes, full.Notes)
+	}
+	if got.InsuredValue != full.InsuredValue {
+		t.Errorf("insured_value = %v, want %v", got.InsuredValue, full.InsuredValue)
+	}
+	if got.Attributes != full.Attributes {
+		t.Errorf("attributes = %q, want %q", got.Attributes, full.Attributes)
+	}
+}
+
+// The other half of the merge contract: a field you DO name still changes, including
+// to its zero value. Preserving what the client omits must not turn into refusing to
+// clear what it explicitly sends — that would make notes uneditable rather than safe.
+func TestPutStillClearsAFieldTheClientNames(t *testing.T) {
+	srv := newServer(t)
+	id := createLot(t, srv.URL, model.Holding{
+		ItemTypeID: 1, Activity: "bullion", Qty: 1, Acquired: "2026-02-02",
+		Notes: "sold at the show", InsuredValue: 500,
+	})
+
+	putLot(t, srv.URL, id, map[string]any{"notes": "", "insured_value": 0}, http.StatusOK)
+
+	got := getLot(t, srv.URL, id)
+	if got.Notes != "" {
+		t.Errorf("notes = %q, want \"\" — an explicit clear must still clear", got.Notes)
+	}
+	if got.InsuredValue != 0 {
+		t.Errorf("insured_value = %v, want 0", got.InsuredValue)
+	}
+}
+
+// The acceptance criterion this bug earned the hard way: the om-yhbr e2e reproduced it
+// by editing a lot the same suite had already sold, which resurrected the sale — and
+// the suite still reported PASS. Disposed lots sit unmarked in the Holdings grid, so
+// this is an ordinary thing for a user to do by accident.
+func TestPutOnASoldLotDoesNotResurrectIt(t *testing.T) {
+	srv := newServer(t)
+	id := createLot(t, srv.URL, model.Holding{
+		ItemTypeID: 1, Activity: "bullion", Qty: 1, BasisUSD: 100, Acquired: "2026-02-02",
+	})
+
+	sell, _ := json.Marshal(map[string]any{"qty": 1, "proceeds_usd": 175, "date": "2026-03-03"})
+	resp, err := http.Post(srv.URL+"/api/lots/"+strconv.FormatInt(id, 10)+"/sell", "application/json", bytes.NewReader(sell))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("sell status %d", resp.StatusCode)
+	}
+
+	// Now touch any unrelated cell on that row through the grid's payload shape.
+	putLot(t, srv.URL, id, map[string]any{
+		"item_type_id": 1, "activity": "bullion", "qty": 1, "basis_usd": 100,
+		"acquired": "2026-02-02", "source": "estate sale",
+	}, http.StatusOK)
+
+	got := getLot(t, srv.URL, id)
+	if got.Source != "estate sale" {
+		t.Errorf("source = %q, want %q (the edit must land)", got.Source, "estate sale")
+	}
+	if got.Disposed != "2026-03-03" {
+		t.Errorf("disposed = %q, want %q — an unrelated cell edit un-sold the lot", got.Disposed, "2026-03-03")
+	}
+	if got.DisposedUSD != 175 {
+		t.Errorf("disposed_usd = %v, want 175 — the sale's proceeds were erased", got.DisposedUSD)
+	}
+}
+
+// A PUT at an id that does not exist is a 404, not a silent no-op: the merge has no
+// row to merge onto.
+func TestPutMissingIDIs404(t *testing.T) {
+	srv := newServer(t)
+	putLot(t, srv.URL, 99999, map[string]any{"qty": 1}, http.StatusNotFound)
+}
+
+func createLot(t *testing.T, base string, h model.Holding) int64 {
+	t.Helper()
+	body, _ := json.Marshal(h)
+	resp, err := http.Post(base+"/api/lots", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create lot status %d", resp.StatusCode)
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	json.NewDecoder(resp.Body).Decode(&created)
+	return created.ID
+}
+
+// putLot sends a raw map, not a model.Holding: the point of every test above is which
+// keys are on the wire, and marshalling a struct would either add keys the client
+// never sends or drop them to omitempty.
+func putLot(t *testing.T, base string, id int64, body map[string]any, wantStatus int) {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPut, base+"/api/lots/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("put status %d, want %d", resp.StatusCode, wantStatus)
+	}
+}
+
+func getLot(t *testing.T, base string, id int64) model.Holding {
+	t.Helper()
+	resp, err := http.Get(base + "/api/lots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var lots []model.Holding
+	if err := json.NewDecoder(resp.Body).Decode(&lots); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lots {
+		if l.ID == id {
+			return l
+		}
+	}
+	t.Fatalf("lot %d not found", id)
+	return model.Holding{}
+}

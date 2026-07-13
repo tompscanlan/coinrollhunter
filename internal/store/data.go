@@ -184,6 +184,13 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	if date == "" {
 		return fmt.Errorf("sell date required")
 	}
+	// Under the store write lock: a sale that commits inside the window of a partial
+	// update (which reads the lot, merges the body onto it, and writes it back) would
+	// be erased by that write-back — the merge's snapshot predates the sale. Sales are
+	// the one mutation a Holdings-grid edit never names and so can never intend.
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

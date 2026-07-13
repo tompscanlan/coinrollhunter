@@ -157,7 +157,33 @@ async function ensureItemType(row: Omit<FlatHolding, 'id'>): Promise<number> {
   } as Omit<ItemType, 'id'>)
 }
 
-function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Holding, 'id'> {
+/** Exactly the lot columns the Holdings grid models — and no others.
+
+    A lot has fields this grid has never shown: notes (which the spreadsheet import
+    fills), insured_value, attributes, and the disposal record written by a sale. They
+    are absent here on purpose. PUT is a merge, so a column we do not name is a column
+    we do not touch; naming one we cannot edit is how it would get blanked. */
+type GridHolding = Pick<
+  Holding,
+  | 'item_type_id'
+  | 'roll_txn_id'
+  | 'activity'
+  | 'qty'
+  | 'gross_weight'
+  | 'purity'
+  | 'weight_unit'
+  | 'basis_usd'
+  | 'premium_usd'
+  | 'face_value_usd'
+  | 'acquired'
+  | 'source'
+  | 'location'
+  | 'category'
+  | 'subcategory'
+  | 'trophy'
+>
+
+function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): GridHolding {
   return {
     item_type_id,
     roll_txn_id: Number(row.from_box) || 0,
@@ -171,13 +197,10 @@ function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): Omit<Hol
     face_value_usd: Number(row.face_value_usd) || 0,
     acquired: row.acquired,
     source: row.source,
-    // Custody. Carried explicitly: the PUT replaces the whole row, so a location
-    // left out here is a location erased on the next edit of that lot.
     location: row.location ?? '',
     category: row.category ?? '',
     subcategory: row.subcategory ?? '',
     trophy: Boolean(row.trophy),
-    notes: '',
   }
 }
 
@@ -267,7 +290,9 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
   },
   create: async (row) => {
     const tid = await ensureItemType(row)
-    return api.holdings.create(toHolding(row, tid))
+    // A brand-new lot starts with no notes; POST has no row to merge onto, so unlike
+    // update() it must say so.
+    return api.holdings.create({ ...toHolding(row, tid), notes: '' })
   },
   update: async (id, row) => {
     const tid = await ensureItemType(row)
