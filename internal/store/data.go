@@ -11,9 +11,10 @@ import (
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 )
 
-// newUID returns a lowercase RFC-4122 v4 UUID for a branch's opaque id (ADR-009).
-// Migration 0008's backfill generates the same shape in SQL (no Go step in the
-// migration runner); this is the runtime path for branches created afterward.
+// newUID returns a lowercase RFC-4122 v4 UUID — the opaque, never-recycled identity
+// carried by branches, lots, roll_txns and item_type (ADR-009). The 0008/0009/0010
+// backfills generate the same shape in SQL (the migration runner has no Go step);
+// this is the runtime path for rows created afterward.
 func newUID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
@@ -49,12 +50,15 @@ func (s *Store) resolveBranchID(name string) (int64, error) {
 
 // --- inserts -----------------------------------------------------------------
 
-// InsertItemType inserts a catalog row and returns its new id.
+// InsertItemType inserts a catalog row and returns its new id. As with lots and
+// roll_txns, the uid is server-generated and never taken from the caller: it is the
+// catalog entry's permanent identity (ADR-009, migration 0010), and item_type.uid
+// has no schema-level NOT NULL to fall back on — this insert path IS the guarantee.
 func (s *Store) InsertItemType(t model.ItemType) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO item_type (kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
-		t.Kind, t.Name, t.Metal, t.FineOzEach, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References)
+		`INSERT INTO item_type (uid, kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		newUID(), t.Kind, t.Name, t.Metal, t.FineOzEach, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References)
 	if err != nil {
 		return 0, fmt.Errorf("insert item_type: %w", err)
 	}

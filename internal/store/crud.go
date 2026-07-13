@@ -31,7 +31,7 @@ var ErrNotFound = fmt.Errorf("not found")
 // --- item_type ---------------------------------------------------------------
 
 func (s *Store) ListItemTypes() ([]model.ItemType, error) {
-	rows, err := s.db.Query(`SELECT id, kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs FROM item_type ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, uid, kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs FROM item_type ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list item_type: %w", err)
 	}
@@ -39,10 +39,14 @@ func (s *Store) ListItemTypes() ([]model.ItemType, error) {
 	var out []model.ItemType
 	for rows.Next() {
 		var t model.ItemType
-		var fineness, year, mint, mintmark, refs sql.NullString
-		if err := rows.Scan(&t.ID, &t.Kind, &t.Name, &t.Metal, &t.FineOzEach, &fineness, &year, &mint, &mintmark, &refs); err != nil {
+		var uid, fineness, year, mint, mintmark, refs sql.NullString
+		if err := rows.Scan(&t.ID, &uid, &t.Kind, &t.Name, &t.Metal, &t.FineOzEach, &fineness, &year, &mint, &mintmark, &refs); err != nil {
 			return nil, err
 		}
+		// NullString, not string: item_type.uid has no schema-level NOT NULL (ADR-009 (c),
+		// migration 0010), so a row written by some other tool could still read back NULL.
+		// Scanning it as a plain string would error out the whole list rather than surface it.
+		t.UID = uid.String
 		t.Fineness, t.Year, t.Mint, t.Mintmark, t.References = fineness.String, year.String, mint.String, mintmark.String, refs.String
 		out = append(out, t)
 	}

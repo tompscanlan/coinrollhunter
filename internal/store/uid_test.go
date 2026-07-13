@@ -28,12 +28,18 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
-// everyRowHasAUID is the invariant. Anything that can create a lot or a roll txn
-// has to satisfy it, which is why the callers below drive real store methods
-// rather than raw SQL.
+// everyRowHasAUID is the invariant. Anything that can create a lot, a roll txn or
+// an item type has to satisfy it, which is why the callers below drive real store
+// methods rather than raw SQL.
+//
+// item_type joined the list with migration 0010: export emits lots.item_type_uid
+// as the join key from a specimen to what it *is*, and the rowid it replaces is
+// recycled by a delete — which would repoint an old spreadsheet's lots at the
+// wrong coin type. ADR-009 named this exact trigger ("a live problem only if
+// export starts emitting item_type_id as a foreign key").
 func everyRowHasAUID(t *testing.T, s *Store) {
 	t.Helper()
-	for _, table := range []string{"lots", "roll_txns", "photos"} {
+	for _, table := range []string{"item_type", "lots", "roll_txns", "photos"} {
 		var bad int
 		q := `SELECT count(*) FROM ` + table + ` WHERE uid IS NULL OR trim(uid) = ''`
 		if err := s.db.QueryRow(q).Scan(&bad); err != nil {
@@ -211,6 +217,65 @@ func TestMigrationBackfillGivesLegacyRowsDistinctUIDs(t *testing.T) {
 		var uid string
 		if err := rows.Scan(&uid); err != nil {
 			t.Fatal(err)
+		}
+		if seen[uid] {
+			t.Fatalf("backfill produced a DUPLICATE uid %q — randomblob() was evaluated once, not per row", uid)
+		}
+		if !looksLikeUUIDv4(uid) {
+			t.Fatalf("backfilled uid %q is not a lowercase UUIDv4", uid)
+		}
+		seen[uid] = true
+	}
+	if len(seen) != 25 {
+		t.Errorf("want 25 distinct backfilled uids, got %d", len(seen))
+	}
+	everyRowHasAUID(t, s)
+}
+
+// Migration 0010 (item_type.uid) backfills rows that already exist. A catalog row
+// written before 0010 has to come out the other side with the SAME id — every lot
+// in the database points at it by that integer — and a fresh, distinct uid.
+func TestItemTypeBackfillKeepsIDsAndGivesDistinctUIDs(t *testing.T) {
+	s := openTestStore(t)
+
+	// Catalog rows as they existed before 0010: no uid column value.
+	ids := map[int64]bool{}
+	for i := 0; i < 25; i++ {
+		res, err := s.db.Exec(
+			`INSERT INTO item_type (uid, kind, name, metal, fine_oz_each) VALUES (NULL,'coin','Roosevelt Dime','silver',0.0723)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[id] = true
+	}
+	// Re-run the backfill exactly as the migration writes it.
+	if _, err := s.db.Exec(`UPDATE item_type SET uid =
+	  lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' ||
+	  substr(lower(hex(randomblob(2))), 2) || '-' ||
+	  substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' ||
+	  lower(hex(randomblob(6)))
+	  WHERE uid IS NULL`); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.db.Query(`SELECT id, uid FROM item_type`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var id int64
+		var uid string
+		if err := rows.Scan(&id, &uid); err != nil {
+			t.Fatal(err)
+		}
+		if !ids[id] {
+			t.Errorf("item_type id %d is not one of the ids the rows were inserted with — the backfill renumbered the catalog", id)
 		}
 		if seen[uid] {
 			t.Fatalf("backfill produced a DUPLICATE uid %q — randomblob() was evaluated once, not per row", uid)
