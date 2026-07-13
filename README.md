@@ -135,7 +135,10 @@ folder still reads sensibly in a file manager: one folder per coin or per box.
 
 **`data.json` is the same data, losslessly.** CSV can't tell an empty cell from "nothing was
 ever recorded here" — both are two commas with nothing between them. `data.json` keeps the
-difference (and keeps numbers as numbers), so it's the file to hand to a program.
+difference (and keeps numbers as numbers), so it's the file to hand to a program. "Lossless"
+means every number, every empty-vs-nothing distinction, and all normal text — everything the
+app itself writes. (The one exception: text that isn't valid Unicode, which only turns up if
+some other tool wrote straight to the database, comes out best-effort.)
 
 **`manifest.json` says what a bundle is.** Two version numbers, and they mean different things:
 

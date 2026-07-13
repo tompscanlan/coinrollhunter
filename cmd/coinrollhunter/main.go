@@ -172,8 +172,9 @@ func runExport(args []string) error {
 	defer s.Close()
 
 	// The photo files live beside the user's REAL database (src), not beside the throwaway
-	// copy — deriving the root from the copy's path would silently drop every photo.
-	if err := export.WriteDir(s, export.PhotoRoot(src), dest); err != nil {
+	// copy — deriving the root from the copy's path would silently drop every photo. Resolve
+	// symlinks first: if src is a link, the photos sit beside the real file it points at.
+	if err := export.WriteDir(s, export.PhotoRoot(export.ResolveDBPath(src)), dest); err != nil {
 		return err
 	}
 	fmt.Printf("Exported %s -> %s\n", src, dest)

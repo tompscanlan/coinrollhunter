@@ -237,7 +237,12 @@ options is an export with a way to silently produce an incomplete file), plus:
 - **`data.json`** — the same rows, typed. CSV cannot distinguish `NULL` from the empty
   string, and this schema is full of nullable columns, so *"no data loss vs. the SQLite
   contents"* is only literally true with this file in the bundle. It is also the lossless
-  input a future importer wants.
+  input a future importer wants. Lossless is precise here: it holds for **valid-UTF-8 text**
+  (which is all the app itself writes) and for every number and NULL. SQLite `TEXT` can
+  technically store *invalid* UTF-8 — only reachable if an external tool writes it — and that
+  is best-effort: JSON substitutes the Unicode replacement character `U+FFFD` for such bytes
+  rather than preserve them. We accept that rather than base64-encode every text column; a
+  *non-finite number* (Inf/NaN), by contrast, is refused loudly (see below), not best-effort.
 - **`manifest.json`** — `format_version` (of the bundle) and `db_schema_version` (the
   `PRAGMA user_version`), plus per-file row counts and SHA-256. An importer that meets a
   `format_version` above what it understands must **refuse the bundle whole**, never
@@ -254,7 +259,7 @@ options is an export with a way to silently produce an incomplete file), plus:
 - **`photos/<owner_uid>/<photo_uid>.<ext>`** — the **originals only**. Resized derivatives
   are a regenerable cache, not the user's data.
 
-Four properties the adversarial review turned from intention into guarantee:
+Properties successive adversarial reviews turned from intention into guarantee:
 
 - **Export is read-only over the user's database, structurally.** The CLI does not open the
   source file as a database — `store.Open` would migrate it (an old archive would be silently
@@ -262,16 +267,31 @@ Four properties the adversarial review turned from intention into guarantee:
   call `backup` runs on live databases — a plain byte copy is what `store.Backup`'s own
   docstring calls wrong), migrates and reads the *copy*, and discards it. The source is only
   ever read.
-- **The photo root is passed in, never derived from the store being read.** Photos live beside
-  the user's *real* database; the CLI reads a *copy*. Deriving the photo directory from the
-  copy's path (an empty temp dir) silently dropped every photo — two individually-correct
-  fixes composing into a data-loss bug. The root is now an explicit argument, computed from the
-  real path by the caller, so the two cannot drift.
+- **The reads are snapshot-consistent.** Every table is read inside one read transaction. On
+  the CLI that is redundant (it reads a private snapshot), but the browser path reads the *live*
+  store, and twelve separate queries could otherwise straddle a concurrent write and emit a lot
+  whose `item_type_uid` is not in `item_type.csv`. The store is `MaxOpenConns(1)`, so an open
+  read transaction holds the one connection and any write serializes after — no interleave window.
+- **The photo root is passed in, never derived from the store being read, and symlink-resolved.**
+  Photos live beside the user's *real* database; the CLI reads a *copy*. Deriving the photo
+  directory from the copy's path (an empty temp dir) silently dropped every photo — two
+  individually-correct fixes composing into a data-loss bug. The root is now an explicit argument
+  computed from the real path by the caller, and that path is run through `EvalSymlinks` first, so
+  a DB reached through a link (`~/crh.db` → `/srv/coins/crh.db`) still finds its photos.
 - **No single unreadable photo fails the whole export.** The rest of the collection is what the
   user came for; one bad row must not deny it. A file that is absent, permission-denied, or
   corrupt — or a row whose `owner_uid`/`uid`/`ext` carries a separator, `..`, or a
   Windows-reserved token, which is refused to stop it escaping the bundle — is recorded in
   `missing[]` and export carries on. Only a failure to *write* the bundle is fatal.
+- **A non-finite number is refused, loudly and precisely.** SQLite `REAL` can hold `Inf`/`NaN`
+  (an external tool can write one); a spreadsheet cannot represent it and `json.Marshal` fails
+  with a generic, undebuggable error. Export detects it first and errors naming the table, the
+  column, and the row (its `uid`, else its identifying column) — so the user fixes one cell
+  rather than losing the export to a mystery.
+- **The directory export is atomic.** The bundle is staged in a sibling temp directory and renamed
+  into place only on full success, so any mid-export failure — a non-finite number, a broken sink,
+  a full disk — leaves the destination absent rather than a partial that the no-clobber rule would
+  then refuse to overwrite, wedging every retry.
 - **The settings table is an open key/value bag, so export flags what it does not recognise.**
   Nothing is dropped (that would be data loss), but any key beyond the six known tunables is
   named in `unexpected_settings[]`, so a credential a future feature parks there surfaces in

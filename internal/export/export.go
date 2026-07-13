@@ -22,7 +22,9 @@ package export
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +32,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -207,11 +210,29 @@ type sink interface {
 // database, and a photo root derived from the copy's path points at an empty temp dir — so
 // every photo would be silently dropped. The photo root is the path to the user's REAL
 // data, passed in explicitly by each caller, and cannot drift from the store being read.
+//
+// Callers should pass a symlink-resolved path (see ResolveDBPath): photos live beside the
+// real file, not beside a link pointing at it.
 func PhotoRoot(dbPath string) string {
 	if dbPath == "" || dbPath == ":memory:" {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(dbPath), "photos")
+}
+
+// ResolveDBPath returns dbPath with symlinks resolved, so the photo directory is derived
+// from where the database REALLY lives. If ~/crh.db is a symlink to /srv/coins/crh.db, the
+// photos sit under /srv/coins/photos/ — deriving the root from the link's own directory
+// would find none and ship a photo-less bundle. A path that can't be resolved (a broken
+// link, a race) falls back to the raw spelling, which is the safe existing behaviour.
+func ResolveDBPath(dbPath string) string {
+	if dbPath == "" || dbPath == ":memory:" {
+		return dbPath
+	}
+	if resolved, err := filepath.EvalSymlinks(dbPath); err == nil {
+		return resolved
+	}
+	return dbPath
 }
 
 // WriteZip writes the bundle to w as a zip. This is the UI's download: a browser can
@@ -270,6 +291,12 @@ func guardEntryName(name string) error {
 //
 // photoRoot is the directory the photo files live in (PhotoRoot of the user's real
 // database), passed explicitly so it can never be confused with the store's own path.
+//
+// The write is ATOMIC: the bundle is staged in a sibling temp directory and renamed into
+// place only on full success. So ANY mid-export failure — a non-finite number, a broken
+// sink, a full disk — leaves the destination absent, never a half-written partial. That
+// matters because the no-clobber rule above would otherwise refuse every retry of a
+// destination left non-empty by a failed run, wedging the user.
 func WriteDir(s *store.Store, photoRoot, dir string) error {
 	entries, err := os.ReadDir(dir)
 	switch {
@@ -278,10 +305,38 @@ func WriteDir(s *store.Store, photoRoot, dir string) error {
 	case err != nil && !errors.Is(err, os.ErrNotExist):
 		return fmt.Errorf("export: %s: %w", dir, err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+
+	// Stage in a sibling of dir (same filesystem, so the rename is atomic and cheap). A
+	// dot prefix keeps a leftover from ever looking like a real bundle.
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("export: %s: %w", parent, err)
+	}
+	staging, err := os.MkdirTemp(parent, ".crh-export-*")
+	if err != nil {
+		return fmt.Errorf("export: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			os.RemoveAll(staging)
+		}
+	}()
+
+	if err := write(s, photoRoot, dirSink(staging)); err != nil {
+		return err
+	}
+	// Move the finished bundle into place. dir is absent or an empty directory (the
+	// no-clobber check guaranteed it); remove the empty one so the rename lands cleanly
+	// on every platform.
+	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("export: %s: %w", dir, err)
 	}
-	return write(s, photoRoot, dirSink(dir))
+	if err := os.Rename(staging, dir); err != nil {
+		return fmt.Errorf("export: %s: %w", dir, err)
+	}
+	committed = true
+	return nil
 }
 
 // dirSink writes a bundle entry as a file under a directory, creating parents (the
@@ -304,10 +359,31 @@ func (d dirSink) Create(name string) (io.Writer, error) {
 
 // --- the builder ---------------------------------------------------------------
 
+// querier is what read/copyPhotos/unexpectedSettingKeys run their queries through.
+// Both *sql.DB and *sql.Tx satisfy it, which is what lets write route every read of an
+// export through ONE transaction.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // write builds one bundle into one sink. Both public entry points come through here,
 // so the zip and the directory cannot drift apart. photoRoot is where the photo files
 // live on disk — passed in, never derived from the store (see PhotoRoot).
+//
+// Every read runs inside ONE read transaction. On the CLI that is belt-and-suspenders
+// (it already reads a throwaway snapshot), but the browser path reads the LIVE store, and
+// twelve separate queries could otherwise straddle a write — shipping a bundle whose lot
+// points at an item_type_uid that isn't in item_type.csv. The store is MaxOpenConns(1), so
+// an open read tx holds the single connection and any concurrent write serializes AFTER
+// the export: there is no interleave window, which is the guarantee.
 func write(s *store.Store, photoRoot string, out sink) error {
+	tx, err := s.DB().BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("export: begin read transaction: %w", err)
+	}
+	defer tx.Rollback() // read-only: rollback is the whole lifecycle, never a commit
+
 	m := manifest{
 		FormatVersion:      FormatVersion,
 		ExportedAt:         time.Now().UTC().Format(time.RFC3339),
@@ -315,11 +391,10 @@ func write(s *store.Store, photoRoot string, out sink) error {
 		Missing:            []string{},
 		UnexpectedSettings: []string{},
 	}
-	var err error
-	if m.DBSchemaVersion, err = s.Version(); err != nil {
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&m.DBSchemaVersion); err != nil {
 		return fmt.Errorf("export: read schema version: %w", err)
 	}
-	if m.UnexpectedSettings, err = unexpectedSettingKeys(s); err != nil {
+	if m.UnexpectedSettings, err = unexpectedSettingKeys(tx); err != nil {
 		return err
 	}
 
@@ -330,7 +405,7 @@ func write(s *store.Store, photoRoot string, out sink) error {
 	data := map[string][]jsonRow{}
 
 	for _, tb := range tables {
-		cols, rows, err := read(s, tb)
+		cols, rows, err := read(tx, tb)
 		if err != nil {
 			return err
 		}
@@ -356,7 +431,7 @@ func write(s *store.Store, photoRoot string, out sink) error {
 	}
 	m.Files = append(m.Files, manifestFile{Name: "data.json", Rows: total, SHA256: sum})
 
-	if m.Photos.Count, m.Missing, err = copyPhotos(s, photoRoot, out); err != nil {
+	if m.Photos.Count, m.Missing, err = copyPhotos(tx, photoRoot, out); err != nil {
 		return err
 	}
 	_, err = writeJSON(out, "manifest.json", m)
@@ -379,8 +454,8 @@ var knownSettingKeys = map[string]bool{
 // sorted. It DROPS nothing — the keys are still exported (leaving with your data means all
 // of it) — but it names them in the manifest so a credential parked in settings surfaces
 // loudly instead of leaking silently. Verified today there is none; this keeps it honest.
-func unexpectedSettingKeys(s *store.Store) ([]string, error) {
-	rs, err := s.DB().Query(`SELECT key FROM settings ORDER BY key`)
+func unexpectedSettingKeys(q querier) ([]string, error) {
+	rs, err := q.Query(`SELECT key FROM settings ORDER BY key`)
 	if err != nil {
 		return nil, fmt.Errorf("export settings: %w", err)
 	}
@@ -402,7 +477,7 @@ func unexpectedSettingKeys(s *store.Store) ([]string, error) {
 // value normalized: SQL NULL is nil, everything else is a string, an int64 or a
 // float64. Both the CSV and data.json render from these same values, so the two
 // halves of the bundle cannot disagree.
-func read(s *store.Store, tb table) ([]string, [][]any, error) {
+func read(q querier, tb table) ([]string, [][]any, error) {
 	cols := make([]string, 0, len(tb.cols)+len(tb.derived))
 	sel := make([]string, 0, cap(cols))
 	for _, c := range tb.cols {
@@ -417,10 +492,10 @@ func read(s *store.Store, tb table) ([]string, [][]any, error) {
 			joins = append(joins, d.join)
 		}
 	}
-	q := "SELECT " + strings.Join(sel, ", ") + " FROM " + tb.name + " t " +
+	query := "SELECT " + strings.Join(sel, ", ") + " FROM " + tb.name + " t " +
 		strings.Join(joins, " ") + " ORDER BY " + tb.orderBy
 
-	rs, err := s.DB().Query(q)
+	rs, err := q.Query(query)
 	if err != nil {
 		return nil, nil, fmt.Errorf("export %s: %w", tb.name, err)
 	}
@@ -437,17 +512,42 @@ func read(s *store.Store, tb table) ([]string, [][]any, error) {
 			return nil, nil, fmt.Errorf("export %s: %w", tb.name, err)
 		}
 		for i, v := range vals {
-			if b, ok := v.([]byte); ok {
-				// []byte -> string so JSON emits text, not base64. This is lossless ONLY
-				// because every column is TEXT/INTEGER/REAL: json.Marshal substitutes
-				// U+FFFD for invalid UTF-8, so the day a BLOB column is added the "lossless
-				// data.json" claim would need base64 (or a bytes path) for that column.
-				vals[i] = string(b)
+			switch v := v.(type) {
+			case float64:
+				// A REAL column can hold Inf/NaN (an external tool can write one). CSV would
+				// render something a spreadsheet misreads, and json.Marshal(+Inf) fails with a
+				// generic, undebuggable error. Refuse it here, naming the exact cell, so the
+				// user can fix the one bad row rather than lose the whole export to a mystery.
+				if math.IsInf(v, 0) || math.IsNaN(v) {
+					return nil, nil, fmt.Errorf(
+						"export %s: column %q is a non-finite number (%v) in row %s — a spreadsheet cannot hold it; correct that row and export again",
+						tb.name, cols[i], v, rowLabel(cols, vals))
+				}
+			case []byte:
+				// []byte -> string so JSON emits text, not base64. Lossless for valid UTF-8,
+				// which is all the app writes; SQLite TEXT can technically hold invalid UTF-8
+				// (only reachable via an external tool), and json.Marshal substitutes U+FFFD
+				// for it — a best-effort we accept rather than base64-encode every text column.
+				vals[i] = string(v)
 			}
 		}
 		out = append(out, vals)
 	}
 	return cols, out, rs.Err()
+}
+
+// rowLabel names a row in an error: its uid if the table has one, else its identifying
+// first column (id / as_of / key / branch_id) — enough for the user to find and fix it.
+func rowLabel(cols []string, vals []any) string {
+	for i, c := range cols {
+		if c == "uid" {
+			return fmt.Sprintf("uid=%v", vals[i])
+		}
+	}
+	if len(cols) == 0 {
+		return "?"
+	}
+	return fmt.Sprintf("%s=%v", cols[0], vals[0])
 }
 
 // cell renders one value for a spreadsheet. A NULL is an EMPTY cell — never "0",
@@ -598,13 +698,13 @@ func (hw *hashWriter) close(name string) (string, error) {
 //     carrying a separator, "..", or another unsafe token could write OUTSIDE the bundle.
 //     Such a row is refused (recorded in missing[]), never written — checked here at the
 //     source (safeSegment), and again at the sink (guardEntryName) as a second line.
-func copyPhotos(s *store.Store, root string, out sink) (int, []string, error) {
+func copyPhotos(q querier, root string, out sink) (int, []string, error) {
 	missing := []string{}
 	if _, err := out.Create("photos/"); err != nil { // reserved even when empty
 		return 0, missing, fmt.Errorf("export photos/: %w", err)
 	}
 
-	rs, err := s.DB().Query(`SELECT owner_uid, uid, ext FROM photos ORDER BY owner_uid, seq, uid`)
+	rs, err := q.Query(`SELECT owner_uid, uid, ext FROM photos ORDER BY owner_uid, seq, uid`)
 	if err != nil {
 		return 0, missing, fmt.Errorf("export photos: %w", err)
 	}

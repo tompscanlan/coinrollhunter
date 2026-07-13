@@ -8,11 +8,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1035,5 +1037,171 @@ func TestNumbersAreWrittenPlainly(t *testing.T) {
 	}
 	if f, err := strconv.ParseFloat(got, 64); err != nil || f != 1234567.5 {
 		t.Errorf("amount_usd = %q, want 1234567.5", got)
+	}
+}
+
+// --- snapshot consistency (the browser export was not transactional) ------------
+
+// pausableSink wraps a sink and blocks the export the first time a named entry is
+// created, so a test can hold the exporter at a precise point and probe what a
+// concurrent writer can do.
+type pausableSink struct {
+	inner   sink
+	pauseOn string
+	paused  chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (p *pausableSink) Create(name string) (io.Writer, error) {
+	if name == p.pauseOn {
+		p.once.Do(func() {
+			close(p.paused)
+			<-p.resume
+		})
+	}
+	return p.inner.Create(name)
+}
+
+// Export reads twelve tables with twelve separate queries. On the CLI that is safe —
+// it reads a throwaway snapshot. But the BROWSER path (GET /api/export) reads the LIVE
+// store, and a write landing between the item_type read and the lots read would produce
+// a bundle whose lot points at an item_type_uid that isn't in item_type.csv. The reads
+// must therefore share one read transaction, which (the store is MaxOpenConns(1)) holds
+// the single connection so any concurrent write serializes AFTER the export — there is
+// no interleave window at all.
+//
+// This test pins that: it pauses the export right after item_type is read, then proves a
+// concurrent write CANNOT complete until the export finishes. With per-query reads on the
+// live store, the write slips in during the pause and the test fails.
+func TestExportReadsAreSnapshotConsistent(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"}); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ps := &pausableSink{
+		inner:   dirSink(dir),
+		pauseOn: "item_type.csv",
+		paused:  make(chan struct{}),
+		resume:  make(chan struct{}),
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- write(s, PhotoRoot(s.Path()), ps) }()
+
+	<-ps.paused // export has read item_type and is (should be) holding a read tx
+
+	// A concurrent write must not be able to complete while the export is mid-read.
+	wDone := make(chan struct{})
+	go func() {
+		// This blocks on the single connection until the export's read tx releases it —
+		// unless the export is reading per-query on the live store, in which case the
+		// connection is free right now and this returns immediately.
+		_, _ = s.InsertItemType(model.ItemType{Kind: "coin", Name: "Late Arrival", Metal: "silver"})
+		close(wDone)
+	}()
+
+	select {
+	case <-wDone:
+		close(ps.resume) // unblock the export so we don't wedge, then fail
+		<-done
+		t.Fatal("a concurrent write completed DURING the export — the reads are not snapshot-consistent (no wrapping read transaction)")
+	case <-time.After(750 * time.Millisecond):
+		// Correct: the write is blocked behind the export's read transaction.
+	}
+
+	close(ps.resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	<-wDone // the previously-blocked write completes now that the tx is released
+}
+
+// --- #4a: a non-finite number is a loud, precise error, not a silent null -------
+
+// SQLite REAL is IEEE-754, so a column can hold +Inf/NaN (reachable if an external tool
+// writes it). json.Marshal turns +Inf into a useless generic error and CSV would render
+// something a spreadsheet misreads. Export must refuse it with a message that names the
+// table, the column, and the row — on BOTH sinks — so the user can fix the one bad cell.
+func TestANonFiniteNumberFailsLoudlyNamingTheRow(t *testing.T) {
+	s := newStore(t)
+	// 9e999 overflows to +Inf on the way into the REAL column (a portable way to get a
+	// non-finite value into SQLite without the driver rejecting a literal Inf).
+	if _, err := s.DB().Exec(
+		`INSERT INTO spot (as_of, gold_usd, silver_usd, source) VALUES ('2026-03-04', 9e999, 60, 'external tool')`); err != nil {
+		t.Fatal(err)
+	}
+	var got float64
+	if err := s.DB().QueryRow(`SELECT gold_usd FROM spot WHERE as_of='2026-03-04'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !math.IsInf(got, 1) {
+		t.Skipf("this SQLite build stored 9e999 as %v, not +Inf — the non-finite path is unreachable here", got)
+	}
+
+	assertNamed := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("export succeeded with a +Inf value — a spreadsheet cannot represent it")
+		}
+		for _, want := range []string{"spot", "gold_usd", "2026-03-04"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not name %q", err.Error(), want)
+			}
+		}
+	}
+
+	// Directory sink.
+	assertNamed(t, WriteDir(s, PhotoRoot(s.Path()), filepath.Join(t.TempDir(), "bundle")))
+	// Zip sink — same builder, same guarantee.
+	var buf bytes.Buffer
+	assertNamed(t, WriteZip(s, PhotoRoot(s.Path()), &buf))
+}
+
+// --- #4b: the directory sink is atomic — a failure leaves no partial to block a retry ---
+
+// A mid-export failure (here, a +Inf value) must not leave the destination as a
+// half-written, non-empty directory — because the no-clobber rule would then refuse
+// every retry, wedging the user. The bundle is staged elsewhere and moved into place only
+// on success, so a failed export leaves DIR absent and a retry (after the cause is fixed)
+// succeeds.
+func TestADirExportFailureLeavesNoPartialToBlockRetry(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(
+		`INSERT INTO spot (as_of, gold_usd, silver_usd, source) VALUES ('2026-03-04', 9e999, 60, 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	var got float64
+	_ = s.DB().QueryRow(`SELECT gold_usd FROM spot WHERE as_of='2026-03-04'`).Scan(&got)
+	if !math.IsInf(got, 1) {
+		t.Skip("this SQLite build did not store +Inf; the failure path is unreachable")
+	}
+
+	dir := filepath.Join(t.TempDir(), "bundle")
+	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err == nil {
+		t.Fatal("expected the export to fail on the +Inf value")
+	}
+	// The destination must be absent or empty — NOT a partial bundle.
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
+		t.Fatalf("a failed export left %d files in the destination — the no-clobber rule will now block every retry", len(entries))
+	}
+
+	// Fix the bad row; the retry must succeed (proving nothing partial is in the way).
+	if _, err := s.DB().Exec(`DELETE FROM spot WHERE as_of='2026-03-04'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err != nil {
+		t.Fatalf("retry after fixing the bad row failed — a partial bundle was left behind: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+		t.Errorf("the retry did not produce a complete bundle: %v", err)
 	}
 }

@@ -338,3 +338,74 @@ func TestCLIExportKeepsPhotosThatLiveBesideTheRealDatabase(t *testing.T) {
 		t.Errorf("manifest photos.count = %d, want 1", m.Photos.Count)
 	}
 }
+
+// A symlinked database path must not lose photos. If ~/crh.db is a symlink to the real
+// file under /srv/coins/crh.db, the photos live beside the REAL file — export reads the
+// right database (SQLite follows the link) but must look for photos beside the real file,
+// not beside the link. Deriving the photo root from the link's own directory finds nothing
+// and — because a missing photo is non-fatal — silently ships a photo-less bundle. The
+// same silent-photo-loss class as the temp-copy bug, through a different door.
+func TestCLIExportFollowsASymlinkedDBToItsPhotos(t *testing.T) {
+	realDir := filepath.Join(t.TempDir(), "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realDB := filepath.Join(realDir, "crh.db")
+
+	s, err := store.Open(realDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeID, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertHolding(model.Holding{ItemTypeID: typeID, Activity: "crh", Qty: 1, BasisUSD: 0.1, Acquired: "2026-07-01"}); err != nil {
+		t.Fatal(err)
+	}
+	const owner, photo = "owner-uid-1", "22222222-2222-4222-8222-222222222222"
+	if _, err := s.DB().Exec(
+		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES (?,?,?,?,0,?)`,
+		photo, "lot", owner, "obverse", "jpg"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	want := []byte("\xff\xd8 photo beside the REAL db")
+	if err := os.MkdirAll(filepath.Join(realDir, "photos", owner), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "photos", owner, photo+".jpg"), want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A different directory whose crh.db is only a symlink to the real file.
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.MkdirAll(linkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDB := filepath.Join(linkDir, "crh.db")
+	if err := os.Symlink(realDB, linkDB); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+
+	bundle := filepath.Join(t.TempDir(), "bundle")
+	if err := runExport([]string{"--db", linkDB, bundle}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(bundle, "photos", owner, photo+".jpg"))
+	if err != nil {
+		t.Fatalf("exporting through the symlink DROPPED the photo beside the real DB: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Error("photo bytes changed")
+	}
+	var m struct {
+		Missing []string `json:"missing"`
+	}
+	mb, _ := os.ReadFile(filepath.Join(bundle, "manifest.json"))
+	_ = json.Unmarshal(mb, &m)
+	if len(m.Missing) != 0 {
+		t.Errorf("manifest.missing = %v, want empty (the photo was beside the real file)", m.Missing)
+	}
+}

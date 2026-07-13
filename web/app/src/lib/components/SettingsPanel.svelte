@@ -214,9 +214,9 @@
       <h4 class="text-sm font-medium text-foreground">Your data</h4>
       <p class="text-xs text-muted-foreground">
         Everything you own, in one zip: a spreadsheet (CSV) for each table, a
-        <code>data.json</code> that keeps the exact values, and your photos in a folder beside
-        them. Open it in Excel, Numbers, or anything else — none of it needs CoinRollHunter to
-        read it.
+        <code>data.json</code> that keeps the exact values of everything you entered, and your
+        photos in a folder beside them. Open it in Excel, Numbers, or anything else — none of it
+        needs CoinRollHunter to read it.
       </p>
       <p class="text-xs text-muted-foreground">
         Photos go out as the originals you put in, so they still carry whatever your camera
