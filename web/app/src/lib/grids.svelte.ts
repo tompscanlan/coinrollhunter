@@ -223,7 +223,10 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
   description:
     'Bullion lots and CRH finds. Type the product, metal, fineness and metal-oz; we keep the catalog tidy for you.',
   columns: [
-    { accessorKey: 'activity', header: 'Activity', meta: { editor: 'select', options: ['bullion', 'crh'], width: '110px' } },
+    // Activity + Product freeze against the left edge: Holdings is 19 columns
+    // wide, and without them a horizontal scroll leaves you on an anonymous row
+    // of numbers with no way to tell which coin you are editing.
+    { accessorKey: 'activity', header: 'Activity', meta: { editor: 'select', options: ['bullion', 'crh'], width: '110px', pin: true } },
     {
       accessorKey: 'product',
       header: 'Product',
@@ -233,6 +236,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         placeholder: '1 oz Gold Eagle',
         suggestions: productSuggestions,
         autofill: productAutofill,
+        pin: true,
       },
     },
     { accessorKey: 'metal', header: 'Metal', meta: { editor: 'select', options: METALS, width: '110px' } },

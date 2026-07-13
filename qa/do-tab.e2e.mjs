@@ -440,6 +440,48 @@ try {
   ok('Bank autocomplete offers the branches you have actually used',
     usedBanks.length > 0 && usedBanks.every((b) => bankOpts.includes(b)),
     `datalist ${JSON.stringify(bankOpts)} vs used ${JSON.stringify(usedBanks)}`)
+
+  // === Holdings grid: virtualization must not eat an in-flight edit (om-35ul) ===
+  // The grid renders an editor per cell, so past ~60 lots it only mounts the rows
+  // in view. A cell commits on `change`, which fires on BLUR — so a row that
+  // unmounts while you are still typing in it would take the edit with it,
+  // silently. That is the same class of grid data loss v0.3.0 shipped to fix, so
+  // it is pinned here: type, scroll the row out of the window, and read the DB.
+  const seed = (await api('/lots'))[0]
+  const { id: _drop, uid: _uid, ...tmpl } = seed
+  for (let i = 0; i < 70; i++) {
+    const r = await fetch(BASE + '/api/lots', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...tmpl, qty: 1 }),
+    })
+    if (!r.ok) throw new Error(`seed lot ${i} → ${r.status}`)
+  }
+  const total = (await api('/lots')).length
+  await goHoldings()
+  await page.locator('tbody tr[data-row-index]').first().waitFor({ timeout: 5000 })
+
+  const mounted = await page.locator('tbody tr[data-row-index]').count()
+  ok('Holdings grid virtualizes a large collection (renders a window, not every row)',
+    mounted < total, `${mounted} rows in the DOM of ${total} lots`)
+
+  const qtyCol = await page.$$eval('section table thead th', (th) =>
+    th.findIndex((h) => h.innerText.trim().startsWith('Qty')))
+  const editRow = page.locator('tbody tr[data-row-index="0"]')
+  const editId = await api('/lots').then((l) => l[0].id)
+  const qtyInput = editRow.locator('td').nth(qtyCol).locator('input')
+  await qtyInput.click()
+  await qtyInput.fill('4242') // typed, NOT blurred — no Enter, no click away
+  // Scroll far enough that row 0 falls outside the rendered window and unmounts.
+  await page.evaluate(() => {
+    document.querySelector('section table').parentElement.scrollTop = 15000
+  })
+  await page.waitForTimeout(800)
+  ok('the edited row really did unmount (otherwise the guard is untested)',
+    (await page.locator('tbody tr[data-row-index="0"]').count()) === 0)
+  const afterScroll = (await api('/lots')).find((l) => l.id === editId)
+  ok('an in-flight grid edit survives its row being virtualized away',
+    afterScroll?.qty === 4242, `db qty ${afterScroll?.qty} (expected 4242)`)
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})

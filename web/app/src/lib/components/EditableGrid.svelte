@@ -13,6 +13,11 @@
     placeholder?: string
     align?: 'left' | 'right'
     width?: string
+    /** Freeze this column against the left edge during horizontal scroll, so a
+        wide table never loses which row you are on. Only a contiguous run from
+        the first column can pin — the sticky offset is the sum of the widths
+        before it, which only holds if every earlier column is pinned too. */
+    pin?: boolean
     /** Read-only computed display (e.g. a derived/joined column). */
     display?: (row: T) => string
     readOnly?: boolean
@@ -211,6 +216,94 @@
     columns.reduce((sum, c) => sum + widthPx(meta(c)), 0) + ACTIONS_COL_PX,
   )
 
+  // Left offset of each pinned column: the widths of the pinned columns before
+  // it. Only a contiguous leading run pins (see EditMeta.pin) — the first
+  // unpinned column ends the run, so a later `pin` is ignored rather than
+  // silently landing at the wrong offset.
+  const pinnedLeft = $derived.by(() => {
+    const offsets = new Map<string, number>()
+    let x = 0
+    for (const col of columns) {
+      if (!meta(col).pin) break
+      offsets.set(col.accessorKey as string, x)
+      x += widthPx(meta(col))
+    }
+    return offsets
+  })
+  const pinOf = (col: GridColumn<T>) => pinnedLeft.get(col.accessorKey as string)
+
+  // --- row virtualization -------------------------------------------------
+  // The grid renders an editor per cell, so a full render is not rows-worth of
+  // DOM but rows x columns worth of live form controls (522 lots => ~7,800
+  // inputs, ~16s to first paint). Below the threshold we render everything and
+  // behave exactly as before; above it we render only the visible window plus
+  // overscan, padding the scroll height with spacer rows so the scrollbar still
+  // reflects the whole table.
+  const VIRTUALIZE_ABOVE = 60
+  const OVERSCAN = 10
+  const EST_ROW_PX = 39
+
+  let viewportEl = $state<HTMLDivElement | null>(null)
+  let scrollTop = $state(0)
+  let viewportPx = $state(0)
+  let rowPx = $state(EST_ROW_PX)
+
+  const virtual = $derived(view.rows.length > VIRTUALIZE_ABOVE)
+
+  function windowAt(top: number, total: number) {
+    const h = rowPx || EST_ROW_PX
+    const start = Math.max(0, Math.floor(top / h) - OVERSCAN)
+    const visible = Math.ceil((viewportPx || 600) / h)
+    const end = Math.min(total, start + visible + OVERSCAN * 2)
+    return { start, end }
+  }
+
+  const slice = $derived.by(() => {
+    const total = view.rows.length
+    if (!virtual) return { start: 0, end: total, padTop: 0, padBottom: 0 }
+    const { start, end } = windowAt(scrollTop, total)
+    const h = rowPx || EST_ROW_PX
+    return { start, end, padTop: start * h, padBottom: (total - end) * h }
+  })
+
+  // A cell commits on `change`, which fires on blur. Virtualization unmounts
+  // rows that scroll out of the window — so an edit still focused when its row
+  // leaves would be destroyed before it ever committed, which is precisely the
+  // silent grid data loss v0.3.0 just fixed. Blur it on the way out: `change`
+  // fires, the row saves, and only then is it safe to unmount.
+  function commitIfLeaving(nextTop: number) {
+    const el = document.activeElement as HTMLElement | null
+    if (!el || !viewportEl?.contains(el)) return
+    if (el.tagName !== 'INPUT' && el.tagName !== 'SELECT') return
+    const idx = Number((el.closest('tr') as HTMLElement | null)?.dataset.rowIndex)
+    if (Number.isNaN(idx)) return // the new-row editor is sticky, never unmounted
+    const { start, end } = windowAt(nextTop, view.rows.length)
+    if (idx < start || idx >= end) el.blur()
+  }
+
+  function onScroll(e: Event & { currentTarget: HTMLDivElement }) {
+    const top = e.currentTarget.scrollTop
+    if (virtual) commitIfLeaving(top)
+    scrollTop = top
+    viewportPx = e.currentTarget.clientHeight
+  }
+
+  // Measure a real row once one exists; the estimate only has to carry the first
+  // paint. Guarded against feeding back into its own render loop.
+  let tbodyEl = $state<HTMLTableSectionElement | null>(null)
+  $effect(() => {
+    slice.start // re-measure after the window moves (fonts/zoom can change it)
+    const tr = tbodyEl?.querySelector('tr[data-row-index]') as HTMLElement | null
+    const h = tr?.offsetHeight ?? 0
+    if (h > 0 && Math.abs(h - untrack(() => rowPx)) > 1) rowPx = h
+  })
+
+  // The viewport's own height drives how many rows a window holds; without it
+  // the first paint would fall back to the 600px guess and under-render.
+  $effect(() => {
+    if (viewportEl) viewportPx = viewportEl.clientHeight
+  })
+
   // Normalize select options to {value,label}; optionsFn (dynamic) wins over the
   // static string list, so existing string-option selects keep working.
   function selectOptions(m: EditMeta<T>): { value: string; label: string }[] {
@@ -260,19 +353,31 @@
     {/if}
   {/each}
 
-  <div class="overflow-x-auto rounded-xl border bg-card shadow-sm">
+  <!-- A height-capped scroll region, not a full-height one: the horizontal
+       scrollbar belongs at the bottom of the VIEWPORT. Wrapping the whole table
+       put it at the bottom of the content — 20,000px down on a real collection,
+       so scrolling sideways meant scrolling to the end of the table and back. -->
+  <div
+    bind:this={viewportEl}
+    onscroll={onScroll}
+    class="max-h-[70vh] overflow-auto rounded-xl border bg-card shadow-sm"
+  >
     <table class="table-fixed border-collapse text-sm tnum" style={`min-width:max(100%, ${tableMinWidth}px)`}>
-      <thead>
+      <thead class="sticky top-0 z-20">
         {#each view.headerGroups as hg (hg.id)}
-          <tr class="border-b bg-muted/40">
+          <tr class="border-b bg-muted">
             {#each hg.headers as header (header.id)}
               {@const col = header.column.columnDef as GridColumn<T>}
               {@const m = meta(col)}
+              {@const left = pinOf(col)}
               <th
-                style={`width:${widthPx(m)}px`}
+                style={left === undefined
+                  ? `width:${widthPx(m)}px`
+                  : `width:${widthPx(m)}px;left:${left}px`}
                 class={cn(
-                  'px-3 py-2 font-medium text-muted-foreground select-none',
+                  'px-3 py-2 font-medium text-muted-foreground select-none bg-muted',
                   align(m),
+                  left !== undefined && 'sticky z-30',
                   header.column.getCanSort() && 'cursor-pointer hover:text-foreground',
                 )}
                 onclick={header.column.getToggleSortingHandler()}
@@ -298,13 +403,30 @@
         {/each}
       </thead>
 
-      <tbody>
-        {#each view.rows as row (row.original.id)}
-          <tr class="border-b last:border-0 hover:bg-accent/40">
+      <tbody bind:this={tbodyEl}>
+        <!-- Spacer rows stand in for the un-rendered window above and below, so
+             the scrollbar still measures the whole table. -->
+        {#if slice.padTop > 0}
+          <tr aria-hidden="true" style={`height:${slice.padTop}px`}></tr>
+        {/if}
+
+        {#each view.rows.slice(slice.start, slice.end) as row, i (row.original.id)}
+          {@const rowIndex = slice.start + i}
+          <tr class="group border-b last:border-0 hover:bg-accent/40" data-row-index={rowIndex}>
             {#each columns as col (col.accessorKey)}
               {@const m = meta(col)}
               {@const key = col.accessorKey as keyof T}
-              <td class={cn('px-1.5 py-1', align(m))}>
+              {@const left = pinOf(col)}
+              <td
+                style={left === undefined ? undefined : `left:${left}px`}
+                class={cn(
+                  'px-1.5 py-1',
+                  align(m),
+                  // A frozen cell scrolls over the others, so it needs its own
+                  // opaque background — and must still follow the row's hover.
+                  left !== undefined && 'sticky z-10 bg-card group-hover:bg-accent/40',
+                )}
+              >
                 {#if m.enabled && !m.enabled(row.original)}
                   <span class="block px-1.5 py-1 text-muted-foreground/50">—</span>
                 {:else if m.display}
@@ -392,12 +514,22 @@
           </tr>
         {/each}
 
-        <!-- new-row editor -->
-        <tr class="border-t bg-muted/30">
+        {#if slice.padBottom > 0}
+          <tr aria-hidden="true" style={`height:${slice.padBottom}px`}></tr>
+        {/if}
+
+        <!-- New-row editor, pinned to the bottom of the viewport. Left in flow it
+             would sit below the last row — which the height cap now puts a whole
+             collection's worth of scrolling away. -->
+        <tr class="group sticky bottom-0 z-20 border-t bg-muted">
           {#each columns as col (col.accessorKey)}
             {@const m = meta(col)}
             {@const key = col.accessorKey as keyof Draft}
-            <td class={cn('px-1.5 py-1', align(m))}>
+            {@const left = pinOf(col)}
+            <td
+              style={left === undefined ? undefined : `left:${left}px`}
+              class={cn('px-1.5 py-1 bg-muted', align(m), left !== undefined && 'sticky z-10')}
+            >
               {#if m.display || m.readOnly || (m.enabled && !m.enabled(draft as Partial<T>))}
                 <span class="block px-1.5 py-1 text-muted-foreground">—</span>
               {:else if m.editor === 'select'}
@@ -441,7 +573,7 @@
               {/if}
             </td>
           {/each}
-          <td class="px-1 text-center">
+          <td class="bg-muted px-1 text-center">
             <Button variant="ghost" size="icon" title="Add row" disabled={busy} onclick={addRow}>
               <Plus class="size-4 text-primary" />
             </Button>
