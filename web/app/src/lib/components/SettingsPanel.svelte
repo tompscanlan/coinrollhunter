@@ -6,7 +6,7 @@
   import type { Settings, Spot } from '$lib/types'
   import { DENOMS } from '$lib/presets'
   import { today } from '$lib/format'
-  import Button from '$lib/components/ui/Button.svelte'
+  import Button, { buttonVariants } from '$lib/components/ui/Button.svelte'
 
   let {
     onClose,
@@ -205,6 +205,33 @@
         {#if spotErr}<span class="text-sm text-destructive">{spotErr}</span>
         {:else if spotDone}<span class="text-xs text-positive">Spot updated.</span>{/if}
       </div>
+    </section>
+
+    <!-- App-level action, not a hunt verb — so it lives here beside spot and not on the
+         "What did you do?" tab (ADR-012 §5). A plain download link: the browser saves the
+         zip, so nothing is held in memory and there is no dialog to build. -->
+    <section class="space-y-2 border-t pt-4">
+      <h4 class="text-sm font-medium text-foreground">Your data</h4>
+      <p class="text-xs text-muted-foreground">
+        Everything you own, in one zip: a spreadsheet (CSV) for each table, a
+        <code>data.json</code> that keeps the exact values, and your photos in a folder beside
+        them. Open it in Excel, Numbers, or anything else — none of it needs CoinRollHunter to
+        read it.
+      </p>
+      <p class="text-xs text-muted-foreground">
+        Photos go out as the originals you put in, so they still carry whatever your camera
+        recorded with them — which on a phone usually includes <strong>where the photo was
+        taken</strong>. Worth knowing before you send the file to anyone.
+      </p>
+      <div class="flex items-center gap-2">
+        <a href={api.exportUrl} download class={buttonVariants({ variant: 'secondary' })}>
+          Export my data
+        </a>
+      </div>
+      <p class="text-xs text-muted-foreground">
+        This is the copy you can <em>read</em>. For a copy the app can be <em>restored</em> from,
+        run <code>coinrollhunter backup</code>.
+      </p>
     </section>
 
     <div class="flex justify-end gap-2">

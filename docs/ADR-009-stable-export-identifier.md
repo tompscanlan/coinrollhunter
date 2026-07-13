@@ -223,6 +223,46 @@ photos exist), and reserves `photos/` in `manifest.json` from day one. Adding a 
 whole table, or a directory to a format users have already built spreadsheets against is
 a breaking change; reserving all three now costs nothing.
 
+### (e) The bundle, as shipped (bead `om-9cua`)
+
+> **Amendment, 2026-07-12.** Export landed first, as (d) expected, and it did better than
+> reserve the tree: the photo-copy code is *written and tested*, against the empty-but-live
+> `photos` table. A test inserts a row, drops a real byte-file, and asserts the bundle
+> carries it — so *"export never silently drops photos"* is a passing test **before photos
+> exist**, and `om-6hlp` never has to touch `internal/export`.
+
+The bundle is one CSV per table (all twelve, no filters, no options — an export with
+options is an export with a way to silently produce an incomplete file), plus:
+
+- **`data.json`** — the same rows, typed. CSV cannot distinguish `NULL` from the empty
+  string, and this schema is full of nullable columns, so *"no data loss vs. the SQLite
+  contents"* is only literally true with this file in the bundle. It is also the lossless
+  input a future importer wants.
+- **`manifest.json`** — `format_version` (of the bundle) and `db_schema_version` (the
+  `PRAGMA user_version`), plus per-file row counts and SHA-256. An importer that meets a
+  `format_version` above what it understands must **refuse the bundle whole**, never
+  partially import it.
+- **`photos/<owner_uid>/<photo_uid>.<ext>`** — the **originals only**. Resized derivatives
+  are a regenerable cache, not the user's data.
+
+Three consequences worth writing down, because they were not obvious:
+
+- **`item_type` gets a `uid` after all** (migration 0010). The Alternatives section below
+  deferred it and named the exact trigger — *"a live problem only if export starts emitting
+  `item_type_id` as a foreign key"*. Export does, so it is one. Recycling that particular
+  rowid is worse than the photo case this ADR was written for: it changes what the coin
+  **is**. `keepers`/`trips`/`supplies`/`losses` still get none — they are leaf rows, nothing
+  points at them, and their own outbound FKs already resolve to uid targets.
+- **The exporter writes its table and column lists out**, rather than discovering them with
+  `SELECT *`. A self-discovering exporter passes every test you can give it while shipping
+  whatever it happens to find. Declared lists let the tests compare the bundle against
+  `sqlite_schema` and `PRAGMA table_info` and **break** when a migration adds a table or a
+  column — which is exactly when someone should have to decide how that data leaves the app.
+- **Export is not backup, and neither replaces the other.** `backup` is machine-readable and
+  restorable (the database file); the export bundle is human-readable and portable (CSV +
+  photos). Two different promises — *"restore my app"* and *"leave with my data"* — so there
+  is no `crh.db` inside the bundle.
+
 ## Consequences
 
 - **+** A photo can never silently re-attach to the wrong coin. The identifier outlives
@@ -277,7 +317,8 @@ a breaking change; reserving all three now costs nothing.
   set, and it forbids a legitimate case — two obverse shots under different lighting.
   Taking the lowest `(seq, uid)` among `role='obverse'` is already deterministic without
   spending a constraint on it.
-- **Give `item_type` a uid too.** Still deferred, not rejected. A catalog entry is
-  reference data — not a thing you own, and not a thing you photograph (per ADR-003 you
-  photograph *your* coin). It becomes a live problem only if export starts emitting
-  `item_type_id` as a foreign key, or if stock imagery is ever hung off the type.
+- **Give `item_type` a uid too.** ~~Still deferred, not rejected.~~ **Adopted 2026-07-12
+  (migration 0010, bead `om-9cua`)** — on precisely the trigger this bullet named. A catalog
+  entry is reference data, not a thing you own or photograph, so it was deferred: *"it
+  becomes a live problem only if export starts emitting `item_type_id` as a foreign key."*
+  Export does. See (e).

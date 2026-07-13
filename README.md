@@ -84,6 +84,69 @@ sync folder, another machine. Open it later with `./coinrollhunter serve --db my
 It won't overwrite an existing backup, and it never modifies the database it's reading —
 so it's also the right thing to run *before* upgrading to a new version.
 
+### Leaving with your data
+
+A backup is a copy the *app* can restore. An **export** is a copy *you* can read — and
+you can take one whenever you like, from **Settings → Your data**, or from a terminal:
+
+```bash
+./coinrollhunter export my-collection-2026-07-12/
+```
+
+Either way you get the same bundle. The button downloads it as a zip; the command writes
+it as a plain folder, so your photos are sitting right there beside the spreadsheets.
+
+```
+item_type.csv       the coin types you've catalogued
+lots.csv            what you own — every specimen, live and sold
+roll_txns.csv       boxes and rolls bought, coin returned to the bank
+keepers.csv         clad you kept back
+trips.csv           bank runs (miles + hours)
+supplies.csv        tubes, flips, wrappers
+losses.csv          shrinkage written off at reconcile
+branches.csv        your bank address book
+branch_aliases.csv  the older spellings each branch is known by
+spot.csv            every metal price you've ever recorded
+settings.csv        your tunables
+photos.csv          one row per picture, with the file it points at
+data.json           the same rows, typed — see below
+manifest.json       what's in the bundle, and its checksums
+photos/             the picture files themselves
+```
+
+**Open the CSVs in anything.** Excel, Numbers, LibreOffice, a text editor. That's the point:
+nothing in the bundle needs CoinRollHunter to read it.
+
+**`uid` is the column that makes it safe to leave.** Every row that matters carries one: an
+opaque id that is never reused, even after you delete something. Where a spreadsheet would
+normally join on a row number — and silently point at the wrong coin once a row is deleted
+and the number gets handed out again — this bundle joins on `uid`. So `lots.csv` carries
+both `item_type_id` (the internal number) and `item_type_uid` (the one that keeps its
+meaning), and the same for the box a find came from and the branch a trip went to.
+
+**The photos join is one column.** `photos.csv` has a `path` column — `photos/<coin>/<photo>.jpg`
+— pointing straight at the file in the bundle. No filename convention to work out, and the
+folder still reads sensibly in a file manager: one folder per coin or per box.
+
+> **A word about photo files.** They're exported as the originals you imported, which means
+> they still carry whatever your camera saved inside them. On a phone, that usually includes
+> **the location the photo was taken** — often your home. Worth knowing before you send an
+> export to anyone.
+
+**`data.json` is the same data, losslessly.** CSV can't tell an empty cell from "nothing was
+ever recorded here" — both are two commas with nothing between them. `data.json` keeps the
+difference (and keeps numbers as numbers), so it's the file to hand to a program.
+
+**`manifest.json` says what a bundle is.** Two version numbers, and they mean different things:
+
+- `format_version` — the version of *this bundle format*. It starts at 1 and changes only when
+  a file or a column does. Anything reading a bundle should **refuse** one whose
+  `format_version` is higher than it understands, rather than importing part of it.
+- `db_schema_version` — which database migration the columns reflect.
+
+It also lists every file with its row count and its SHA-256, so you (or a future importer) can
+check a bundle is intact years from now, with no app and no network.
+
 > **Unpack it first.** Windows will happily run an `.exe` straight from inside the zip
 > preview, but it does that by unpacking to a temporary folder that gets cleaned up later.
 > Drag the folder out of the zip before you click.

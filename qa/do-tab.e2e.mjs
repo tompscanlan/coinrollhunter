@@ -6,6 +6,7 @@
 //
 // Run standalone:  BASE_URL=http://127.0.0.1:8799 node do-tab.e2e.mjs
 import { chromium } from 'playwright'
+import { statSync } from 'node:fs'
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:8799'
 const SHOT = process.env.SHOT_DIR || '.'
@@ -218,6 +219,21 @@ try {
   await page.locator('button[title="Settings"]').click()
   const dialog = page.locator('[role="dialog"]')
   await dialog.getByRole('heading', { name: 'Settings' }).waitFor({ timeout: 5000 })
+
+  // === "Your data": the export bundle downloads, and the EXIF caveat is stated ===
+  ok('settings offers a data export', (await dialog.getByRole('heading', { name: 'Your data' }).count()) > 0)
+  ok('export warns that photo originals carry location data',
+    await dialog.getByText('where the photo was taken', { exact: false }).isVisible())
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 15000 }),
+    dialog.getByRole('link', { name: 'Export my data' }).click(),
+  ])
+  const bundle = await download.path()
+  const bytes = bundle ? statSync(bundle).size : 0
+  ok('export downloads a non-empty zip bundle',
+    bytes > 0 && /^coinrollhunter-export-\d{4}-\d{2}-\d{2}\.zip$/.test(download.suggestedFilename()),
+    `${download.suggestedFilename()} — ${bytes} bytes`)
+
   await dialog.locator('input[type=number]').first().fill('0.85') // 90% buyback factor
   await page.getByRole('button', { name: 'Save settings' }).click()
   await dialog.waitFor({ state: 'detached', timeout: 5000 })

@@ -70,6 +70,11 @@ export const api = {
   getSettings: () => req<Settings>('GET', '/settings'),
   putSettings: (s: Settings) => req<Settings>('PUT', '/settings', s),
 
+  // The data-export bundle (internal/export): a zip of one CSV per table, a lossless
+  // data.json, and the photo originals. A plain link the browser downloads — not a
+  // fetch: the app never has to hold a collection's worth of photos in memory.
+  exportUrl: `${BASE}/export`,
+
   itemTypes: crud<ItemType>('item-types'),
   holdings: crud<Holding>('lots'),
   // sell a holding (full or partial); records disposal + realized P&L
