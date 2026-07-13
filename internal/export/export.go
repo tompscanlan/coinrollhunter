@@ -198,12 +198,31 @@ type sink interface {
 	Create(name string) (io.Writer, error)
 }
 
+// PhotoRoot is where photo files live for a database at dbPath: beside it, in a photos/
+// directory (ADR-009: photos/<owner_uid>/<photo_uid>.<ext>). An in-memory database has no
+// directory, and no photos, so its root is "".
+//
+// This is a function, not something the exporter derives from the store it reads, and that
+// is the fix for a real regression: the CLI reads the data from a throwaway COPY of the
+// database, and a photo root derived from the copy's path points at an empty temp dir — so
+// every photo would be silently dropped. The photo root is the path to the user's REAL
+// data, passed in explicitly by each caller, and cannot drift from the store being read.
+func PhotoRoot(dbPath string) string {
+	if dbPath == "" || dbPath == ":memory:" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(dbPath), "photos")
+}
+
 // WriteZip writes the bundle to w as a zip. This is the UI's download: a browser can
 // only take a single file, and Explorer opens a zip as a folder while macOS
 // auto-extracts it — so a zip is the right artifact on every platform we ship.
-func WriteZip(s *store.Store, w io.Writer) error {
+//
+// photoRoot is the directory the photo files live in (PhotoRoot of the user's real
+// database), passed explicitly so it can never be confused with the store's own path.
+func WriteZip(s *store.Store, photoRoot string, w io.Writer) error {
 	zw := zip.NewWriter(w)
-	if err := write(s, zipSink{zw}); err != nil {
+	if err := write(s, photoRoot, zipSink{zw}); err != nil {
 		return err
 	}
 	return zw.Close()
@@ -222,18 +241,22 @@ func (z zipSink) Create(name string) (io.Writer, error) {
 }
 
 // guardEntryName is the last line of defense for both sinks: it rejects any bundle
-// entry name that is absolute or contains a ".." segment. Legitimate names are built
-// from fixed strings and validated uids; this catches a bad photo path before it can
-// escape the bundle root (dir sink) or become a traversal entry (zip sink). Photo
+// entry name that is absolute or has a ".", ".." or empty segment. Legitimate names are
+// built from fixed strings and validated uids; this catches a bad photo path before it
+// can escape the bundle root (dir sink) or become a traversal entry (zip sink). Photo
 // segments are also checked at the source (safeSegment), so this should never fire for
 // them — it is belt-and-suspenders, and it also covers the hardcoded file names.
+//
+// Rejecting "." and "" (not just "..") keeps the zip and the directory byte-identical: a
+// name like "photos/./x.jpg" would sail into the zip verbatim while the dir sink cleaned
+// it to "photos/x.jpg", and the two bundles would silently disagree.
 func guardEntryName(name string) error {
 	trimmed := strings.TrimSuffix(name, "/") // a reserved directory entry ("photos/")
 	if trimmed == "" || strings.HasPrefix(name, "/") || strings.ContainsAny(name, "\\\x00") {
 		return fmt.Errorf("export: unsafe bundle path %q", name)
 	}
 	for _, seg := range strings.Split(trimmed, "/") {
-		if seg == ".." {
+		if seg == "" || seg == "." || seg == ".." {
 			return fmt.Errorf("export: unsafe bundle path %q", name)
 		}
 	}
@@ -244,7 +267,10 @@ func guardEntryName(name string) error {
 // directory that already has anything in it — the rule `backup` already keeps, for the
 // reason it keeps it: a command that can silently overwrite the thing you were trying
 // to save is a footgun in the one place you least want one.
-func WriteDir(s *store.Store, dir string) error {
+//
+// photoRoot is the directory the photo files live in (PhotoRoot of the user's real
+// database), passed explicitly so it can never be confused with the store's own path.
+func WriteDir(s *store.Store, photoRoot, dir string) error {
 	entries, err := os.ReadDir(dir)
 	switch {
 	case err == nil && len(entries) > 0:
@@ -255,7 +281,7 @@ func WriteDir(s *store.Store, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("export: %s: %w", dir, err)
 	}
-	return write(s, dirSink(dir))
+	return write(s, photoRoot, dirSink(dir))
 }
 
 // dirSink writes a bundle entry as a file under a directory, creating parents (the
@@ -279,8 +305,9 @@ func (d dirSink) Create(name string) (io.Writer, error) {
 // --- the builder ---------------------------------------------------------------
 
 // write builds one bundle into one sink. Both public entry points come through here,
-// so the zip and the directory cannot drift apart.
-func write(s *store.Store, out sink) error {
+// so the zip and the directory cannot drift apart. photoRoot is where the photo files
+// live on disk — passed in, never derived from the store (see PhotoRoot).
+func write(s *store.Store, photoRoot string, out sink) error {
 	m := manifest{
 		FormatVersion:      FormatVersion,
 		ExportedAt:         time.Now().UTC().Format(time.RFC3339),
@@ -329,7 +356,7 @@ func write(s *store.Store, out sink) error {
 	}
 	m.Files = append(m.Files, manifestFile{Name: "data.json", Rows: total, SHA256: sum})
 
-	if m.Photos.Count, m.Missing, err = copyPhotos(s, out); err != nil {
+	if m.Photos.Count, m.Missing, err = copyPhotos(s, photoRoot, out); err != nil {
 		return err
 	}
 	_, err = writeJSON(out, "manifest.json", m)
@@ -549,28 +576,33 @@ func (hw *hashWriter) close(name string) (string, error) {
 
 // --- photos ---------------------------------------------------------------------
 
-// copyPhotos copies every photo file into the bundle. Originals only: the resized
-// derivatives the app renders from are a regenerable cache, not the user's data, and
-// shipping both would double the bundle for nothing. It returns how many files were
-// actually written, and the relative paths of any that were referenced by a row but
-// NOT put in the bundle.
+// copyPhotos copies every photo file from root into the bundle. Originals only: the
+// resized derivatives the app renders from are a regenerable cache, not the user's data,
+// and shipping both would double the bundle for nothing. It returns how many files were
+// actually written, and the relative paths of any that were referenced by a row but NOT
+// put in the bundle (absent, unreadable, or refused as unsafe).
 //
-// Two things must NOT happen, and both took a review to get right:
+// root is passed in (PhotoRoot of the user's real database), never derived from the store
+// being read — the CLI reads a throwaway copy, and deriving the root from the copy's path
+// pointed at an empty temp dir and silently dropped every photo. An empty root ("") means
+// an in-memory store, which has no photos.
 //
-//   - A single missing file must not take the whole export down. The rest of the
+// Two things must NOT happen, and both took review rounds to get right:
+//
+//   - A single unreadable file must not take the whole export down. The rest of the
 //     collection is exactly what the user came to retrieve; a hard failure hands them
-//     nothing. So a gone file is RECORDED in missing[] and export carries on. Absence
-//     stays loud (named in the manifest) without being fatal.
+//     nothing. So an absent, permission-denied, or corrupt file is RECORDED in missing[]
+//     and export carries on. Absence stays loud (named in the manifest) without being
+//     fatal. Only a failure to WRITE the bundle (a broken sink) is fatal.
 //   - A row's path is built from raw column values, so an owner_uid or uid or ext
-//     carrying a "/" or ".." could write OUTSIDE the bundle. Such a row is refused
-//     (recorded in missing[]), never written — checked here at the source, and again
-//     at the sink (guardEntryName) as a second line.
-func copyPhotos(s *store.Store, out sink) (int, []string, error) {
+//     carrying a separator, "..", or another unsafe token could write OUTSIDE the bundle.
+//     Such a row is refused (recorded in missing[]), never written — checked here at the
+//     source (safeSegment), and again at the sink (guardEntryName) as a second line.
+func copyPhotos(s *store.Store, root string, out sink) (int, []string, error) {
 	missing := []string{}
 	if _, err := out.Create("photos/"); err != nil { // reserved even when empty
 		return 0, missing, fmt.Errorf("export photos/: %w", err)
 	}
-	root := photoRoot(s)
 
 	rs, err := s.DB().Query(`SELECT owner_uid, uid, ext FROM photos ORDER BY owner_uid, seq, uid`)
 	if err != nil {
@@ -585,17 +617,18 @@ func copyPhotos(s *store.Store, out sink) (int, []string, error) {
 			return 0, missing, fmt.Errorf("export photos: %w", err)
 		}
 		rel := "photos/" + ownerUID + "/" + uid + "." + ext
-		// A path segment that could climb out of the bundle is refused, not written.
-		if !safeSegment(ownerUID) || !safeSegment(uid) || !safeSegment(ext) {
+		// A path segment that could climb out of the bundle (or break os.Create on the
+		// user's platform) is refused, not written. root == "" (in-memory) has no files.
+		if root == "" || !safeSegment(ownerUID) || !safeSegment(uid) || !safeSegment(ext) {
 			missing = append(missing, rel)
 			continue
 		}
 		copied, err := copyPhoto(out, filepath.Join(root, ownerUID, uid+"."+ext), rel)
 		if err != nil {
-			return 0, missing, err
+			return 0, missing, err // the SINK failed — the bundle itself can't be written
 		}
 		if !copied {
-			missing = append(missing, rel) // its file was gone from disk
+			missing = append(missing, rel) // the source file was absent or unreadable
 			continue
 		}
 		n++
@@ -603,30 +636,45 @@ func copyPhotos(s *store.Store, out sink) (int, []string, error) {
 	return n, missing, rs.Err()
 }
 
-// safeSegment reports whether a photo path segment is safe to use as a directory or
-// file name — no path separator, no "..", not empty. A UUID or a "jpg" always passes;
-// this exists to refuse a corrupt or hostile row before it becomes a path.
+// safeSegment reports whether a photo path segment is safe to use as a directory or file
+// name on any platform we ship. A UUID or a "jpg" always passes; this refuses a corrupt or
+// hostile row before it becomes a path. Rejected: empty; a path separator (/ or \); ".."
+// or "." as a component or substring; and the extra characters Windows forbids — ':' (so a
+// corrupt "C:" can't become a drive-relative path), '*?"<>|', control bytes, and a trailing
+// '.' or space (Windows strips them, changing the name). Reserving these keeps the
+// one-bad-row-doesn't-break-the-bundle promise true on Windows too, not just here.
 func safeSegment(s string) bool {
-	return s != "" && !strings.ContainsAny(s, `/\`) && !strings.Contains(s, "..") && !strings.Contains(s, "\x00")
+	if s == "" || s == "." || s == ".." || strings.Contains(s, "..") {
+		return false
+	}
+	if strings.HasSuffix(s, ".") || strings.HasSuffix(s, " ") {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 || strings.ContainsRune(`/\:*?"<>|`, r) {
+			return false
+		}
+	}
+	return true
 }
 
-// copyPhoto copies one photo file into the bundle. It reports whether the file was
-// there to copy: a file gone from disk is a gap to record (copied=false, no error), not
-// a reason to fail the whole export. A real I/O error mid-copy is still returned.
+// copyPhoto copies one photo file into the bundle. It reads the whole file before writing
+// anything, so an unreadable source never leaves a truncated entry in the bundle: a file
+// that is absent, permission-denied, or corrupt mid-read reports copied=false with no
+// error (the caller records it as missing and moves on), while a failure to WRITE the
+// bundle entry — a broken sink, a full disk — is a real error and stops the export.
 func copyPhoto(out sink, src, rel string) (copied bool, err error) {
-	f, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil // recorded by the caller as missing
-		}
-		return false, fmt.Errorf("export %s: %w", rel, err)
+		// Absent, permission-denied, corrupt: not the user's fault to lose the rest of
+		// their data over. Recorded by the caller as missing, never fatal.
+		return false, nil
 	}
-	defer f.Close()
 	w, err := out.Create(rel)
 	if err != nil {
 		return false, fmt.Errorf("export %s: %w", rel, err)
 	}
-	if _, err := io.Copy(w, f); err != nil {
+	if _, err := w.Write(data); err != nil {
 		return false, fmt.Errorf("export %s: %w", rel, err)
 	}
 	if c, ok := w.(io.Closer); ok {
@@ -635,14 +683,4 @@ func copyPhoto(out sink, src, rel string) (copied bool, err error) {
 		}
 	}
 	return true, nil
-}
-
-// photoRoot is where the app keeps photo files: beside the database (ADR-009). An
-// in-memory store has no directory, and no photos either.
-func photoRoot(s *store.Store) string {
-	p := s.Path()
-	if p == "" || p == ":memory:" {
-		return ""
-	}
-	return filepath.Join(filepath.Dir(p), "photos")
 }

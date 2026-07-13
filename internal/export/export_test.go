@@ -53,11 +53,12 @@ func seeded(t *testing.T) *store.Store {
 	return s
 }
 
-// bundleDir exports s and returns the directory it landed in.
+// bundleDir exports s and returns the directory it landed in. The test stores are real
+// files, so photos live beside them — PhotoRoot(s.Path()) is the honest root.
 func bundleDir(t *testing.T, s *store.Store) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "bundle")
-	if err := WriteDir(s, dir); err != nil {
+	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -562,7 +563,7 @@ func TestATraversalPhotoPathCannotEscapeTheBundle(t *testing.T) {
 
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "bundle")
-	if err := WriteDir(s, dir); err != nil {
+	if err := WriteDir(s, PhotoRoot(s.Path()), dir); err != nil {
 		t.Fatalf("export should complete, refusing the row — got %v", err)
 	}
 
@@ -586,6 +587,88 @@ func TestATraversalPhotoPathCannotEscapeTheBundle(t *testing.T) {
 	m := readManifest(t, dir)
 	if len(m.Missing) != 1 {
 		t.Errorf("manifest.missing = %v, want the refused traversal row named", m.Missing)
+	}
+}
+
+// A photo file that IS on disk but cannot be READ (permission-denied, or corrupt) must be
+// recorded and skipped, exactly like an absent one — NOT abort the whole export. The
+// README promises "a corrupt or moved file is noted here... never stops the rest," and an
+// earlier version only honored that for os.ErrNotExist. A directory sitting where the file
+// should be is a portable, root-safe stand-in for "present but unreadable": os.ReadFile
+// returns an error on it even when the tests run as root (a chmod 000 file would not).
+func TestAnUnreadablePhotoFileIsRecordedNotFatal(t *testing.T) {
+	s := newStore(t)
+	writePhoto(t, s, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "lot", "o1", "obverse", "jpg", []byte("readable"))
+	if _, err := s.DB().Exec(
+		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES ('unreadable','lot','o2','obverse',0,'jpg')`); err != nil {
+		t.Fatal(err)
+	}
+	// Put a DIRECTORY where photos/o2/unreadable.jpg's file would be — reading it fails.
+	blocked := filepath.Join(filepath.Dir(s.Path()), "photos", "o2", "unreadable.jpg")
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := bundleDir(t, s) // must NOT error — an unreadable file is not a reason to abort
+
+	// The readable photo made it; the whole bundle is intact.
+	if _, err := os.ReadFile(filepath.Join(dir, "photos", "o1", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.jpg")); err != nil {
+		t.Errorf("an unreadable sibling took down a readable photo: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "manifest.json")); err != nil {
+		t.Errorf("an unreadable photo took down the whole bundle: %v", err)
+	}
+	// The unreadable one is recorded, not silently gone.
+	m := readManifest(t, dir)
+	if len(m.Missing) != 1 || m.Missing[0] != "photos/o2/unreadable.jpg" {
+		t.Errorf("manifest.missing = %v, want [photos/o2/unreadable.jpg]", m.Missing)
+	}
+	if m.Photos.Count != 1 {
+		t.Errorf("photos.count = %d, want 1 (only the readable one is in the bundle)", m.Photos.Count)
+	}
+}
+
+// A corrupt/hostile row whose segment is a Windows-reserved name — a bare drive letter
+// like "C:", or a trailing dot Windows silently strips — must be refused here, not left to
+// die at os.Create on a Windows box (which would re-break the one-bad-row-doesn't-abort
+// design, but only for Windows users). safeSegment reserves those cross-platform.
+func TestWindowsReservedPhotoSegmentsAreRefused(t *testing.T) {
+	for _, bad := range []string{"C:", "aux.", "a:b", "trailing "} {
+		if safeSegment(bad) {
+			t.Errorf("safeSegment(%q) = true, want false (unsafe on Windows)", bad)
+		}
+	}
+	for _, ok := range []string{"11111111-1111-4111-8111-111111111111", "jpg", "png", "o1"} {
+		if !safeSegment(ok) {
+			t.Errorf("safeSegment(%q) = false, want true (a legitimate uid/ext)", ok)
+		}
+	}
+
+	// End to end: a row with owner_uid "C:" is refused and recorded, and export completes.
+	s := newStore(t)
+	if _, err := s.DB().Exec(
+		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES ('u','lot','C:','obverse',0,'jpg')`); err != nil {
+		t.Fatal(err)
+	}
+	dir := bundleDir(t, s)
+	if m := readManifest(t, dir); len(m.Missing) != 1 {
+		t.Errorf("manifest.missing = %v, want the reserved-name row refused and recorded", m.Missing)
+	}
+}
+
+// The zip and the directory must stay byte-identical, and a "." segment is a way they
+// could quietly diverge: the dir sink cleans "photos/./x" to "photos/x" while the zip
+// keeps it verbatim. The guard rejects "." (and "") so neither sink ever sees one.
+func TestGuardRejectsDotAndEmptySegments(t *testing.T) {
+	for _, bad := range []string{"photos/./x.jpg", "photos//x.jpg", "photos/../x.jpg", "/abs.csv", "a\\b"} {
+		if err := guardEntryName(bad); err == nil {
+			t.Errorf("guardEntryName(%q) = nil, want an error", bad)
+		}
+	}
+	for _, ok := range []string{"lots.csv", "photos/", "photos/owner/uid.jpg", "manifest.json"} {
+		if err := guardEntryName(ok); err != nil {
+			t.Errorf("guardEntryName(%q) = %v, want nil (a legitimate entry)", ok, err)
+		}
 	}
 }
 
@@ -782,7 +865,7 @@ func TestZipAndDirectoryAreTheSameBundle(t *testing.T) {
 	dir := bundleDir(t, s)
 
 	var buf bytes.Buffer
-	if err := WriteZip(s, &buf); err != nil {
+	if err := WriteZip(s, PhotoRoot(s.Path()), &buf); err != nil {
 		t.Fatal(err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
@@ -883,11 +966,12 @@ func blankExportedAt(t *testing.T, b []byte) string {
 // the thing you were trying to save is a footgun in the one place you least want one.
 func TestWriteDirRefusesANonEmptyDirectory(t *testing.T) {
 	s := seeded(t)
+	root := PhotoRoot(s.Path())
 	dir := filepath.Join(t.TempDir(), "bundle")
-	if err := WriteDir(s, dir); err != nil {
+	if err := WriteDir(s, root, dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteDir(s, dir); err == nil {
+	if err := WriteDir(s, root, dir); err == nil {
 		t.Fatal("a second export over the same directory succeeded — the first bundle was silently overwritten")
 	}
 
@@ -896,7 +980,7 @@ func TestWriteDirRefusesANonEmptyDirectory(t *testing.T) {
 	if err := os.MkdirAll(empty, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteDir(s, empty); err != nil {
+	if err := WriteDir(s, root, empty); err != nil {
 		t.Errorf("refused an EMPTY directory the user pointed at: %v", err)
 	}
 }

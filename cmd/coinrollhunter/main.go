@@ -12,7 +12,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -146,18 +145,24 @@ func runExport(args []string) error {
 	// Read-only over the user's data, structurally — not just by convention. store.Open
 	// applies pending migrations as a side effect (store.go), so opening src directly
 	// would UPGRADE an old snapshot (a v9 archive) to the latest schema on disk before
-	// reading it. That is the exact trap BackupFile avoids by opening raw. So export
-	// never opens the user's file as a database at all: it copies the bytes to a
-	// throwaway, migrates and reads the COPY, and discards it. The source is opened
-	// only to be read, at any schema version, on any path.
+	// reading it. So export never opens the user's file as a database: it snapshots it to
+	// a throwaway, migrates and reads the COPY, and discards it.
+	//
+	// The snapshot is store.BackupFile (VACUUM INTO), not a byte copy — the same call the
+	// `backup` command runs against live databases. store.Backup's docstring spells out why
+	// a plain copy is wrong: this app runs a background spot poller that writes with no user
+	// action, so a byte copy taken mid-commit can be torn, and a copy of the main file alone
+	// loses anything still in a -wal sidecar. VACUUM INTO takes a read transaction and writes
+	// a self-contained file, and (verified) preserves user_version — so the copy migrates
+	// v9 -> latest exactly as the source would have, and the source is only ever read.
 	tmpDir, err := os.MkdirTemp("", "coinrollhunter-export")
 	if err != nil {
 		return fmt.Errorf("export: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 	work := filepath.Join(tmpDir, "source-copy.db")
-	if err := copyFile(src, work); err != nil {
-		return fmt.Errorf("export: %w", err)
+	if err := store.BackupFile(src, work); err != nil {
+		return err
 	}
 
 	s, err := store.Open(work)
@@ -166,34 +171,15 @@ func runExport(args []string) error {
 	}
 	defer s.Close()
 
-	if err := export.WriteDir(s, dest); err != nil {
+	// The photo files live beside the user's REAL database (src), not beside the throwaway
+	// copy — deriving the root from the copy's path would silently drop every photo.
+	if err := export.WriteDir(s, export.PhotoRoot(src), dest); err != nil {
 		return err
 	}
 	fmt.Printf("Exported %s -> %s\n", src, dest)
 	fmt.Println("A CSV per table, a data.json that keeps the types, your photos in photos/, and a manifest.")
 	fmt.Println("Open the CSVs in any spreadsheet. Nothing here needs CoinRollHunter to read it.")
 	return nil
-}
-
-// copyFile copies src to dst byte-for-byte. Used to take a throwaway snapshot of the
-// user's database before migrating and reading it, so export never mutates the
-// original. The store is not in WAL mode (store.Open sets only foreign_keys), so the
-// main file is self-contained and a plain copy is a faithful snapshot.
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 func runMigrate(args []string) error {

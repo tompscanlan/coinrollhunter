@@ -3,6 +3,8 @@ package api_test
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"math"
@@ -172,4 +174,80 @@ func TestExportEndpointServesAZipBundle(t *testing.T) {
 			t.Errorf("the downloaded bundle is missing %s", want)
 		}
 	}
+}
+
+// The API export path serves a real file-backed store directly (no throwaway copy — that
+// is only the CLI's concern, since the running app already holds the migrated DB). Two
+// things to hold: it carries the photos that live beside that database, and it does not
+// mutate the file it reads.
+func TestExportEndpointCarriesPhotosAndDoesNotMutateTheDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "crh.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeID, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertHolding(model.Holding{ItemTypeID: typeID, Activity: "crh", Qty: 1, BasisUSD: 0.1, Acquired: "2026-07-01"}); err != nil {
+		t.Fatal(err)
+	}
+	const owner, photo = "owner-1", "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+	if _, err := s.DB().Exec(
+		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES (?,?,?,?,0,?)`,
+		photo, "lot", owner, "obverse", "jpg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "photos", owner), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pic := []byte("\xff\xd8 api-served coin")
+	if err := os.WriteFile(filepath.Join(dir, "photos", owner, photo+".jpg"), pic, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(api.Handler(s, nil))
+	t.Cleanup(func() { srv.Close(); s.Close() })
+
+	before := dbSHA(t, dbPath)
+	resp, err := http.Get(srv.URL + "/api/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := dbSHA(t, dbPath); after != before {
+		t.Error("the API export mutated the database file it read — export must be read-only")
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("not a readable zip: %v", err)
+	}
+	var served []byte
+	for _, f := range zr.File {
+		if f.Name == "photos/"+owner+"/"+photo+".jpg" {
+			rc, _ := f.Open()
+			served, _ = io.ReadAll(rc)
+			rc.Close()
+		}
+	}
+	if string(served) != string(pic) {
+		t.Errorf("the API export did not carry the photo beside the DB (got %d bytes)", len(served))
+	}
+}
+
+func dbSHA(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

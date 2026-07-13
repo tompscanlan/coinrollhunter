@@ -66,7 +66,9 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 		defer os.Remove(f.Name())
 		defer f.Close()
 
-		if err := export.WriteZip(s, f); err != nil {
+		// This handler holds the user's REAL, already-migrated store, so the photo root is
+		// simply beside its path — no throwaway copy involved (that is the CLI's concern).
+		if err := export.WriteZip(s, export.PhotoRoot(s.Path()), f); err != nil {
 			writeErr(w, err)
 			return
 		}

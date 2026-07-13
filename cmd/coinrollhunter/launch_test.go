@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -260,4 +261,80 @@ func fileSHA(t *testing.T, path string) string {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// EXPORT MUST NOT LOSE PHOTOS. Photos live beside the user's REAL database
+// (photos/<owner_uid>/<photo_uid>.<ext>, ADR-009). The A13 fix reads the data from a
+// throwaway COPY of the database — but the photo files are NOT copied, and if the
+// exporter derives the photo root from the copy's path, it looks in an empty temp dir,
+// finds nothing, and (photos being non-fatal) exits 0 with an empty photos/ dir. A real
+// coin's only picture, silently dropped. The photo root must come from the ORIGINAL src.
+//
+// This is the data-integrity core of the feature, so it is asserted end-to-end through
+// the CLI, not just in the export package (whose tests never go through the copy path).
+func TestCLIExportKeepsPhotosThatLiveBesideTheRealDatabase(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "crh.db")
+
+	s, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeID, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertHolding(model.Holding{ItemTypeID: typeID, Activity: "crh", Qty: 1, BasisUSD: 0.1, Acquired: "2026-07-01"}); err != nil {
+		t.Fatal(err)
+	}
+	// A photo row, and its real file on disk beside the database (where the app keeps it).
+	const owner, photo = "owner-uid-1", "11111111-1111-4111-8111-111111111111"
+	if _, err := s.DB().Exec(
+		`INSERT INTO photos (uid, owner_kind, owner_uid, role, seq, ext) VALUES (?,?,?,?,0,?)`,
+		photo, "lot", owner, "obverse", "jpg"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	want := []byte("\xff\xd8\xff\xe0 the only picture of this coin")
+	photoDir := filepath.Join(dir, "photos", owner)
+	if err := os.MkdirAll(photoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(photoDir, photo+".jpg"), want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bundle := filepath.Join(dir, "bundle")
+	if err := runExport([]string{"--db", db, bundle}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The photo is in the bundle, byte-for-byte.
+	got, err := os.ReadFile(filepath.Join(bundle, "photos", owner, photo+".jpg"))
+	if err != nil {
+		t.Fatalf("the photo beside the real DB was DROPPED from the export: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Error("photo bytes changed on the way into the bundle")
+	}
+	// And nothing was reported missing — the file was right there.
+	var m struct {
+		Missing []string `json:"missing"`
+		Photos  struct {
+			Count int `json:"count"`
+		} `json:"photos"`
+	}
+	mb, err := os.ReadFile(filepath.Join(bundle, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(mb, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Missing) != 0 {
+		t.Errorf("manifest.missing = %v, want empty (the photo existed beside the DB)", m.Missing)
+	}
+	if m.Photos.Count != 1 {
+		t.Errorf("manifest photos.count = %d, want 1", m.Photos.Count)
+	}
 }
