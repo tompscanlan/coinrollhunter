@@ -22,6 +22,7 @@ import (
 	"github.com/tompscanlan/coinrollhunter/internal/api"
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
 	"github.com/tompscanlan/coinrollhunter/internal/demo"
+	"github.com/tompscanlan/coinrollhunter/internal/export"
 	"github.com/tompscanlan/coinrollhunter/internal/legacy"
 	"github.com/tompscanlan/coinrollhunter/internal/spot"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
@@ -64,6 +65,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "export":
+		// As with backup: export's errors already say "export:".
+		if err := runExport(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "version", "-v", "--version":
 		fmt.Printf("coinrollhunter %s\n", version)
 	case "-h", "--help", "help":
@@ -95,9 +102,58 @@ usage:
       Write a consistent snapshot of your data to a single file — safe to run
       while the app is open, and safe to copy anywhere. Copying crh.db by hand
       is not: recent changes may still live in its -wal sidecar.
+  coinrollhunter export [--db crh.db] DIR
+      Write everything you own into DIR as spreadsheets you can open anywhere:
+      a CSV per table, a data.json that keeps the types, and your photos in a
+      folder beside them. That is "leave with your data"; backup is "restore my
+      app". DIR must be empty or new.
   coinrollhunter version
       Print the build version.
 `)
+}
+
+// runExport writes the data-export bundle to a plain directory: a CSV per table, a
+// lossless data.json, a manifest, and the photo originals. Same bundle the UI's
+// "Export my data" button downloads as a zip — this form exists so the photos are
+// browsable in a file manager right beside the spreadsheet, with no dialog and no
+// unpacking step.
+func runExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	dbPath := fs.String("db", "", "path to the SQLite database (default: the same one the app uses)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: coinrollhunter export [--db crh.db] DIR")
+	}
+	dest := fs.Arg(0)
+
+	// Default to whatever the app itself would open, so `export` finds the user's real
+	// data without them having to know where it lives.
+	src := *dbPath
+	if src == "" {
+		var err error
+		if src, err = defaultDBPath(); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("no database at %s", src)
+	}
+
+	s, err := store.Open(src)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	if err := export.WriteDir(s, dest); err != nil {
+		return err
+	}
+	fmt.Printf("Exported %s -> %s\n", src, dest)
+	fmt.Println("A CSV per table, a data.json that keeps the types, your photos in photos/, and a manifest.")
+	fmt.Println("Open the CSVs in any spreadsheet. Nothing here needs CoinRollHunter to read it.")
+	return nil
 }
 
 func runMigrate(args []string) error {

@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tompscanlan/coinrollhunter/internal/model"
+	"github.com/tompscanlan/coinrollhunter/internal/store"
 )
 
 // The compat rule is the one place this change could silently eat someone's
@@ -124,4 +127,37 @@ func chdir(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chdir(prev) })
+}
+
+// `coinrollhunter export DIR` is the "browse the photos in a file manager beside the
+// spreadsheet" form — the same bundle the UI downloads as a zip, written as plain
+// files. It keeps backup's no-clobber rule: a command that can silently overwrite
+// the thing you were trying to save is a footgun in the one place you least want one.
+func TestExportWritesABundleAndRefusesToClobberIt(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "crh.db")
+	s, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	bundle := filepath.Join(dir, "bundle")
+	if err := runExport([]string{"--db", db, bundle}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"lots.csv", "item_type.csv", "data.json", "manifest.json", "photos"} {
+		if _, err := os.Stat(filepath.Join(bundle, name)); err != nil {
+			t.Errorf("bundle is missing %s: %v", name, err)
+		}
+	}
+	if err := runExport([]string{"--db", db, bundle}); err == nil {
+		t.Error("a second export over the same directory succeeded — the first bundle was silently overwritten")
+	}
+	if err := runExport([]string{"--db", db}); err == nil {
+		t.Error("export with no destination succeeded — it must say where it would have written")
+	}
 }
