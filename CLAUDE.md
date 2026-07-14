@@ -34,7 +34,8 @@ Every row has an id so the UI can edit/delete.
 ## Profitability math (port from prototype/portfolio.py)
 Core formulas: CRH net = finds_realizable - face_cost - gas - supplies. Cash-in:
 to_redeposit = bought - returned - kept(finds+clad). Buyback haircuts: 40% (and 35% war
-nickels) silver 0.80, 90% silver 0.90 — prefix-matched on the fineness string. Box throughput
+nickels) silver 0.80, 90% silver 0.90 — classified by *range* over a fineness string normalized to
+a numeric fine fraction, never by prefix-match (om-t0fs). Box throughput
 is *derived* from normalized face (face / box_face[denom]), not an input (ADR-001 R7).
 **Realized P&L:** sold lots (`disposed`/`disposed_usd`) are excluded from live valuation;
 realized gain = proceeds − basis. **Per-box yield:** CRH finds link to their buy txn
@@ -278,5 +279,39 @@ alone would still half-write at row 400 of 900. **`*Tx` is the surface om-2sl6's
 consume**; note it does not carry `SellHolding` or the `Update*`s yet — add them the same way (a twin
 that validates in its own body + an entry in `expectedMutations`), and never inside a `WithTx` callback
 call a `*Store` method, or you will meet the deadlock above.
+
+Added 2026-07-14 (classification is money, om-t0fs): `internal/calc` used to read the
+**stringly-typed `metal` and `fineness` straight into the money math**, and both halves failed
+**silently and in the flattering direction**. `buybackFactor` **prefix-matched** the fineness, so
+`".900"` — ordinary numismatic notation — missed `HasPrefix("90")`, fell to the default, and paid
+**full melt with no dealer haircut** (~11% overstatement of expected payout); `" 90%"` lost to a
+leading space the same way; and `"40 grain"` — a **weight** — matched `HasPrefix("40")` and got
+haircut as 40% junk. Meanwhile `spotFor` was an **exact, case-sensitive** switch, so a historical
+row with `metal="Silver"` valued at **$0 spot**. Those two compound: a `"Silver"` row also fails
+`l.Metal != "silver"` in `buybackFactor`, so it skipped the haircut *as well* — **both halves of
+the money math wrong on the same row**. om-1czp's validation does not close this and was never
+going to: it guards **new writes only** (historical rows, `internal/legacy` imports and hand-edited
+DBs never pass through it) and it **does not validate fineness at all**. The parser is the only
+defense these rows ever meet, so the parser is where the fix lives — deliberately **not** a new
+CHECK or a new validation rule. Now `normalizeMetal` folds case+whitespace (and the `gold` KPI
+guard uses it too, or a `"Gold"` lot would price at gold spot yet vanish from `gold_*`), and
+`finenessFraction` normalizes free text to a **numeric fine fraction**, which is then classified by
+**RANGE** (`near`, ±0.015 — wide enough for `".900"`/`"90%"`/`"900"`, tight enough that sterling
+`.925`, 22k `.9167` and world `80% (CAD)` stay **out** of the junk buckets and keep full melt, as
+they did before). **No `strings.HasPrefix` on fineness survives.** The rule that makes `"40 grain"`
+work is worth keeping in your head: a **bare** number (no `%`, no decimal point, no karat) is a
+fineness only if it **stands alone**; a number carrying any other unit is a weight. A number that
+*is* explicitly marked may carry annotation, which is why `"80% (CAD)"` (a real fineness in
+`internal/demo`) still parses. An **unparseable** fineness on silver now takes the **conservative**
+branch — the worst known dealer factor — because the old `1.0` meant *full melt*, i.e. bad data
+silently produced the **most optimistic number available**. What does not resolve is recorded on a
+**new additive `Report.Anomalies`** (row + offending value): purely additive, so the API carries it
+and existing consumers ignore it — `/api/summary` over `sample-data` is **byte-identical** before
+and after except for the new `"anomalies": []`. **Rendering it is om-ay3b, not this bead.** The
+trap to not fall into: **a BLANK metal is legal and load-bearing** — clad "junk" types (error
+coins, world coins) carry no melt metal, correctly value at $0, and must stay **silent**; flagging
+blank would fire on correct data across a huge share of the ledger, which is how a warning becomes
+noise. Only a **non-blank, unrecognized** metal is an anomaly. Blank *fineness* is treated the same
+way (not stated ≠ corrupt): no haircut, no anomaly.
 
 The `prototype/` reference is the source of truth for behavior and exact formulas.
