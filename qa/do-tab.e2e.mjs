@@ -53,6 +53,39 @@ const goDo = async () => {
 }
 const tile = (name) => page.locator('button.group', { hasText: name })
 
+// EditableGrid renders its <thead> at mount but fills <tbody> from an async load()
+// ($effect in EditableGrid.svelte) — so a check that waits on the header and then reads
+// rows/tbody/a <datalist> races that fetch and can sample an EMPTY grid. That one defect
+// is behind both known flakes (source-type-inert, mixed-denom) and every latent grid read
+// (om-yd1h). Fix the WAIT, never the timeout: gate on the loaded rows. Real rows carry
+// data-row-index; the trailing draft row does not, so this counts exactly what load()
+// produced. `exact` is for AFTER a delete, where the count DROPS and a `>=` would
+// short-circuit on the pre-delete rows.
+const dataRowSel = 'section table tbody tr[data-row-index]'
+const awaitRowCount = (n, { sel = dataRowSel, exact = false } = {}) =>
+  page
+    .waitForFunction(
+      ([s, want, eq]) => {
+        const c = document.querySelectorAll(s).length
+        return eq ? c === want : c >= want
+      },
+      [sel, n, exact],
+      { timeout: 5000 },
+    )
+    .catch(() => {}) // let the ok() below report the miss, with real numbers
+
+// Poll a REST endpoint until it settles, instead of sleeping a fixed guess after a write.
+// Returns the last value seen either way, so the ok() reports real state on a miss.
+const awaitApi = async (path, pred, { tries = 60, gap = 100 } = {}) => {
+  let v
+  for (let i = 0; i < tries; i++) {
+    v = await api(path)
+    if (pred(v)) break
+    await new Promise((r) => setTimeout(r, gap))
+  }
+  return v
+}
+
 try {
   await page.goto(BASE, { waitUntil: 'networkidle' })
   await page.getByRole('heading', { name: 'CoinRollHunter' }).waitFor({ timeout: 8000 })
@@ -146,7 +179,7 @@ try {
   // step 1: a forgotten keeper (5 halves = $2.50) shrinks the float — NOT a loss
   await page.getByRole('spinbutton').nth(0).fill('5')
   await page.getByRole('button', { name: 'Add', exact: true }).first().click()
-  await page.waitForTimeout(400)
+  await awaitApi('/keepers', (k) => k.length === 2) // wait for the write, not a fixed guess
   ok('reconcile recorded forgotten keeper', (await api('/keepers')).length === 2)
   const sumMid = await api('/summary')
   ok('keeper reduced float (not a loss)', (sumMid.losses ?? 0) === 0 && sumMid.to_redeposit < sumBefore.to_redeposit,
@@ -179,8 +212,9 @@ try {
   await page.getByRole('button', { name: 'Edit' }).click()
   await page.getByRole('button', { name: 'Losses', exact: true }).click()
   await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
-  const lossRows = await page.locator('section table tbody tr:has(button[title="Delete row"])').count()
   const apiLosses = (await api('/losses')).length
+  await awaitRowCount(apiLosses) // the header is up; wait for load() to land the rows
+  const lossRows = await page.locator('section table tbody tr:has(button[title="Delete row"])').count()
   ok('Losses grid round-trips', lossRows === apiLosses && apiLosses >= 1, `dom ${lossRows} vs api ${apiLosses}`)
 
   // === Overview reflects shrinkage ===
@@ -196,8 +230,7 @@ try {
     (await page.getByText('Buys', { exact: true }).count()) > 0 &&
     (await page.getByText('Branches', { exact: true }).count()) > 0 &&
     (await page.getByText('Avg buy', { exact: true }).count()) > 0)
-  // spot freshness chip — source label varies (manual seed vs. the ADR-007 poller),
-  // so match the chip by its unique title, not the source string.
+  // spot freshness chip — matched by its unique (static) title attribute.
   ok('spot freshness chip visible (ADR-007)', await page.locator('span[title*="background"]').first().isVisible())
   // hit-rate report: the endpoint (data) plus the grid, which lives on the
   // Insights tab — the analysis altitude was lifted out of Overview in the ADR-012
@@ -221,8 +254,9 @@ try {
   await newRow.getByPlaceholder('Mercury').fill('Mercury')
   await newRow.locator('input[type=checkbox]').check()
   await newRow.locator('button[title="Add row"]').click()
-  await page.waitForTimeout(500)
-  const taxLot = (await api('/lots')).find((l) => l.category === 'Silver' && l.subcategory === 'Mercury' && l.trophy === true)
+  const isTaxLot = (l) => l.category === 'Silver' && l.subcategory === 'Mercury' && l.trophy === true
+  await awaitApi('/lots', (ls) => ls.some(isTaxLot)) // wait for create+reload, not a fixed guess
+  const taxLot = (await api('/lots')).find(isTaxLot)
   ok('Holdings taxonomy persists (category/subcategory/trophy)', !!taxLot, taxLot ? `lot ${taxLot.id}` : 'not found')
   // The new find has basis 0 (grid default) — summary must still serialize (no +Inf in unreal_pct).
   const sumZeroBasis = await api('/summary')
@@ -266,6 +300,7 @@ try {
   await page.getByRole('button', { name: 'Edit' }).click()
   await page.getByRole('button', { name: 'Roll txns', exact: true }).click()
   await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  await awaitRowCount((await api('/roll-txns')).length) // wait for the rows before reading them
   // cells: date(0) bank(1) action(2) denom(3) unit(4) source(5); the first select
   // in a row is the action select. The draft row defaults to 'buy' so it's excluded.
   const returnSourceCells = await page.$$eval('section table tbody tr', (rows) =>
@@ -301,14 +336,22 @@ try {
     await page.getByRole('button', { name: 'Edit', exact: true }).click()
     await page.getByRole('button', { name: 'Holdings', exact: true }).click()
     await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+    // The header is up but rows arrive from an async load(); wait for at least one real
+    // row (which also means the suggestion caches behind the datalists have landed).
+    await awaitRowCount(1)
   }
   // Existing rows only — the trailing new-row draft has no Delete button.
   const locCells = () =>
     page.locator('tbody tr:has(button[title="Delete row"]) input[list="dl-holdings-location"]')
   const commit = async (input, value) => {
     await input.fill(value)
-    await input.blur() // onchange → saveRow
-    await page.waitForTimeout(500)
+    // blur fires onchange → saveRow → PUT /api/lots/{id}; wait for that write to land,
+    // not a fixed guess, before the caller re-reads the row from the API.
+    const saved = page
+      .waitForResponse((r) => r.request().method() === 'PUT' && /\/api\/lots\//.test(r.url()), { timeout: 5000 })
+      .catch(() => {})
+    await input.blur()
+    await saved
   }
 
   await goHoldings()
@@ -445,6 +488,7 @@ try {
   // Bank, on a different grid: the branch you bought from must suggest itself back.
   await page.getByRole('button', { name: 'Roll txns', exact: true }).click()
   await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  await awaitRowCount((await api('/roll-txns')).length) // wait for load() to fill the bank suggestions
   // id is derived from the grid TITLE ('Roll transactions'), not the tab label.
   const bankOpts = await dlOptions('dl-roll-transactions-bank')
   const usedBanks = [...new Set((await api('/roll-txns')).map((r) => r.bank).filter(Boolean))]
@@ -538,9 +582,12 @@ try {
   await page.evaluate(() => {
     document.querySelector('section table').parentElement.scrollTop = 15000
   })
-  await page.waitForTimeout(800)
+  // Scrolling row 0 out of the window blurs its editor (commitIfLeaving) and unmounts it;
+  // wait for the unmount, then for the blur-triggered PUT to land — not a fixed guess.
+  await page.locator('tbody tr[data-row-index="0"]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
   ok('the edited row really did unmount (otherwise the guard is untested)',
     (await page.locator('tbody tr[data-row-index="0"]').count()) === 0)
+  await awaitApi('/lots', (ls) => ls.find((l) => l.id === editId)?.qty === 4242)
   const afterScroll = (await api('/lots')).find((l) => l.id === editId)
   ok('an in-flight grid edit survives its row being virtualized away',
     afterScroll?.qty === 4242, `db qty ${afterScroll?.qty} (expected 4242)`)
@@ -579,20 +626,13 @@ try {
   }
   const confirmDlg = page.getByRole('dialog')
   const cancelBtn = () => confirmDlg.getByRole('button', { name: 'Cancel', exact: true })
-  const awaitRowCount = (n) =>
-    page
-      .waitForFunction(
-        ([sel, want]) => document.querySelectorAll(sel).length === want,
-        [supplyRowSel, n],
-        { timeout: 5000 },
-      )
-      .catch(() => {}) // let the ok() below report the miss, with numbers
 
   // Wait for the async GET /api/supplies to populate the grid BEFORE counting — the
   // `thead th` we waited on renders before load() resolves, so a bare count here would
-  // race the fetch and could read 0 (the flake class tracked in om-yd1h). We seeded
-  // exactly two rows into this otherwise-untouched grid, so 2 is the settled count.
-  await awaitRowCount(2)
+  // race the fetch and could read 0 (the flake class this bead, om-yd1h, fixes). We seeded
+  // exactly two rows into this otherwise-untouched grid, so 2 is the settled count. (Uses
+  // the shared awaitRowCount, scoped to the Supplies delete-button rows.)
+  await awaitRowCount(2, { sel: supplyRowSel })
   const rowsBefore = await supplyRows().count()
   ok('fixture: both QA supply rows are in the grid',
     rowsBefore === 2 && (await supplyItems()).includes(SUPPLY_GONE), `${rowsBefore} row(s)`)
@@ -647,7 +687,7 @@ try {
   await confirmDlg.waitFor({ timeout: 5000 })
   await confirmDlg.getByRole('button', { name: 'Delete', exact: true }).click()
   await confirmDlg.waitFor({ state: 'detached', timeout: 5000 })
-  await awaitRowCount(rowsBefore - 1)
+  await awaitRowCount(rowsBefore - 1, { sel: supplyRowSel, exact: true }) // count DROPS — must be exact
   const rowsAfter = await supplyRows().count()
   const itemsAfter = await supplyItems()
   ok('Confirm removes the row (grid)', rowsAfter === rowsBefore - 1,
