@@ -241,4 +241,42 @@ bad rows still opens, lists, and lets you delete them. The DB-level backstop (TR
 CHECK) and a `doctor` command to report pre-existing bad rows are deliberately **separate
 follow-up beads**. No frontend change (`api.ts` + `EditableGrid.svelte` already render `{error}`).
 
+Added 2026-07-14 (the import is atomic, om-u3el): **`internal/legacy/import.go` wrote with no
+transaction** — and that only became a user-visible wound when om-1czp made every store mutation
+validate. The first rejected row aborted the run mid-stream, every row *ahead* of it was already
+committed (each `s.Insert*` is its own auto-commit statement), so the user fixed their file, re-ran,
+and **every previously-inserted row was DUPLICATED**. `settings` and `spot` are upserts, so a
+*rejected* file could still silently rewrite the user's settings; and `resolveBranchID` — the store's
+**hidden 7th writer**, which find-or-creates a branch from a typed bank name inside `InsertRollTxn`/
+`InsertTrip` — left an **orphan bank branch** behind. This is the spreadsheet on-ramp: it burned the
+one population we most want to keep, on their first interaction.
+**`Store.WithWrite` is not the fix — it is a MUTEX, not a transaction** (no Begin/Commit/Rollback;
+wrapping the import in it buys *zero* atomicity while looking right). And the obvious fix —
+`s.db.Begin()`, then keep calling the existing `s.Insert*` — **deadlocks**: `SetMaxOpenConns(1)`
+(SQLite tolerates one writer) means the open tx holds the pool's only connection and the next
+`s.db.Exec` blocks **forever**. The symptom is a hung test, not an error, and the tempting "fix" is
+to delete the transaction again. **There is no way to do this without making the insert path
+tx-aware.** So: **`Store.WithTx(fn func(*Tx) error)`** runs the `wmu` + `Begin` + `defer Rollback` +
+`Commit` dance (the idiom `SellHolding` and `MergeBranches` already used) and hands `fn` a
+transaction-bound **`*Tx`** writer; each insert's SQL now lives in one private helper over a small
+**`execer`** interface (`{Exec; QueryRow}`) that **both `*sql.DB` and `*sql.Tx`** satisfy, so the
+auto-commit `*Store` method and its `*Tx` twin cannot drift. `resolveBranchID` takes an `execer` too,
+so a branch forked inside a tx rolls back with it. **The 19 public `Store` mutations keep their names,
+signatures, and their own `x.Validate()` first line** — that repetition is deliberate:
+`validate_ast_test.go` reads each mutation's own **body**, so folding the call into the shared helper
+would blind the chokepoint guard. **The guard itself is widened**: it used to walk only `*Store`
+receivers, which would have made the whole `*Tx` insert path **invisible to it** — a second,
+*unvalidated* door into the ledger, precisely the hole om-1czp closed. It now walks **every** receiver,
+keys mutations `Receiver.Method`, and fails on an **undeclared** one, so the next writer cannot escape
+by inventing a new receiver either. On top of the tx, `Import` gained a **pre-validate pass** (plan →
+validate → write): it builds every `model` struct first, runs every validator, and reports **EVERY**
+bad row at once (`legacy.ImportErrors`, unwrapping to `model.ErrInvalid`), each naming its file, row
+index and field — `migrate` prints the lot. **The two halves are not redundant**: the pre-validate is
+the UX (fix your whole file in one pass), the **transaction is the guarantee**, because it also covers
+what validation cannot foresee — a missing table, a full disk, an FK, a process kill. Pre-validation
+alone would still half-write at row 400 of 900. **`*Tx` is the surface om-2sl6's compound workflows
+consume**; note it does not carry `SellHolding` or the `Update*`s yet — add them the same way (a twin
+that validates in its own body + an entry in `expectedMutations`), and never inside a `WithTx` callback
+call a `*Store` method, or you will meet the deadlock above.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
