@@ -32,7 +32,11 @@ npm install --silent
 npx playwright install chromium >/dev/null 2>&1 || echo "  (playwright install skipped — relying on PLAYWRIGHT_BROWSERS_PATH)"
 
 echo "▸ serving on ${BASE} (db: ${DB})…"
-"$BIN" serve --db "$DB" --addr "127.0.0.1:${PORT}" &
+# --spot-provider=none keeps the live gold-api.com poller out of the test path. Left on,
+# it appends a spot row at as_of=now; LatestSpot is ORDER BY as_of DESC, so the live market
+# price would outrank the 2026-01-01 fixture seeded below and the suite would value against
+# whatever gold did today (a network race that can shift valuations mid-run). Manual seed only.
+"$BIN" serve --db "$DB" --addr "127.0.0.1:${PORT}" --spot-provider=none &
 SRV=$!
 cleanup() { kill "$SRV" 2>/dev/null || true; rm -f "$DB"; }
 trap cleanup EXIT
