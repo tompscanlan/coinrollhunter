@@ -28,6 +28,17 @@ const apiPut = async (p, body) => {
   })
   if (!r.ok) throw new Error(`PUT ${p} → ${r.status}`)
 }
+// Seeds a row directly, for checks about the grid itself (e.g. deleting one) rather
+// than about the workflow that would normally create it.
+const apiPost = async (p, body) => {
+  const r = await fetch(BASE + '/api' + p, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`POST ${p} → ${r.status}`)
+  return r.json()
+}
 
 const browser = await chromium.launch()
 const page = await browser.newPage()
@@ -533,6 +544,90 @@ try {
   const afterScroll = (await api('/lots')).find((l) => l.id === editId)
   ok('an in-flight grid edit survives its row being virtualized away',
     afterScroll?.qty === 4242, `db qty ${afterScroll?.qty} (expected 4242)`)
+
+  // === Deleting a row is gated by a confirm that NAMES it (om-lv4q) ===
+  // The trash can was a one-click hard DELETE: no confirm, no undo, no soft-delete,
+  // no server-side trash — the only way back from a misclick was restoring last
+  // night's backup and losing everything since. Every editable grid funnels its
+  // delete through EditableGrid, and `remove` is a required prop, so ONE guard covers
+  // all seven; it is asserted once, here, on Supplies — a real cost row, and the only
+  // grid this suite does not otherwise touch, so the check cannot disturb anything.
+  const SUPPLY_GONE = 'QA tubes to delete'
+  const SUPPLY_KEPT = 'QA flips to keep'
+  await apiPost('/supplies', { date: '2026-01-05', item: SUPPLY_KEPT, cost_usd: 4.5 })
+  await apiPost('/supplies', { date: '2026-01-06', item: SUPPLY_GONE, cost_usd: 13.37 })
+
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Edit', exact: true }).click()
+  await page.getByRole('button', { name: 'Supplies', exact: true }).click()
+  await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+
+  // Existing rows only — the sticky draft row has no Delete button.
+  const supplyRowSel = 'section table tbody tr:has(button[title="Delete row"])'
+  const supplyRows = () => page.locator(supplyRowSel)
+  const supplyItems = async () => (await api('/supplies')).map((s) => s.item)
+  // The grid renders values into <input>s, so a row is found by input VALUE, not text.
+  const trashFor = async (item) =>
+    supplyRows()
+      .nth(
+        await supplyRows().evaluateAll(
+          (rows, it) => rows.findIndex((r) => [...r.querySelectorAll('input')].some((i) => i.value === it)),
+          item,
+        ),
+      )
+      .locator('button[title="Delete row"]')
+  const confirmDlg = page.getByRole('dialog')
+  const cancelBtn = () => confirmDlg.getByRole('button', { name: 'Cancel', exact: true })
+  const awaitRowCount = (n) =>
+    page
+      .waitForFunction(
+        ([sel, want]) => document.querySelectorAll(sel).length === want,
+        [supplyRowSel, n],
+        { timeout: 5000 },
+      )
+      .catch(() => {}) // let the ok() below report the miss, with numbers
+
+  const rowsBefore = await supplyRows().count()
+  ok('fixture: both QA supply rows are in the grid',
+    rowsBefore === 2 && (await supplyItems()).includes(SUPPLY_GONE), `${rowsBefore} row(s)`)
+
+  // --- The trash can opens a confirmation, and it says WHICH row ---
+  await (await trashFor(SUPPLY_GONE)).click()
+  await confirmDlg.waitFor({ timeout: 5000 })
+  const dialogText = (await confirmDlg.innerText()).replace(/\s+/g, ' ')
+  ok('the trash can opens a confirmation instead of deleting', await confirmDlg.isVisible())
+  ok('the confirmation NAMES the specific row it will delete',
+    dialogText.includes(SUPPLY_GONE) && dialogText.includes('$13.37') && !dialogText.includes(SUPPLY_KEPT),
+    JSON.stringify(dialogText))
+
+  // --- Cancel KEEPS the row ---
+  ok('Cancel is the default-focused control (so a stray Enter cancels, not deletes)',
+    await cancelBtn().evaluate((el) => el === document.activeElement))
+  await cancelBtn().click()
+  await confirmDlg.waitFor({ state: 'detached', timeout: 5000 })
+  ok('Cancel keeps the row (grid)', (await supplyRows().count()) === rowsBefore)
+  ok('Cancel keeps the row (REST API)', (await supplyItems()).includes(SUPPLY_GONE))
+
+  // --- Escape keeps it too ---
+  await (await trashFor(SUPPLY_GONE)).click()
+  await confirmDlg.waitFor({ timeout: 5000 })
+  await page.keyboard.press('Escape')
+  await confirmDlg.waitFor({ state: 'detached', timeout: 5000 })
+  ok('Escape keeps the row',
+    (await supplyRows().count()) === rowsBefore && (await supplyItems()).includes(SUPPLY_GONE))
+
+  // --- Confirm REMOVES it — from the grid AND from the database ---
+  await (await trashFor(SUPPLY_GONE)).click()
+  await confirmDlg.waitFor({ timeout: 5000 })
+  await confirmDlg.getByRole('button', { name: 'Delete', exact: true }).click()
+  await confirmDlg.waitFor({ state: 'detached', timeout: 5000 })
+  await awaitRowCount(rowsBefore - 1)
+  const rowsAfter = await supplyRows().count()
+  const itemsAfter = await supplyItems()
+  ok('Confirm removes the row (grid)', rowsAfter === rowsBefore - 1,
+    `${rowsAfter} row(s), expected ${rowsBefore - 1}`)
+  ok('Confirm removes the row (REST API)', !itemsAfter.includes(SUPPLY_GONE), JSON.stringify(itemsAfter))
+  ok('…and only that row — the neighbouring row is untouched', itemsAfter.includes(SUPPLY_KEPT))
 } catch (e) {
   ok('UNCAUGHT', false, e.message)
   await page.screenshot({ path: `${SHOT}/do-error.png`, fullPage: true }).catch(() => {})
