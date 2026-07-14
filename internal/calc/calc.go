@@ -224,13 +224,26 @@ const (
 // stands alone or is followed by an explicit fineness word. A number carrying any
 // other unit is a WEIGHT, and mistaking it for a fineness is what haircut this lot
 // at the 40% rate. A number that *is* explicitly marked (%, ".", karat) may be
-// followed by free annotation — "80% (CAD)" is a real fineness with a note on it.
+// followed by free annotation — "80% (CAD)" is a real fineness with a note on it —
+// EXCEPT a weight unit: a decimal point must not launder "0.4 oz" into 40% by
+// discarding the "oz" as annotation (om-t0fs review, finding 2). A weight unit
+// anywhere in the tail means the whole string is a weight, marked or not.
 func finenessFraction(raw string) (float64, fineClass) {
 	fields := strings.Fields(strings.ToLower(raw))
 	if len(fields) == 0 {
 		return 0, fineUnstated
 	}
 	head, rest := fields[0], fields[1:]
+
+	// A weight unit token anywhere after the number ("0.4 oz", ".9 oz bar",
+	// "40 grain") makes this a WEIGHT, not a fineness — regardless of whether a
+	// decimal point marked the number. Non-unit annotation (".900 coin", "90%
+	// (worn)") is not a weight and stays parseable.
+	for _, tok := range rest {
+		if isWeightUnit(tok) {
+			return 0, fineUnparseable
+		}
+	}
 
 	percent := strings.HasSuffix(head, "%")
 	head = strings.TrimSuffix(head, "%")
@@ -283,10 +296,28 @@ func finenessFraction(raw string) (float64, fineClass) {
 			f = n / 10000
 		}
 	}
-	if f <= 0 || f > 1 {
-		return 0, fineUnparseable // not a fine fraction: "900%", "40k", "-1"
+	// Invert the accept test rather than reject with `f <= 0 || f > 1`: NaN fails
+	// every comparison, so the reject form let "nan%" (ParseFloat("nan") is a valid
+	// NaN, not an error) through as a parsed fraction -> full melt, the silent
+	// flattering answer again (om-t0fs review, finding 4). `f > 0 && f <= 1` is
+	// false for NaN and +Inf, so both route to the conservative branch + an anomaly.
+	if !(f > 0 && f <= 1) {
+		return 0, fineUnparseable // not a fine fraction: "900%", "40k", "-1", "nan%"
 	}
 	return f, fineParsed
+}
+
+// isWeightUnit reports whether tok is a mass/weight unit word. A "fineness" whose
+// annotation is actually a weight unit ("0.4 oz", "40 grain", ".4 g") is a weight,
+// not a fineness, and must not be bucketed as junk silver (om-t0fs). tok is already
+// lower-cased by finenessFraction.
+func isWeightUnit(tok string) bool {
+	switch tok {
+	case "oz", "ozt", "g", "gram", "grams", "gr", "grain", "grains":
+		return true
+	default:
+		return false
+	}
 }
 
 // The junk-silver buckets, as RANGES over the normalized fine fraction. The

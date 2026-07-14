@@ -455,6 +455,16 @@ func TestBuybackFactorClassification(t *testing.T) {
 		{"40 grain is a weight", "silver", "40 grain", worst},
 		{"90 grain is a weight", "silver", "90 grain", worst},
 		{"pure gibberish", "silver", "junk", worst},
+		// Review finding 2 — a DECIMAL-marked weight is still a weight, not junk.
+		{"0.4 oz is a weight", "silver", "0.4 oz", worst},
+		{"point-9 oz is a weight", "silver", ".9 oz", worst},
+		{"point-4 g is a weight", "silver", ".4 g", worst},
+		{"0.4 oz round is a weight", "silver", "0.4 oz round", worst},
+		// Review finding 4 — NaN must not classify as a parseable fraction (1.0).
+		{"nan% is not a fineness", "silver", "nan%", worst},
+		// Review boundary — a marked fineness with NON-unit annotation still parses.
+		{"point-900 with annotation", "silver", ".900 coin", f90},
+		{"90% with parenthetical note", "silver", "90% (worn)", f90},
 		// AC3 — the metal guard normalizes: a 'Silver' lot reaches the haircut.
 		{"capitalized Silver 90%", "Silver", "90%", f90},
 		{"shouty SILVER 90%", "SILVER", ".900", f90},
@@ -533,6 +543,8 @@ func TestFinenessFraction(t *testing.T) {
 		{"22k .9167", 22.0 / 24.0, fineParsed},
 		{"80% (CAD)", 0.80, fineParsed},
 		{"90% (pre-1965)", 0.90, fineParsed},
+		{".900 coin", 0.900, fineParsed}, // annotation after a marked number
+		{"90% (worn)", 0.90, fineParsed},
 		{"", 0, fineUnstated},
 		{"   ", 0, fineUnstated},
 		{"40 grain", 0, fineUnparseable},
@@ -540,6 +552,18 @@ func TestFinenessFraction(t *testing.T) {
 		{"-", 0, fineUnparseable},
 		{"900%", 0, fineUnparseable}, // 9.0 fine is not a thing
 		{"0", 0, fineUnparseable},
+		// om-t0fs review finding 2 — a decimal-MARKED weight is still a weight: the
+		// unit word must not be discarded as annotation and the number bucketed.
+		{"0.4 oz", 0, fineUnparseable},
+		{".9 oz", 0, fineUnparseable},
+		{".4 g", 0, fineUnparseable},
+		{"0.4 oz round", 0, fineUnparseable}, // unit word even with more text after
+		{".9 oz bar", 0, fineUnparseable},
+		{"5 grams", 0, fineUnparseable},
+		{"90 gr", 0, fineUnparseable},
+		// om-t0fs review finding 4 — NaN/Inf must not slip past the range check.
+		{"nan%", 0, fineUnparseable},
+		{"inf", 0, fineUnparseable},
 	} {
 		t.Run("fineness="+tc.in, func(t *testing.T) {
 			got, class := finenessFraction(tc.in)
@@ -639,5 +663,56 @@ func TestClassificationAnomalies(t *testing.T) {
 func TestSampleReportNoAnomalies(t *testing.T) {
 	if a := Compute(sampleDataset()).Anomalies; len(a) != 0 {
 		t.Errorf("clean sample fixture produced anomalies: %+v", a)
+	}
+}
+
+// TestWeightUnitFinenessIsAnomaly closes om-t0fs review findings 2 and 4. A
+// decimal point used to flip a WEIGHT string into "marked number, discard the
+// unit" — so "0.4 oz" silently took a 40% junk haircut (main returned 1.0), no
+// anomaly. And a NaN slipped past the range check as a parsed fraction -> 1.0. Both
+// are the silent-flattering-garbage failure mode this whole bead is about: each
+// must now take the CONSERVATIVE factor AND raise a fineness anomaly, exactly like
+// "40 grain".
+func TestWeightUnitFinenessIsAnomaly(t *testing.T) {
+	s := model.DefaultSettings()
+	worst := math.Min(1.0, math.Min(s.SilverBuyback40pct, s.SilverBuyback90pct)) // 0.80
+	for _, fineness := range []string{"0.4 oz", ".9 oz", ".4 g", "0.4 oz round", ".9 oz bar", "5 grams", "90 gr", "nan%"} {
+		t.Run("fineness="+fineness, func(t *testing.T) {
+			l := model.Lot{ID: 7, Activity: "crh", Product: "mislabelled find", Metal: "silver", Fineness: fineness, Qty: 1, FineOzEach: 0.1}
+			if got := buybackFactor(l, s); math.Abs(got-worst) > tol {
+				t.Errorf("buybackFactor(fineness=%q) = %.4f, want conservative %.4f (a weight/NaN is not junk silver)", fineness, got, worst)
+			}
+			as := Compute(model.Dataset{Spot: model.Spot{SilverUSD: 60}, Settings: s, Lots: []model.Lot{l}}).Anomalies
+			if len(as) != 1 || as[0].Field != "fineness" || as[0].Value != fineness {
+				t.Errorf("fineness=%q anomalies = %+v, want exactly one fineness anomaly carrying that value", fineness, as)
+			}
+		})
+	}
+}
+
+// TestMarkedFinenessAnnotationStillParses is the over-rejection boundary the
+// reviewer flagged for finding 2: the unit-word rejection must catch weight units
+// WITHOUT eating a legitimate marked fineness whose trailing token is ordinary
+// annotation. These must still parse, bucket normally, and raise NO anomaly.
+func TestMarkedFinenessAnnotationStillParses(t *testing.T) {
+	s := model.DefaultSettings()
+	for _, tc := range []struct {
+		fineness string
+		want     float64
+	}{
+		{".900 coin", 0.90},  // annotation, not a unit
+		{"90% (worn)", 0.90}, // parenthetical note
+		{"80% (CAD)", 1.00},  // world coin, outside the junk buckets
+		{"22k .9167", 1.00},  // karat; .9167 is outside the 90% band -> full melt
+	} {
+		t.Run("fineness="+tc.fineness, func(t *testing.T) {
+			l := model.Lot{Activity: "crh", Metal: "silver", Fineness: tc.fineness, Qty: 1, FineOzEach: 1}
+			if got := buybackFactor(l, s); math.Abs(got-tc.want) > tol {
+				t.Errorf("buybackFactor(fineness=%q) = %.4f, want %.4f", tc.fineness, got, tc.want)
+			}
+			if a := Compute(model.Dataset{Spot: model.Spot{SilverUSD: 60}, Settings: s, Lots: []model.Lot{l}}).Anomalies; len(a) != 0 {
+				t.Errorf("fineness=%q raised anomalies %+v, want none (it parses)", tc.fineness, a)
+			}
+		})
 	}
 }
