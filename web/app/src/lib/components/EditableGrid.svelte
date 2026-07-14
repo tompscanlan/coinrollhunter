@@ -66,6 +66,7 @@
     onChanged,
     rowAction,
     rowActionTitle,
+    rowClass,
     reloadSignal,
   }: {
     title: string
@@ -80,6 +81,9 @@
     /** Optional extra per-row button (e.g. Sell). */
     rowAction?: (row: T) => void
     rowActionTitle?: string
+    /** Row-conditional styling — classes applied to the <tr> (e.g. dim a lot you
+        have already sold, so you cannot edit a completed sale without noticing). */
+    rowClass?: (row: T) => string | undefined
     /** Bump to force a reload from the parent (e.g. after an out-of-grid sale). */
     reloadSignal?: number
   } = $props()
@@ -412,7 +416,17 @@
 
         {#each view.rows.slice(slice.start, slice.end) as row, i (row.original.id)}
           {@const rowIndex = slice.start + i}
-          <tr class="group border-b last:border-0 hover:bg-accent/40" data-row-index={rowIndex}>
+          <!-- The row owns its background and the frozen cells inherit it (below),
+               so hover/sold styling reaches them without being restated. It must
+               stay OPAQUE: a frozen cell scrolls over the other columns, and a
+               translucent tint would let them show through it. -->
+          <tr
+            class={cn(
+              'group border-b bg-card last:border-0 hover:bg-accent',
+              rowClass?.(row.original),
+            )}
+            data-row-index={rowIndex}
+          >
             {#each columns as col (col.accessorKey)}
               {@const m = meta(col)}
               {@const key = col.accessorKey as keyof T}
@@ -422,9 +436,9 @@
                 class={cn(
                   'px-1.5 py-1',
                   align(m),
-                  // A frozen cell scrolls over the others, so it needs its own
-                  // opaque background — and must still follow the row's hover.
-                  left !== undefined && 'sticky z-10 bg-card group-hover:bg-accent/40',
+                  // bg-inherit: take the row's own (opaque) background, so a frozen
+                  // cell follows hover and row state without duplicating either.
+                  left !== undefined && 'sticky z-10 bg-inherit',
                 )}
               >
                 {#if m.enabled && !m.enabled(row.original)}

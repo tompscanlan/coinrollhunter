@@ -4,7 +4,7 @@
 // it presents a *flat* spreadsheet row but writes the ADR-003 catalog/specimen
 // split (find-or-create an item_type, then attach the holding).
 import { api } from './api'
-import { today } from './format'
+import { money, today } from './format'
 import {
   DENOMS,
   ROLL_UNITS,
@@ -113,6 +113,8 @@ export interface GridConfig<T extends { id: number }> {
   update: (id: number, row: Omit<T, 'id'>) => Promise<void>
   remove: (id: number) => Promise<void>
   blank: () => Omit<T, 'id'>
+  /** Row-conditional styling, passed through to EditableGrid. */
+  rowClass?: (row: T) => string | undefined
 }
 
 // --- Holdings (flat view over item_type + holding) ---------------------------
@@ -141,7 +143,17 @@ export interface FlatHolding {
   category?: string // CRH find taxonomy (ADR-006) — only meaningful for activity='crh'
   subcategory?: string
   trophy?: boolean
+  // The sale, surfaced read-only (om-5k35). A sold lot used to look exactly like
+  // one you still own, so you could edit a completed sale without knowing — and
+  // silently move the cost basis under a realized gain you had already booked.
+  // Read-only here on purpose: `toHolding` never names these, so the PUT merge
+  // leaves the disposal untouched, and selling stays the job of the Sell action.
+  disposed?: string
+  disposed_usd?: number
 }
+
+/** A lot you have already sold. */
+export const isSold = (h: Pick<FlatHolding, 'disposed'>) => !!h.disposed
 
 const norm = (s: string) => (s ?? '').trim().toLowerCase()
 
@@ -222,6 +234,15 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
   title: 'Holdings',
   description:
     'Bullion lots and CRH finds. Type the product, metal, fineness and metal-oz; we keep the catalog tidy for you.',
+  // A lot you have already sold reads as a lot you still own unless we say so.
+  // It stays editable — the app cannot un-sell, so a mistyped sale has to be
+  // fixable — but it can no longer be edited *unnoticed*. The background is
+  // opaque because the frozen columns inherit it (EditableGrid), so the cue
+  // travels with the row all the way across a horizontal scroll.
+  rowClass: (h) =>
+    isSold(h)
+      ? 'bg-muted hover:bg-muted/80 [&_input]:line-through [&_select]:line-through [&_input]:opacity-70 [&_select]:opacity-70'
+      : undefined,
   columns: [
     // Activity + Product freeze against the left edge: Holdings is 19 columns
     // wide, and without them a horizontal scroll leaves you on an anonymous row
@@ -250,6 +271,24 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'premium_usd', header: 'Premium $', meta: { editor: 'number', step: 0.01, align: 'right', width: '110px' } },
     { accessorKey: 'face_value_usd', header: 'Face $', meta: { editor: 'number', step: 0.01, align: 'right', width: '100px' } },
     { accessorKey: 'acquired', header: 'Acquired', meta: { editor: 'date', width: '150px' } },
+    // The disposal, paired with the acquisition it closes. Read-only: selling is the
+    // Sell action's job, and naming these in a PUT is what used to un-sell a lot.
+    {
+      accessorKey: 'disposed',
+      header: 'Sold',
+      meta: { editor: 'date', width: '130px', readOnly: true, display: (h) => h.disposed || '—' },
+    },
+    {
+      accessorKey: 'disposed_usd',
+      header: 'Proceeds $',
+      meta: {
+        editor: 'number',
+        align: 'right',
+        width: '120px',
+        readOnly: true,
+        display: (h) => (isSold(h) ? money(h.disposed_usd ?? 0) : '—'),
+      },
+    },
     { accessorKey: 'source', header: 'Source', meta: { editor: 'autocomplete', placeholder: 'APMEX', suggestions: () => holdingSources } },
     // Custody — where the thing actually is. Free text over your own vocabulary
     // (same open-vocabulary autocomplete as Source): "home safe" and "SDB #214" are
@@ -303,6 +342,8 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         category: h.category ?? '',
         subcategory: h.subcategory ?? '',
         trophy: Boolean(h.trophy),
+        disposed: h.disposed ?? '',
+        disposed_usd: h.disposed_usd ?? 0,
       } satisfies FlatHolding
     })
   },

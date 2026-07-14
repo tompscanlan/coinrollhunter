@@ -441,14 +441,59 @@ try {
     usedBanks.length > 0 && usedBanks.every((b) => bankOpts.includes(b)),
     `datalist ${JSON.stringify(bankOpts)} vs used ${JSON.stringify(usedBanks)}`)
 
+  // === Holdings grid: a sold lot must not look like one you still own (om-5k35) ===
+  // Not a data bug any more (the PUT merge preserves the disposal), an HONESTY one:
+  // you could edit a completed sale without knowing, and changing its qty/basis moves
+  // the cost basis under a realized gain you already booked. Marked, not locked — the
+  // app cannot un-sell, so a mistyped sale still has to be fixable.
+  await goHoldings()
+  const soldLot = (await api('/lots')).find((l) => l.disposed)
+  const liveLot = (await api('/lots')).find((l) => !l.disposed)
+  const rowFor = (id) => page.locator(`tbody tr[data-row-index]`).filter({
+    has: page.locator(`input[value="${id}"]`),
+  })
+  ok('fixture: there is a sold lot and a live one to compare', !!soldLot && !!liveLot,
+    `sold ${soldLot?.id} / live ${liveLot?.id}`)
+
+  // The cue rides on the <tr>, so it reaches the frozen columns too — which is the
+  // only thing on screen once you scroll right to the cells you are about to edit.
+  const classOfRowWithProduct = async (n) =>
+    page.$$eval('tbody tr[data-row-index]', (trs) =>
+      trs.map((t) => ({
+        cls: t.className,
+        struck: getComputedStyle(t.querySelector('input')).textDecorationLine,
+      })))
+  const rows = await classOfRowWithProduct()
+  const anyStruck = rows.filter((r) => r.struck.includes('line-through'))
+  const anyPlain = rows.filter((r) => !r.struck.includes('line-through'))
+  ok('a sold lot is visibly marked in the Holdings grid (struck through + dimmed)',
+    anyStruck.length > 0, `${anyStruck.length} marked, ${anyPlain.length} plain`)
+  ok('a lot you still own is NOT marked', anyPlain.length > 0)
+
+  const headers = await page.$$eval('section table thead th', (th) => th.map((h) => h.innerText.trim()))
+  ok('the sale is surfaced: Holdings has Sold + Proceeds columns',
+    headers.some((h) => h.startsWith('Sold')) && headers.some((h) => h.startsWith('Proceeds')),
+    JSON.stringify(headers.filter((h) => h.startsWith('Sold') || h.startsWith('Proceeds'))))
+
+  // Read-only: the disposal is shown, never typed. Selling stays the Sell action's job,
+  // and naming disposed/disposed_usd in a PUT is what used to un-sell a lot.
+  const soldColIdx = headers.findIndex((h) => h.startsWith('Sold'))
+  const soldCells = await page.$$eval(
+    `tbody tr[data-row-index] td:nth-child(${soldColIdx + 1})`,
+    (tds) => tds.map((t) => t.querySelectorAll('input,select').length))
+  ok('the Sold column is read-only (no editor in any cell)',
+    soldCells.every((n) => n === 0), `${soldCells.filter((n) => n > 0).length} editable cells found`)
+
   // === Holdings grid: virtualization must not eat an in-flight edit (om-35ul) ===
   // The grid renders an editor per cell, so past ~60 lots it only mounts the rows
   // in view. A cell commits on `change`, which fires on BLUR — so a row that
   // unmounts while you are still typing in it would take the edit with it,
   // silently. That is the same class of grid data loss v0.3.0 shipped to fix, so
   // it is pinned here: type, scroll the row out of the window, and read the DB.
-  const seed = (await api('/lots'))[0]
-  const { id: _drop, uid: _uid, ...tmpl } = seed
+  const seed = (await api('/lots')).find((l) => !l.disposed)
+  // Drop the identity AND the disposal — cloning a sold lot would seed 70 sold ones
+  // and quietly change what the checks below are looking at.
+  const { id: _drop, uid: _uid, disposed: _d, disposed_usd: _du, ...tmpl } = seed
   for (let i = 0; i < 70; i++) {
     const r = await fetch(BASE + '/api/lots', {
       method: 'POST',
@@ -458,12 +503,18 @@ try {
     if (!r.ok) throw new Error(`seed lot ${i} → ${r.status}`)
   }
   const total = (await api('/lots')).length
+  // The grid is already mounted from the checks above and load() does not re-run on a
+  // tab click, so without this it would still be showing the pre-seed rows — and the
+  // "renders a window" check would pass vacuously on stale data.
+  await page.reload({ waitUntil: 'networkidle' })
   await goHoldings()
   await page.locator('tbody tr[data-row-index]').first().waitFor({ timeout: 5000 })
 
   const mounted = await page.locator('tbody tr[data-row-index]').count()
+  // Bounded on BOTH sides: fewer than every row (it windows) but more than a handful
+  // (it is really showing the seeded collection, not a stale pre-seed render).
   ok('Holdings grid virtualizes a large collection (renders a window, not every row)',
-    mounted < total, `${mounted} rows in the DOM of ${total} lots`)
+    mounted < total && mounted > 10, `${mounted} rows in the DOM of ${total} lots`)
 
   const qtyCol = await page.$$eval('section table thead th', (th) =>
     th.findIndex((h) => h.innerText.trim().startsWith('Qty')))
