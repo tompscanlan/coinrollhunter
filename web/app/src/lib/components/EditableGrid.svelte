@@ -50,6 +50,7 @@
   import { untrack } from 'svelte'
   import { cn } from '$lib/utils'
   import Button from '$lib/components/ui/Button.svelte'
+  import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte'
   import { Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown, DollarSign } from 'lucide-svelte'
 
   type Draft = Omit<T, 'id'>
@@ -67,6 +68,7 @@
     rowAction,
     rowActionTitle,
     rowClass,
+    rowLabel,
     reloadSignal,
   }: {
     title: string
@@ -84,6 +86,12 @@
     /** Row-conditional styling — classes applied to the <tr> (e.g. dim a lot you
         have already sold, so you cannot edit a completed sale without noticing). */
     rowClass?: (row: T) => string | undefined
+    /** How this grid NAMES a row in the delete confirmation — "1964 Kennedy Half —
+        qty 20", not "#17". A confirm that cannot say what it is about to destroy is
+        a speed bump, not a safeguard: you cannot tell the row you meant from the row
+        your cursor was actually on. Optional only so a new grid still compiles;
+        `describe` falls back to the row's own visible values, never a bare id. */
+    rowLabel?: (row: T) => string
     /** Bump to force a reload from the parent (e.g. after an out-of-grid sale). */
     reloadSignal?: number
   } = $props()
@@ -93,6 +101,8 @@
   let sorting = $state<SortingState>([])
   let error = $state('')
   let busy = $state(false)
+  /** The row the trash can was clicked on, held pending an explicit confirm. */
+  let pendingDelete = $state<T | null>(null)
 
   async function reload() {
     try {
@@ -182,10 +192,33 @@
     }
   }
 
-  async function deleteRow(id: number) {
+  /** Name a row for the confirmation. Prefers the grid's own `rowLabel`; failing
+      that, describes the row from the first few values it is actually showing, so
+      the dialog never degrades to "delete #17" — an id names nothing a user can
+      recognize, which is exactly the check a misclick needs to fail. */
+  function describe(row: T): string {
+    const custom = rowLabel?.(row)?.trim()
+    if (custom) return custom
+    const parts = columns
+      .map((c) => (c.accessorKey ? row[c.accessorKey] : undefined))
+      .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
+      .slice(0, 3)
+      .map(String)
+    return parts.length ? parts.join(' · ') : `${title} row #${row.id}`
+  }
+
+  // Deletion is a hard DELETE (store/crud.go): no soft-delete column, no history,
+  // no server-side trash. The only way back from a misclick is restoring a backup
+  // and losing everything since — so the trash can ARMS this, and only an explicit
+  // confirm below fires it. This is the sole call site of `remove`, and `remove` is
+  // a required prop, so every grid in the app is covered by this one guard.
+  async function confirmDelete() {
+    const row = pendingDelete
+    if (!row) return
+    pendingDelete = null
     try {
       busy = true
-      await remove(id)
+      await remove(row.id)
       await reload()
       error = ''
       onChanged?.()
@@ -515,11 +548,14 @@
                     <DollarSign class="size-4 text-muted-foreground hover:text-primary" />
                   </Button>
                 {/if}
+                <!-- Arms the delete; confirmDelete() is what actually removes the row.
+                     KEEP title="Delete row" — qa/do-tab.e2e.mjs selects existing rows
+                     by it (it is how the suite tells a real row from the draft row). -->
                 <Button
                   variant="ghost"
                   size="icon"
                   title="Delete row"
-                  onclick={() => deleteRow(row.original.id)}
+                  onclick={() => (pendingDelete = row.original)}
                 >
                   <Trash2 class="size-4 text-muted-foreground hover:text-destructive" />
                 </Button>
@@ -597,3 +633,21 @@
     </table>
   </div>
 </section>
+
+{#if pendingDelete}
+  <ConfirmDialog
+    heading="Delete this row?"
+    confirmLabel="Delete"
+    onCancel={() => (pendingDelete = null)}
+    onConfirm={confirmDelete}
+  >
+    <p>
+      <b class="text-foreground">{describe(pendingDelete)}</b>
+      will be permanently removed from {title}.
+    </p>
+    <p>
+      There is no undo and no trash: the only way back is restoring a backup, which costs you
+      everything entered since.
+    </p>
+  </ConfirmDialog>
+{/if}

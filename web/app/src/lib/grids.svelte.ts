@@ -115,6 +115,11 @@ export interface GridConfig<T extends { id: number }> {
   blank: () => Omit<T, 'id'>
   /** Row-conditional styling, passed through to EditableGrid. */
   rowClass?: (row: T) => string | undefined
+  /** How the delete confirmation NAMES this row — "1964 Kennedy Half — qty 20",
+      never "#17". Passed through to EditableGrid, which will not delete a row it
+      cannot describe back to you. Every grid here is financially meaningful and the
+      delete is a hard one, so every grid supplies one. */
+  rowLabel?: (row: T) => string
 }
 
 // --- Holdings (flat view over item_type + holding) ---------------------------
@@ -243,6 +248,11 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     isSold(h)
       ? 'bg-muted hover:bg-muted/80 [&_input]:line-through [&_select]:line-through [&_input]:opacity-70 [&_select]:opacity-70'
       : undefined,
+  // Deleting a SOLD lot also deletes the realized gain booked against it, so the
+  // confirmation says so — that is the row you least want to lose by a row-off cursor.
+  rowLabel: (h) =>
+    `${h.product || 'Unnamed lot'} — qty ${h.qty} · acquired ${h.acquired || 'unknown'}` +
+    (isSold(h) ? ` · SOLD ${h.disposed} for ${money(h.disposed_usd ?? 0)}` : ''),
   columns: [
     // Activity + Product freeze against the left edge: Holdings is 19 columns
     // wide, and without them a horizontal scroll leaves you on an anonymous row
@@ -414,6 +424,9 @@ export const rollTxnsGrid: GridConfig<RollTxn> = {
   create: (row) => api.rollTxns.create(dropReturnSourceType(row)),
   update: (id, row) => api.rollTxns.update(id, dropReturnSourceType(row)),
   remove: api.rollTxns.remove,
+  rowLabel: (r) =>
+    `${r.action === 'return' ? 'Return' : 'Buy'} · ${r.amount} ${r.unit}${r.denom ? ` of ${r.denom}` : ' (mixed)'} · ` +
+    `${r.bank || 'unknown bank'} · ${money(r.face_usd)} face · ${r.date}`,
   blank: () => ({ date: today(), bank: '', action: 'buy', denom: 'halves', unit: 'box', source_type: '', amount: 1, face_usd: 500, notes: '' }),
 }
 
@@ -430,6 +443,7 @@ export const tripsGrid: GridConfig<Trip> = {
   create: api.trips.create,
   update: api.trips.update,
   remove: api.trips.remove,
+  rowLabel: (t) => `Trip to ${t.bank || 'unknown bank'} on ${t.date || 'unknown date'} — ${t.miles} mi, ${t.hours} h`,
   blank: () => ({ date: today(), bank: '', miles: 0, hours: 0 }),
 }
 
@@ -467,6 +481,11 @@ export const branchesGrid: GridConfig<Branch> = {
   create: api.branches.create,
   update: api.branches.update,
   remove: api.branches.remove,
+  // Deleting a branch is not the same gesture as merging one — the merge repoints its
+  // history onto a survivor, this drops the address book entry and the teller notes.
+  rowLabel: (b) =>
+    `${b.name || 'Unnamed branch'}${b.institution ? ` (${b.institution})` : ''}` +
+    `${b.address ? ` · ${b.address}` : ''}`,
   // A new branch defaults to buys+dumps+active on (uncheck to narrow); uid/lat/lon
   // are server/geocoder-owned and carried as inert zeros.
   blank: () => ({
@@ -488,6 +507,7 @@ export const suppliesGrid: GridConfig<Supply> = {
   create: api.supplies.create,
   update: api.supplies.update,
   remove: api.supplies.remove,
+  rowLabel: (s) => `${s.item || 'Unnamed item'} — ${money(s.cost_usd)} · ${s.date || 'unknown date'}`,
   blank: () => ({ date: today(), item: '', cost_usd: 0 }),
 }
 
@@ -506,6 +526,9 @@ export const keepersGrid: GridConfig<Keeper> = {
   create: api.keepers.create,
   update: api.keepers.update,
   remove: api.keepers.remove,
+  rowLabel: (k) =>
+    `${k.count} ${k.denom} — ${money(k.face_usd)} face${k.date ? ` · ${k.date}` : ''}` +
+    `${k.roll_txn_id ? ` · box #${k.roll_txn_id}` : ''}`,
   blank: () => ({ denom: 'halves', count: 0, face_usd: 0, date: today(), roll_txn_id: 0 }),
 }
 
@@ -523,5 +546,10 @@ export const lossesGrid: GridConfig<Loss> = {
   create: api.losses.create,
   update: api.losses.update,
   remove: api.losses.remove,
+  // Deleting a loss reopens the float (ADR-005) — a legitimate, documented move, and
+  // exactly why the confirmation has to say which write-off is about to reopen.
+  rowLabel: (l) =>
+    `${money(l.amount_usd)} written off — ${l.reason || 'no reason given'}` +
+    `${l.scope ? ` (${l.scope})` : ''} · ${l.date || 'unknown date'}`,
   blank: () => ({ date: today(), amount_usd: 0, reason: '', scope: '' }),
 }
