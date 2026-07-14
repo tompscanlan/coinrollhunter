@@ -233,12 +233,23 @@ export interface Report {
   crh_net_melt: number
   crh_net_real: number
   crh_net_time: number
+  // "Is the hunt costing you money?" over the WHOLE history (om-nass): the
+  // crh_net_* figures above are LIVE-only, so selling a winning find drops its
+  // value out of them while the costs that produced it remain. This folds the
+  // sold finds' realized P&L back in: crh_net_lifetime = crh_net_real +
+  // realized_gain_crh. Bullion realized gain is NOT part of it.
+  crh_net_lifetime: number
   hourly_rate: number
 
   realized: RealizedLot[]
   realized_proceeds: number
   realized_basis: number
   realized_gain: number
+  // Realized gain split by activity — a bullion sale is never a hunt result.
+  // "Bullion" is everything that is not a CRH find (incl. a blank activity), so
+  // realized_gain === realized_gain_crh + realized_gain_bullion exactly.
+  realized_gain_crh: number
+  realized_gain_bullion: number
 
   total_basis: number
   total_market: number

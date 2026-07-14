@@ -50,20 +50,48 @@
     </span>
   </div>
 
-  <!-- verdict -->
-  <Card
-    class={cn(
-      'border-none p-6 text-white shadow-md',
-      r.crh_net_real >= 0 ? 'bg-positive' : 'bg-negative',
-    )}
-  >
-    <div class="text-sm/relaxed opacity-90">Is coin roll hunting costing you money?</div>
-    <div class="mt-1 text-2xl font-bold tnum">{v} &nbsp; {money(r.crh_net_real)}</div>
-    <div class="mt-1.5 text-sm opacity-95">
-      Near-free finds ({oz(r.find_oz)} oz) vs logged costs of {money(r.op_cost + r.losses)}{#if r.losses > 0}
-        (incl. {money(r.losses)} shrinkage){/if}. Bullion is a separate long-term hold.
-    </div>
-  </Card>
+  <!-- verdict — TWO numbers, side by side (om-nass). The live figure alone was
+       answering an ALL-TIME question with a CURRENT-HOLDINGS number: sell a
+       winning find and its value leaves crh_net_real while the costs that found
+       it remain, flipping a profitable hunt negative. So the all-time question
+       now sits over crh_net_lifetime (live + realized on sold finds), and the
+       live figure keeps its own, honestly-labelled card. Each card's tone
+       follows its own number. -->
+  <div class="grid gap-3 md:grid-cols-2">
+    <Card
+      class={cn(
+        'border-none p-6 text-white shadow-md',
+        r.crh_net_real >= 0 ? 'bg-positive' : 'bg-negative',
+      )}
+    >
+      <div class="text-xs font-semibold uppercase tracking-wide opacity-80">Current holdings</div>
+      <div class="text-sm/relaxed opacity-90">What are the finds you still hold worth, net?</div>
+      <div class="mt-1 text-2xl font-bold tnum">{v} &nbsp; {money(r.crh_net_real)}</div>
+      <div class="mt-1.5 text-sm opacity-95">
+        Near-free finds ({oz(r.find_oz)} oz) still in hand vs logged costs of {money(
+          r.op_cost + r.losses,
+        )}{#if r.losses > 0}
+          (incl. {money(r.losses)} shrinkage){/if}. Bullion is a separate long-term hold.
+      </div>
+    </Card>
+
+    <Card
+      class={cn(
+        'border-none p-6 text-white shadow-md',
+        r.crh_net_lifetime >= 0 ? 'bg-positive' : 'bg-negative',
+      )}
+    >
+      <div class="text-xs font-semibold uppercase tracking-wide opacity-80">Lifetime (incl. sales)</div>
+      <div class="text-sm/relaxed opacity-90">Is coin roll hunting costing you money?</div>
+      <div class="mt-1 text-2xl font-bold tnum">{money(r.crh_net_lifetime)}</div>
+      <div class="mt-1.5 text-sm opacity-95">
+        Live finds {money(r.crh_net_real)} + realized on sold finds {money(r.realized_gain_crh)}.
+        {#if r.realized_gain_bullion !== 0}
+          Bullion sales ({money(r.realized_gain_bullion)}) are counted separately.
+        {/if}
+      </div>
+    </Card>
+  </div>
 
   <!-- headline stats -->
   <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
