@@ -360,6 +360,104 @@ func TestPutMissingIDIs404(t *testing.T) {
 	putLot(t, srv.URL, 99999, map[string]any{"qty": 1}, http.StatusNotFound)
 }
 
+// The bead's own framing: the API is "not an integrity boundary against a direct
+// curl." A POST with a body full of impossible values must come back 400 with a
+// message that names the offending field — not a 500, and not a 201 that silently
+// poisons the ledger — and it must not create a row. This is the create half of the
+// hole the review found (decode -> store with nothing between).
+func TestValidationRejectsBadPOST(t *testing.T) {
+	srv := newServer(t)
+
+	before := countLots(t, srv.URL)
+
+	// The exact shape from the dispatch contract's curl proof.
+	body := []byte(`{"item_type_id":1,"activity":"crh","qty":-5,"basis_usd":-1,"purity":9.9,"acquired":"nope"}`)
+	resp, err := http.Post(srv.URL+"/api/lots", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST bad lot status = %d, want 400", resp.StatusCode)
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	json.NewDecoder(resp.Body).Decode(&e)
+	if e.Error == "" {
+		t.Fatal("400 body carried no error message")
+	}
+	// The message names a field so the client can point at the cell (any one of the
+	// invalid fields is fine — validation stops at the first).
+	named := false
+	for _, f := range []string{"qty", "basis_usd", "purity", "acquired", "activity"} {
+		if strings.Contains(e.Error, f) {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("error %q names none of the offending fields", e.Error)
+	}
+	if after := countLots(t, srv.URL); after != before {
+		t.Errorf("a rejected POST created a lot: %d -> %d", before, after)
+	}
+
+	// A bad enum on another resource returns 400 too, not 500.
+	rt := []byte(`{"action":"sell","date":"2026-01-01","face_usd":10}`)
+	rresp, err := http.Post(srv.URL+"/api/roll-txns", "application/json", bytes.NewReader(rt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rresp.Body.Close()
+	if rresp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST bad roll-txn status = %d, want 400", rresp.StatusCode)
+	}
+	var re struct {
+		Error string `json:"error"`
+	}
+	json.NewDecoder(rresp.Body).Decode(&re)
+	if !strings.Contains(re.Error, "action") {
+		t.Errorf("roll-txn error %q does not name the action field", re.Error)
+	}
+}
+
+// The update door the review missed: PUT is a merge, so a curl can poison an
+// existing row exactly as easily as a new one. A PUT that merges an invalid value
+// onto a stored row is a 400 with a field-named message, and the stored row is left
+// unchanged.
+func TestValidationRejectsBadPUT(t *testing.T) {
+	srv := newServer(t)
+	id := createLot(t, srv.URL, model.Holding{
+		ItemTypeID: 1, Activity: "bullion", Qty: 2, BasisUSD: 100, Acquired: "2026-02-02",
+	})
+
+	// Merge a negative quantity onto the row (the grid's payload shape).
+	b, _ := json.Marshal(map[string]any{"qty": -3})
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/api/lots/"+strconv.FormatInt(id, 10), bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PUT bad qty status = %d, want 400", resp.StatusCode)
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	json.NewDecoder(resp.Body).Decode(&e)
+	if !strings.Contains(e.Error, "qty") {
+		t.Errorf("error %q does not name the qty field", e.Error)
+	}
+
+	// The stored row must be untouched — the rejected merge wrote nothing.
+	got := getLot(t, srv.URL, id)
+	if got.Qty != 2 {
+		t.Errorf("qty = %v, want 2 — a rejected PUT mutated the row", got.Qty)
+	}
+}
+
 func createLot(t *testing.T, base string, h model.Holding) int64 {
 	t.Helper()
 	body, _ := json.Marshal(h)
