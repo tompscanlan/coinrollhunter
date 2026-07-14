@@ -185,4 +185,32 @@ that line reads like dead code and dies in the first cleanup, taking every autoc
 or the renderer cannot see it change. The `boxOpts` select survived only by accident — it renders
 inside the row loop, which re-runs when the rows land.
 
+Added 2026-07-14 (the loopback guard, om-6ex5): **binding to 127.0.0.1 is not an
+authentication boundary** — it only means the attacker has to be a webpage instead of a
+stranger on the internet. The API has no auth, and the reason CORS did not save us is
+`decode()` (`internal/api/api.go`): it never inspects Content-Type, so a hostile page can
+send a JSON body as `Content-Type: text/plain` — CORS-safelisted, therefore a *simple*
+request that never preflights — and Go parses it happily. That put **every POST route** in
+reach of any tab the user had open: `/api/quit`, `/api/lots/{id}/sell`,
+`/api/branches/{id}/merge`, `/api/spot`, and the eight generic creates. The response is
+unreadable cross-origin, but the *write lands*, and ids are dense integer rowids, so a
+blind `for id in 1..500: sell` loop is practical: silent, irreversible corruption of a
+financial ledger. (PUT/DELETE were only ever safe by accident — they always preflight.)
+The fix is **`api.Guard`** (`internal/api/guard.go`), and **it wraps the OUTER mux in
+`cmd/` (`appHandler`), not `api.Handler`** — `POST /api/quit` is registered in the command,
+so a guard inside the API package would miss the one route that kills the process. Three
+rules, each load-bearing: a **missing Origin is ALLOWED** (curl, `instanceAt`'s Go probe,
+and the Node-side `qa/` fetches send none — and a browser *cannot* suppress Origin on a
+cross-origin request, so this costs nothing against the actual adversary); the
+**Origin/Host hostname must be loopback**; the **port is never pinned** (the ephemeral-port
+fallback moves it, `qa/run.sh` takes a `PORT`, and the Vite dev proxy forwards
+`Origin: http://localhost:5173`). The **Host** half is the DNS-rebinding defense — the only
+path to actually *reading* the ledger — which is why it applies to GET too. **No per-launch
+token**, deliberately: a token only defends against a local non-browser process, which can
+already read `crh.db` off disk, and it would have cost an index.html injection seam and
+broken the e2e gate. Also: a **non-loopback `--addr` is now refused** unless
+`--unsafe-network` is passed (`checkAddr`), which binds and prints a loud warning and
+relaxes the *Host* check to the bound address — but still refuses cross-origin requests.
+**If a guard change makes you want to edit `qa/`, the guard is wrong.**
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.

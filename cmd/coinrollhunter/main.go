@@ -94,7 +94,10 @@ usage:
   coinrollhunter migrate --holdings FILE --crh FILE [--db crh.db]
       Import the prototype JSON (pm_holdings.json + crh_ledger.json) into SQLite.
   coinrollhunter serve [--db crh.db] [--addr 127.0.0.1:8787]
-      Serve the REST API + embedded web UI on localhost.
+      Serve the REST API + embedded web UI on localhost. The address must be a
+      loopback one: the API has no password, so serving it to a network would hand
+      your whole ledger to anyone who can reach the port. Pass --unsafe-network with
+      a non-loopback --addr if you really mean it.
   coinrollhunter demo [--db demo.db] [--reset]
       Seed a separate database with ~15 months of fictional data and serve it —
       a full dashboard to explore before entering your own. Your real data is
@@ -235,11 +238,17 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fs.String("db", "crh.db", "path to the SQLite database")
 	addr := fs.String("addr", "127.0.0.1:8787", "address to listen on (localhost only by default)")
+	unsafeNetwork := fs.Bool("unsafe-network", false,
+		"allow a non-loopback --addr. The API has no password: anyone who can reach that address can read and change your whole ledger")
 	spotProvider := fs.String("spot-provider", envOr("CRH_SPOT_PROVIDER", "gold-api"),
 		"spot price provider id, or 'none' to disable background polling (env CRH_SPOT_PROVIDER)")
 	spotInterval := fs.Duration("spot-interval", envDur("CRH_SPOT_INTERVAL", 6*time.Hour),
 		"spot poll cadence, e.g. 6h (env CRH_SPOT_INTERVAL)")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Before opening the database: a refused bind should not have touched anything.
+	if err := checkAddr(*addr, *unsafeNetwork); err != nil {
 		return err
 	}
 
@@ -250,10 +259,11 @@ func runServe(args []string) error {
 	defer s.Close()
 
 	return serveStore(s, serveOpts{
-		dbPath:       *dbPath,
-		addr:         *addr,
-		spotProvider: *spotProvider,
-		spotInterval: *spotInterval,
+		dbPath:        *dbPath,
+		addr:          *addr,
+		unsafeNetwork: *unsafeNetwork,
+		spotProvider:  *spotProvider,
+		spotInterval:  *spotInterval,
 	})
 }
 
@@ -307,8 +317,13 @@ func runDemo(args []string) error {
 	fs := flag.NewFlagSet("demo", flag.ExitOnError)
 	dbPath := fs.String("db", "demo.db", "path to the demo SQLite database (kept separate from your real data)")
 	addr := fs.String("addr", "127.0.0.1:8787", "address to listen on (localhost only by default)")
+	unsafeNetwork := fs.Bool("unsafe-network", false,
+		"allow a non-loopback --addr. The API has no password: anyone who can reach that address can read and change the served ledger")
 	reset := fs.Bool("reset", false, "delete the demo database and regenerate it from scratch")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := checkAddr(*addr, *unsafeNetwork); err != nil {
 		return err
 	}
 	if *reset {
@@ -349,10 +364,11 @@ func runDemo(args []string) error {
 	// Spot polling stays off: the demo ships its own price history, and keeping
 	// it deterministic beats mixing in live quotes.
 	return serveStore(s, serveOpts{
-		dbPath:       *dbPath,
-		addr:         *addr,
-		spotProvider: "none",
-		spotInterval: 6 * time.Hour,
+		dbPath:        *dbPath,
+		addr:          *addr,
+		unsafeNetwork: *unsafeNetwork,
+		spotProvider:  "none",
+		spotInterval:  6 * time.Hour,
 	})
 }
 
@@ -360,11 +376,15 @@ func runDemo(args []string) error {
 // paths name an address and let the server bind it; the double-click path binds
 // first (so it can react to a port already in use) and hands the listener over.
 type serveOpts struct {
-	dbPath       string
-	addr         string
-	listener     net.Listener
-	spotProvider string
-	spotInterval time.Duration
+	dbPath   string
+	addr     string
+	listener net.Listener
+	// unsafeNetwork is the explicit "yes, serve this to the network" opt-in that a
+	// non-loopback addr requires (om-6ex5). It also relaxes the guard's Host check to
+	// the bound address — the app's own page has to be able to reach it.
+	unsafeNetwork bool
+	spotProvider  string
+	spotInterval  time.Duration
 	// onReady, if set, is called with the UI's URL once the port is bound and
 	// serving. The launch path opens the browser here rather than on a timer —
 	// the listener is the only honest signal that the UI can answer.
@@ -376,6 +396,9 @@ type serveOpts struct {
 func serveStore(s *store.Store, o serveOpts) error {
 	ln := o.listener
 	if ln == nil {
+		if err := checkAddr(o.addr, o.unsafeNetwork); err != nil {
+			return err
+		}
 		var err error
 		if ln, err = net.Listen("tcp", o.addr); err != nil {
 			return err
@@ -383,6 +406,13 @@ func serveStore(s *store.Store, o serveOpts) error {
 	}
 	defer ln.Close()
 	addr := ln.Addr().String()
+	// What we actually bound, not what was asked for: the launch path hands over a
+	// listener with no addr set, and an ephemeral :0 only becomes a real port here.
+	// The guard pins to this.
+	o.addr = addr
+	if o.unsafeNetwork && !api.IsLoopbackAddr(addr) {
+		fmt.Fprint(os.Stderr, unsafeNetworkWarning(addr))
+	}
 
 	// Quit from the UI. With no console there is no Ctrl-C, so a GUI user has no
 	// other way to stop the server — it would just linger in Task Manager. The
@@ -390,15 +420,9 @@ func serveStore(s *store.Store, o serveOpts) error {
 	// process down is the command's business, not the API's.
 	quit := make(chan struct{})
 	var quitOnce sync.Once
-	mux := http.NewServeMux()
-	mux.Handle("/", api.Handler(s, web.FS()))
-	mux.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-		quitOnce.Do(func() { close(quit) })
-	})
 
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           appHandler(s, func() { quitOnce.Do(func() { close(quit) }) }, o),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -444,6 +468,53 @@ func serveStore(s *store.Store, o serveOpts) error {
 		fmt.Println("\nshutting down…")
 		return shutdown()
 	}
+}
+
+// appHandler is what the server serves: the API, plus the command's own POST /api/quit,
+// wrapped in the loopback guard (om-6ex5).
+//
+// The guard goes HERE, around the OUTER mux, and that placement is the whole point: the
+// quit route is registered in this package, not in api.Handler, so a guard applied inside
+// the API package would leave the one endpoint that kills the process open to any webpage
+// the user happens to have open. It is a separate function so the tests can drive exactly
+// the handler that ships.
+func appHandler(s *store.Store, onQuit func(), o serveOpts) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/", api.Handler(s, web.FS()))
+	mux.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+		onQuit()
+	})
+	return api.Guard(mux, api.GuardOpts{UnsafeNetwork: o.unsafeNetwork, BoundAddr: o.addr})
+}
+
+// checkAddr refuses a non-loopback bind unless the user explicitly asked for one.
+//
+// A --addr on a real interface serves the ENTIRE unauthenticated API — the whole ledger,
+// read AND write — to everyone who can reach the port, with nothing in the app objecting.
+// Nothing in this repo has ever documented a LAN use case, so the default is no. The
+// escape hatch stays because it is cheaper to keep than to re-add, and someone putting
+// their own proxy in front of it knows what they are doing.
+func checkAddr(addr string, unsafeNetwork bool) error {
+	if unsafeNetwork || api.IsLoopbackAddr(addr) {
+		return nil
+	}
+	return fmt.Errorf(`--addr %s would serve CoinRollHunter beyond this computer.
+The API has no password. Anyone who can reach that address — everyone on the wifi, say —
+could read your entire ledger and change or delete any of it.
+Use a loopback address like 127.0.0.1:8787, or, if you really mean it (behind a proxy you
+trust, on a network you trust), pass --unsafe-network as well.`, addr)
+}
+
+// unsafeNetworkWarning is what --unsafe-network prints once it has bound. It is loud on
+// purpose: the flag is not a mode, it is a risk, and the person who typed it should see
+// exactly what they just published.
+func unsafeNetworkWarning(addr string) string {
+	return "\n" +
+		"  !!  --unsafe-network: CoinRollHunter is listening on " + addr + " — not just this computer.\n" +
+		"  !!  There is NO password on this API. Anyone who can reach that address can read your\n" +
+		"  !!  entire ledger, and can change or delete any of it (including recording your\n" +
+		"  !!  holdings as sold). Only do this on a network you trust, behind a proxy you trust.\n\n"
 }
 
 // envOr returns the environment value for key, or def if it is unset/empty.

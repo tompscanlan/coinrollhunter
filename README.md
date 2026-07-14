@@ -182,6 +182,19 @@ Every subcommand still works. On Windows use `cli\coinrollhunter.exe` — the to
 ./coinrollhunter serve --db crh.db --addr 127.0.0.1:8787
 ```
 
+> **It only answers your own computer.** `--addr` has to be a loopback address
+> (`127.0.0.1`, `localhost`, `::1`) — any port you like. There is no password on the API,
+> so serving it on a real network interface would hand your entire ledger, readable and
+> writable, to everyone who can reach the port. A non-loopback `--addr` is refused unless
+> you also pass `--unsafe-network`, which binds it and prints a loud warning. Only reach
+> for that if you are putting your own authenticating proxy in front of it.
+>
+> For the same reason the server ignores requests that a *website* sends it: a page you
+> have open in another tab can otherwise POST to `http://127.0.0.1:8787` behind your back
+> and sell a lot or shut the app down. Requests carrying another site's `Origin`, or a
+> hostname that is not this machine's, get a 403. Your own curl scripts (which send no
+> `Origin`) keep working.
+
 Want to see it populated before entering your own holdings? Run the demo:
 
 ```bash
