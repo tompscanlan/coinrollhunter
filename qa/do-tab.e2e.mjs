@@ -206,6 +206,15 @@ try {
   const sumSold = await api('/summary')
   ok('sale recorded (realized)', (sumSold.realized || []).length === 1)
   ok('realized gain ~ +$250', Math.abs(sumSold.realized_gain - 250) < 0.01, `gain ${sumSold.realized_gain}`)
+  // om-nass: the lot just sold is BULLION, so it must not touch the CRH lifetime
+  // figure — a bullion sale is an investment result, not a hunt result. And the
+  // realized split is total (bullion := not-crh), so the two halves must add up.
+  ok('bullion sale does not move CRH lifetime',
+     Math.abs(sumSold.crh_net_lifetime - sumSold.crh_net_real) < 0.01,
+     `lifetime ${sumSold.crh_net_lifetime} vs live ${sumSold.crh_net_real}`)
+  ok('realized split adds up',
+     Math.abs(sumSold.realized_gain - (sumSold.realized_gain_crh + sumSold.realized_gain_bullion)) < 0.01,
+     `${sumSold.realized_gain} vs ${sumSold.realized_gain_crh}+${sumSold.realized_gain_bullion}`)
   await page.getByRole('button', { name: 'Done' }).click()
 
   // === Edit layer: Losses grid round-trips ===
@@ -221,6 +230,9 @@ try {
   await page.getByRole('button', { name: 'Overview', exact: true }).click()
   await page.getByText('All cashed in', { exact: false }).first().waitFor({ timeout: 5000 })
   ok('overview reconciliation banner shows lost', (await page.getByText('lost', { exact: false }).count()) > 0)
+  // om-nass: both verdict cards render — the all-time question now lives on the
+  // lifetime card, not over the live-only number.
+  ok('Overview shows both CRH verdicts', (await page.getByText('Lifetime', { exact: false }).count()) > 0)
 
   // === ADR-006/007 surfacing (om-5tl2) ===
   // KPI cards from /api/summary
