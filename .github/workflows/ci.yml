@@ -43,3 +43,113 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  release-build:
+    # Build + package all six release targets on ONE ubuntu box, then prove the
+    # archives are shippable. This is the exact scripts/release.sh that release.yml
+    # runs at tag time; running it on every PR turns "it builds on six platforms"
+    # from a hand-checked claim into a machine-checked one. CGO_ENABLED=0 + pure-Go
+    # SQLite means all six cross-compile here — NO Actions matrix (the script
+    # already loops the targets; a matrix would be six runners doing one's job).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Build + package all six targets
+        run: ./scripts/release.sh
+
+      - name: Verify archive contents
+        # Fails the PR on a corrupt archive, a lost exec bit, an empty embedded
+        # UI, or a CoinRollHunter.exe that regressed from GUI to console subsystem.
+        run: ./scripts/verify-archives.sh
+
+      - name: Smoke — linux/amd64 starts and serves /api/health
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          tar -xzf dist/coinrollhunter_*_linux_amd64.tar.gz -C "$RUNNER_TEMP/smoke"
+          bin="$RUNNER_TEMP/smoke/coinrollhunter_linux_amd64/coinrollhunter"
+          "$bin" serve --spot-provider=none --db "$RUNNER_TEMP/crh.db" --addr 127.0.0.1:8911 &
+          srv=$!
+          ok=
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8911/api/health >/dev/null; then ok=1; break; fi
+            sleep 0.5
+          done
+          kill "$srv" 2>/dev/null || true
+          [ -n "$ok" ] || { echo "linux/amd64 did not answer /api/health"; exit 1; }
+          echo "linux/amd64 serve -> /api/health 200"
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+
+  # Native launch smoke on the two OSes GitHub can give us for free (public repo).
+  # AC is honest: build all six, START THREE — linux/amd64 (above), windows/amd64,
+  # darwin/arm64. The other three targets (linux/arm64, darwin/amd64, windows/arm64)
+  # stay build-verified only; no hosted runner can start them natively.
+  smoke-windows:
+    needs: release-build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+      - name: Smoke — windows/amd64 starts and serves /api/health
+        # cli/coinrollhunter.exe, NOT CoinRollHunter.exe: the GUI (-H=windowsgui)
+        # build has no valid std handles and cannot print. Always pass `serve` —
+        # a no-arg invocation would try to open a browser.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Get-ChildItem dist/coinrollhunter_*_windows_amd64.zip | Select-Object -First 1
+          Expand-Archive -Path $zip.FullName -DestinationPath "$env:RUNNER_TEMP/smoke" -Force
+          $bin = "$env:RUNNER_TEMP/smoke/coinrollhunter_windows_amd64/cli/coinrollhunter.exe"
+          $db  = Join-Path $env:RUNNER_TEMP 'crh.db'
+          $p = Start-Process -FilePath $bin -ArgumentList 'serve','--spot-provider=none','--db',$db,'--addr','127.0.0.1:8911' -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            try {
+              if ((Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8911/api/health').StatusCode -eq 200) { $ok = $true; break }
+            } catch { Start-Sleep -Milliseconds 500 }
+          }
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw 'windows/amd64 did not answer /api/health' }
+          Write-Host 'windows/amd64 cli serve -> /api/health 200'
+
+  smoke-macos:
+    needs: release-build
+    runs-on: macos-latest # Apple silicon -> darwin/arm64 native
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+      - name: Smoke — darwin/arm64 starts and serves /api/health
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/smoke"
+          tar -xzf dist/coinrollhunter_*_darwin_arm64.tar.gz -C "$RUNNER_TEMP/smoke"
+          bin="$RUNNER_TEMP/smoke/coinrollhunter_darwin_arm64/coinrollhunter"
+          "$bin" serve --spot-provider=none --db "$RUNNER_TEMP/crh.db" --addr 127.0.0.1:8911 &
+          srv=$!
+          ok=
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8911/api/health >/dev/null; then ok=1; break; fi
+            sleep 0.5
+          done
+          kill "$srv" 2>/dev/null || true
+          [ -n "$ok" ] || { echo "darwin/arm64 did not answer /api/health"; exit 1; }
+          echo "darwin/arm64 serve -> /api/health 200"

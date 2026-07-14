@@ -28,6 +28,11 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
 
+      - name: Verify archive contents
+        # Same gate CI runs on every PR — so a release can never publish a corrupt
+        # archive, a console-subsystem CoinRollHunter.exe, or an empty embedded UI.
+        run: ./scripts/verify-archives.sh
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
