@@ -55,6 +55,9 @@ func (s *Store) resolveBranchID(name string) (int64, error) {
 // catalog entry's permanent identity (ADR-009, migration 0010), and item_type.uid
 // has no schema-level NOT NULL to fall back on — this insert path IS the guarantee.
 func (s *Store) InsertItemType(t model.ItemType) (int64, error) {
+	if err := t.Validate(); err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO item_type (uid, kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs)
 		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
@@ -70,6 +73,9 @@ func (s *Store) InsertItemType(t model.ItemType) (int64, error) {
 // identity (ADR-009), and lots.uid has no schema-level NOT NULL to fall back on —
 // this insert path IS the guarantee.
 func (s *Store) InsertHolding(h model.Holding) (int64, error) {
+	if err := h.Validate(); err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO lots (uid, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
@@ -87,6 +93,10 @@ func (s *Store) InsertHolding(h model.Holding) (int64, error) {
 // InsertRollTxn inserts a roll transaction and returns its new id. The typed bank
 // name find-or-creates a branch (ADR-010); only the resolved branch_id is stored.
 func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
+	// Validate before resolveBranchID: a bad txn must not fork a branch as a side effect.
+	if err := t.Validate(); err != nil {
+		return 0, err
+	}
 	bid, err := s.resolveBranchID(t.Bank)
 	if err != nil {
 		return 0, err
@@ -103,6 +113,10 @@ func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
 
 // InsertTrip inserts a trip and returns its new id (bank find-or-creates a branch).
 func (s *Store) InsertTrip(t model.Trip) (int64, error) {
+	// Validate before resolveBranchID: a bad trip must not fork a branch as a side effect.
+	if err := t.Validate(); err != nil {
+		return 0, err
+	}
 	bid, err := s.resolveBranchID(t.Bank)
 	if err != nil {
 		return 0, err
@@ -119,6 +133,9 @@ func (s *Store) InsertTrip(t model.Trip) (int64, error) {
 // canonical name as an alias so resolveBranchID and merges can find it. Returns
 // the new id.
 func (s *Store) InsertBranch(b model.Branch) (int64, error) {
+	if err := b.Validate(); err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(
 		`INSERT INTO branches (uid, name, institution, address, phone, lat, lon, hours,
 		   buys, dumps, denoms, box_limit, box_lead_days, coin_fee_usd, cooldown_days, notes, active)
@@ -143,6 +160,9 @@ func (s *Store) InsertBranch(b model.Branch) (int64, error) {
 
 // InsertSupply inserts a supply and returns its new id.
 func (s *Store) InsertSupply(x model.Supply) (int64, error) {
+	if err := x.Validate(); err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(`INSERT INTO supplies (date, item, cost_usd) VALUES (?,?,?)`,
 		x.Date, x.Item, x.CostUSD)
 	if err != nil {
@@ -153,6 +173,9 @@ func (s *Store) InsertSupply(x model.Supply) (int64, error) {
 
 // InsertLoss inserts a shrinkage/loss adjustment and returns its new id (ADR-005).
 func (s *Store) InsertLoss(l model.Loss) (int64, error) {
+	if err := l.Validate(); err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(`INSERT INTO losses (date, amount_usd, reason, scope) VALUES (?,?,?,?)`,
 		l.Date, l.AmountUSD, l.Reason, l.Scope)
 	if err != nil {
@@ -164,6 +187,9 @@ func (s *Store) InsertLoss(l model.Loss) (int64, error) {
 // InsertKeeper inserts a keeper and returns its new id. date/roll_txn_id (ADR-008)
 // are nullable: an empty date and a zero roll_txn_id are stored as SQL NULL.
 func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
+	if err := k.Validate(); err != nil {
+		return 0, err
+	}
 	res, err := s.db.Exec(`INSERT INTO keepers (denom, count, face_usd, date, roll_txn_id) VALUES (?,?,?,?,?)`,
 		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), nullID(k.RollTxnID))
 	if err != nil {
@@ -178,11 +204,11 @@ func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
 // face, and the original lot is reduced by the same. Realized P&L for the sold
 // portion is proceeds - its basis. Runs in one transaction.
 func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error {
-	if qty <= 0 {
-		return fmt.Errorf("sell qty must be > 0")
-	}
-	if date == "" {
-		return fmt.Errorf("sell date required")
+	// The sale has no model struct of its own, so it validates through the shared
+	// helper — routing qty/proceeds/date through model.ErrInvalid so a bad sale is a
+	// 400, not the 500 the ad-hoc checks used to produce.
+	if err := model.ValidateSale(qty, proceeds, date); err != nil {
+		return err
 	}
 	// Under the store write lock: a sale that commits inside the window of a partial
 	// update (which reads the lot, merges the body onto it, and writes it back) would
@@ -256,6 +282,9 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 
 // PutSpot upserts a spot observation keyed by as_of.
 func (s *Store) PutSpot(sp model.Spot) error {
+	if err := sp.Validate(); err != nil {
+		return err
+	}
 	_, err := s.db.Exec(
 		`INSERT INTO spot (as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source)
 		 VALUES (?,?,?,?,?,?)
@@ -274,6 +303,9 @@ func (s *Store) PutSpot(sp model.Spot) error {
 // PutSettings serializes Settings into the key/value settings table. BoxFaceUSD
 // is stored as a JSON blob; scalars as their text form.
 func (s *Store) PutSettings(cfg model.Settings) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	box, err := json.Marshal(cfg.BoxFaceUSD)
 	if err != nil {
 		return err

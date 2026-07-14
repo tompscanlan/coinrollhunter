@@ -54,6 +54,9 @@ func (s *Store) ListItemTypes() ([]model.ItemType, error) {
 }
 
 func (s *Store) UpdateItemType(id int64, t model.ItemType) error {
+	if err := t.Validate(); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(
 		`UPDATE item_type SET kind=?, name=?, metal=?, fine_oz_each=?, fineness=?, year=?, mint=?, mintmark=?, refs=? WHERE id=?`,
 		t.Kind, t.Name, t.Metal, t.FineOzEach, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References, id)
@@ -99,6 +102,9 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 }
 
 func (s *Store) UpdateHolding(id int64, h model.Holding) error {
+	if err := h.Validate(); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(
 		`UPDATE lots SET item_type_id=?, roll_txn_id=?, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
 		   basis_usd=?, premium_usd=?, face_value_usd=?, acquired=?, source=?, location=?,
@@ -142,6 +148,10 @@ func b2i(b bool) int64 {
 func (s *Store) ListRollTxns() ([]model.RollTxn, error) { return s.loadRollTxns() }
 
 func (s *Store) UpdateRollTxn(id int64, t model.RollTxn) error {
+	// Validate before resolveBranchID: a bad txn must not fork a branch as a side effect.
+	if err := t.Validate(); err != nil {
+		return err
+	}
 	bid, err := s.resolveBranchID(t.Bank)
 	if err != nil {
 		return err
@@ -159,6 +169,10 @@ func (s *Store) DeleteRollTxn(id int64) error { return s.deleteByID("roll_txns",
 func (s *Store) ListTrips() ([]model.Trip, error) { return s.loadTrips() }
 
 func (s *Store) UpdateTrip(id int64, t model.Trip) error {
+	// Validate before resolveBranchID: a bad trip must not fork a branch as a side effect.
+	if err := t.Validate(); err != nil {
+		return err
+	}
 	bid, err := s.resolveBranchID(t.Bank)
 	if err != nil {
 		return err
@@ -177,6 +191,9 @@ func (s *Store) ListBranches() ([]model.Branch, error) { return s.loadBranches()
 // UpdateBranch updates every column except the immutable uid. Editing the
 // canonical name also records it as an alias, so the old name still resolves.
 func (s *Store) UpdateBranch(id int64, b model.Branch) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(
 		`UPDATE branches SET name=?, institution=?, address=?, phone=?, lat=?, lon=?, hours=?,
 		   buys=?, dumps=?, denoms=?, box_limit=?, box_lead_days=?, coin_fee_usd=?, cooldown_days=?, notes=?, active=?
@@ -255,6 +272,9 @@ func (s *Store) MergeBranches(survivor int64, losers []int64) error {
 func (s *Store) ListSupplies() ([]model.Supply, error) { return s.loadSupplies() }
 
 func (s *Store) UpdateSupply(id int64, x model.Supply) error {
+	if err := x.Validate(); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(`UPDATE supplies SET date=?, item=?, cost_usd=? WHERE id=?`,
 		x.Date, x.Item, x.CostUSD, id)
 	return affected(res, err, "update supply")
@@ -267,6 +287,9 @@ func (s *Store) DeleteSupply(id int64) error { return s.deleteByID("supplies", i
 func (s *Store) ListKeepers() ([]model.Keeper, error) { return s.loadKeepers() }
 
 func (s *Store) UpdateKeeper(id int64, k model.Keeper) error {
+	if err := k.Validate(); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(`UPDATE keepers SET denom=?, count=?, face_usd=?, date=?, roll_txn_id=? WHERE id=?`,
 		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), nullID(k.RollTxnID), id)
 	return affected(res, err, "update keeper")
@@ -279,6 +302,9 @@ func (s *Store) DeleteKeeper(id int64) error { return s.deleteByID("keepers", id
 func (s *Store) ListLosses() ([]model.Loss, error) { return s.loadLosses() }
 
 func (s *Store) UpdateLoss(id int64, l model.Loss) error {
+	if err := l.Validate(); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(`UPDATE losses SET date=?, amount_usd=?, reason=?, scope=? WHERE id=?`,
 		l.Date, l.AmountUSD, l.Reason, l.Scope, id)
 	return affected(res, err, "update loss")

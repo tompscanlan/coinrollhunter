@@ -386,6 +386,15 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, errBody(err))
 		return
 	}
+	// A validation failure is the client's fault, not the server's: a 400 with the
+	// field-level message, not a 500. Every store mutation funnels rejects here (via
+	// r.create / r.update / SellHolding / PutSpot / PutSettings), so create AND the
+	// PUT merge both get it. The body is {"error": "<field> <reason>"}, which the UI
+	// already renders and reverts the cell on (api.ts / EditableGrid.svelte).
+	if errors.Is(err, model.ErrInvalid) {
+		writeJSON(w, http.StatusBadRequest, errBody(err))
+		return
+	}
 	writeJSON(w, http.StatusInternalServerError, errBody(err))
 }
 
