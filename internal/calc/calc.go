@@ -329,8 +329,8 @@ func enrich(l model.Lot, s model.Spot) EnrichedLot {
 // buybackFactor is the estimated realizable dealer payout vs melt for junk
 // silver. Mirrors portfolio.py buyback_factor(), but classifies off the NORMALIZED
 // numeric fineness rather than prefix-matching the raw string (om-t0fs): the old
-// strings.HasPrefix read ".900" as "not junk" (full melt, an 11% overstatement)
-// and "40 grain" as 40% junk (a haircut on a weight).
+// prefix match read ".900" as "not junk" (full melt, an 11% overstatement) and
+// "40 grain" as 40% junk (a dealer haircut applied to a weight).
 func buybackFactor(l model.Lot, s model.Settings) float64 {
 	// The metal guard folds case/whitespace exactly like spotFor, or a "Silver"
 	// row would take the silver SPOT price and then skip the silver HAIRCUT — both
