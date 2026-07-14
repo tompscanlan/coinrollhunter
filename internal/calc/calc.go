@@ -7,7 +7,9 @@
 package calc
 
 import (
+	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/tompscanlan/coinrollhunter/internal/model"
@@ -108,6 +110,26 @@ type Report struct {
 	TotalBasis  float64 `json:"total_basis"`
 	TotalMarket float64 `json:"total_market"`
 	TotalUnreal float64 `json:"total_unreal"`
+
+	// Anomalies lists the lots whose free-text classification did NOT resolve, so
+	// the money math had to fall back (om-t0fs). Purely ADDITIVE: Compute still
+	// returns the same Report, every existing field is untouched, and a consumer
+	// that doesn't know the key ignores it. Non-nil so it serializes as [] not null.
+	// Rendering it is a separate bead (om-ay3b) — this field only records.
+	Anomalies []Anomaly `json:"anomalies"`
+}
+
+// Anomaly is one lot whose metal or fineness string could not be classified. Both
+// kinds silently corrupted money before om-t0fs: an unrecognized metal values the
+// whole lot at $0 spot, and an unparseable fineness on silver used to pay FULL
+// melt (no dealer haircut). Each one names the offending row and the offending
+// value so the data can actually be found and fixed.
+type Anomaly struct {
+	LotID   int64  `json:"lot_id"`
+	Product string `json:"product"` // the row, in human terms
+	Field   string `json:"field"`   // "metal" | "fineness"
+	Value   string `json:"value"`   // the offending free text, verbatim
+	Detail  string `json:"detail"`  // what the math did about it
 }
 
 // RealizedLot is a sold holding with its realized gain (proceeds - basis).
@@ -131,10 +153,41 @@ type BoxYield struct {
 	YieldPct     float64 `json:"yield_pct"`      // find_value / face * 100
 }
 
+// --- classification of free-text metal + fineness (om-t0fs) ------------------
+//
+// `metal` and `fineness` are human text that reaches the money math directly, and
+// om-1czp's validation only guards NEW writes — historical rows, legacy imports,
+// and hand-edited databases never pass through it, so THIS is the only defense
+// they meet. Both halves used to fail silently and in the flattering direction:
+// metal="Silver" valued at $0 spot, and a fineness of ".900" paid full melt with
+// no dealer haircut (an ~11% overstatement). So: normalize first, classify by
+// range, and record what does not resolve (Report.Anomalies) instead of guessing.
+
+// normalizeMetal folds a free-text metal to the canonical form the spot table is
+// keyed on, tolerating case and surrounding whitespace ("Silver", " SILVER " ->
+// "silver"). ok reports whether it resolved to a metal we actually price; a BLANK
+// metal returns ("", false) just like an unknown one, because both value at $0 —
+// but only a NON-BLANK one is an anomaly (see Compute). Blank is legal and
+// load-bearing: clad "junk" types (error coins, world coins) carry no melt metal
+// (model/validate.go), and flagging them would fire on correct data.
+func normalizeMetal(metal string) (string, bool) {
+	m := strings.ToLower(strings.TrimSpace(metal))
+	switch m {
+	case "gold", "silver", "platinum", "palladium":
+		return m, true
+	default:
+		return m, false
+	}
+}
+
 // spotFor returns the spot price for a metal; any metal without a price column
-// contributes 0.
+// (including a blank one) contributes 0.
 func spotFor(s model.Spot, metal string) float64 {
-	switch metal {
+	m, ok := normalizeMetal(metal)
+	if !ok {
+		return 0
+	}
+	switch m {
 	case "gold":
 		return s.GoldUSD
 	case "silver":
@@ -146,6 +199,114 @@ func spotFor(s model.Spot, metal string) float64 {
 	default:
 		return 0
 	}
+}
+
+// fineClass says whether a fineness string carried a usable number.
+type fineClass int
+
+const (
+	fineUnstated    fineClass = iota // blank: not stated. NOT an anomaly — an absent fineness is not a corrupt one, and plenty of legitimate rows leave it empty.
+	fineParsed                       // a numeric fine fraction in (0,1]
+	fineUnparseable                  // non-blank, but not a fineness ("40 grain", "junk")
+)
+
+// finenessFraction normalizes free-text fineness to a numeric fine fraction in
+// (0,1]. It accepts the notations that actually show up in a coin ledger:
+//
+//	"90%" · " 40% " · "90 %"          percent
+//	".900" · "0.900" · ".9999"        decimal fraction
+//	"90" · "900" · "9999"             bare number, scaled by magnitude
+//	"22k .9167" · "22 karat"          karat (n/24)
+//	"80% (CAD)" · "90% (pre-1965)"    a marked number plus annotation
+//
+// The load-bearing rule is the one that makes "40 grain" UNPARSEABLE rather than
+// 40%: a BARE number (no %, no decimal point, no karat) is only a fineness if it
+// stands alone or is followed by an explicit fineness word. A number carrying any
+// other unit is a WEIGHT, and mistaking it for a fineness is what haircut this lot
+// at the 40% rate. A number that *is* explicitly marked (%, ".", karat) may be
+// followed by free annotation — "80% (CAD)" is a real fineness with a note on it.
+func finenessFraction(raw string) (float64, fineClass) {
+	fields := strings.Fields(strings.ToLower(raw))
+	if len(fields) == 0 {
+		return 0, fineUnstated
+	}
+	head, rest := fields[0], fields[1:]
+
+	percent := strings.HasSuffix(head, "%")
+	head = strings.TrimSuffix(head, "%")
+	karat := false
+	if !percent {
+		for _, suf := range []string{"karat", "carat", "kt", "k"} {
+			if len(head) > len(suf) && strings.HasSuffix(head, suf) {
+				head, karat = strings.TrimSuffix(head, suf), true
+				break
+			}
+		}
+	}
+	// An explicit marker (%, karat, or a decimal point) means the number is stated
+	// as a fineness, so anything after it is annotation we can ignore.
+	marked := percent || karat || strings.Contains(head, ".")
+
+	n, err := strconv.ParseFloat(head, 64)
+	if err != nil {
+		return 0, fineUnparseable
+	}
+
+	if !marked && len(rest) > 0 {
+		switch rest[0] {
+		case "%":
+			percent = true
+		case "k", "kt", "karat", "carat":
+			karat = true
+		case "fine", "fineness": // "900 fine" — the number IS the fineness
+		default:
+			return 0, fineUnparseable // "40 grain": a unit, therefore a weight
+		}
+	}
+
+	var f float64
+	switch {
+	case percent:
+		f = n / 100
+	case karat:
+		f = n / 24
+	default:
+		// A bare number, scaled by magnitude: 0.9 · 90 · 900 · 9999 all mean .900+.
+		switch {
+		case n <= 1:
+			f = n
+		case n <= 100:
+			f = n / 100
+		case n <= 1000:
+			f = n / 1000
+		case n <= 10000:
+			f = n / 10000
+		}
+	}
+	if f <= 0 || f > 1 {
+		return 0, fineUnparseable // not a fine fraction: "900%", "40k", "-1"
+	}
+	return f, fineParsed
+}
+
+// The junk-silver buckets, as RANGES over the normalized fine fraction. The
+// tolerance is wide enough for notation noise (".900" == "90%" == "900") and tight
+// enough to keep the things that are NOT US junk silver out of the buckets:
+// sterling (.925), 22k (.9167) and world 80% coin all fall outside and keep full
+// melt, exactly as they did under the old prefix match.
+const fineTol = 0.015
+
+func near(f, target float64) bool { return math.Abs(f-target) <= fineTol }
+
+// conservativeBuyback is the factor for a SILVER lot whose fineness we could not
+// parse (AC6). The old code returned 1.0 — full melt, the single most OPTIMISTIC
+// number available — which is precisely the bug: bad data silently flattered the
+// books. We cannot know the grade, so we assume the worst dealer haircut we know
+// about instead of the best. It is deliberately never > 1.0 (a haircut can't make
+// metal worth more than melt), and the lot is reported in Report.Anomalies so the
+// number is explained rather than merely quiet.
+func conservativeBuyback(s model.Settings) float64 {
+	return math.Min(1.0, math.Min(s.SilverBuyback40pct, s.SilverBuyback90pct))
 }
 
 // enrich values a lot at spot. Mirrors portfolio.py enrich().
@@ -166,24 +327,76 @@ func enrich(l model.Lot, s model.Spot) EnrichedLot {
 }
 
 // buybackFactor is the estimated realizable dealer payout vs melt for junk
-// silver. Mirrors portfolio.py buyback_factor().
+// silver. Mirrors portfolio.py buyback_factor(), but classifies off the NORMALIZED
+// numeric fineness rather than prefix-matching the raw string (om-t0fs): the old
+// strings.HasPrefix read ".900" as "not junk" (full melt, an 11% overstatement)
+// and "40 grain" as 40% junk (a haircut on a weight).
 func buybackFactor(l model.Lot, s model.Settings) float64 {
-	if l.Metal != "silver" {
+	// The metal guard folds case/whitespace exactly like spotFor, or a "Silver"
+	// row would take the silver SPOT price and then skip the silver HAIRCUT — both
+	// halves of the money math wrong on the same row.
+	if m, _ := normalizeMetal(l.Metal); m != "silver" {
 		return 1.0
 	}
+	f, class := finenessFraction(l.Fineness)
+	switch class {
+	case fineUnstated:
+		return 1.0 // no fineness claimed ⇒ nothing to haircut against; unchanged
+	case fineUnparseable:
+		return conservativeBuyback(s) // AC6 — see conservativeBuyback
+	}
 	switch {
-	case strings.HasPrefix(l.Fineness, "40"):
+	case near(f, 0.40):
 		return s.SilverBuyback40pct
-	case strings.HasPrefix(l.Fineness, "35"):
+	case near(f, 0.35):
 		// War nickels (1942–45) are low-grade junk; dealers haircut them at
 		// least as hard as 40%. The prototype left these at 1.0 (no haircut),
 		// which overstates realizable value — lump them with 40% instead.
 		return s.SilverBuyback40pct
-	case strings.HasPrefix(l.Fineness, "90"):
+	case near(f, 0.90):
 		return s.SilverBuyback90pct
 	default:
+		// A parseable fineness that is not a US junk bucket (.999 rounds, .925
+		// sterling, 80% world coin): dealers pay near melt. No haircut, and NOT an
+		// anomaly — we understood the number, it just isn't junk silver.
 		return 1.0
 	}
+}
+
+// classify records the lots whose free-text metal/fineness did not resolve, so a
+// fallback in the money math is never silent (om-t0fs AC5). Two kinds, and only
+// two:
+//
+//	(a) a NON-BLANK metal that resolves to no priced metal   -> valued at $0 spot
+//	(b) an UNPARSEABLE fineness on a silver lot              -> conservative haircut
+//
+// A BLANK metal is NOT an anomaly. It is legal and load-bearing — clad "junk"
+// types (error coins, world coins) carry no melt metal and correctly value at $0
+// (model/validate.go). Flagging it would fire on correct data across a huge share
+// of the ledger, which is how a warning becomes noise and stops being read.
+func classify(lots []model.Lot) []Anomaly {
+	// Non-nil so it serializes as [] not null (the summary handler writes the
+	// Report straight out).
+	out := []Anomaly{}
+	for _, l := range lots {
+		m, known := normalizeMetal(l.Metal)
+		if !known && m != "" {
+			out = append(out, Anomaly{
+				LotID: l.ID, Product: l.Product, Field: "metal", Value: l.Metal,
+				Detail: fmt.Sprintf("metal %q is not a metal we price (gold, silver, platinum, palladium) — this lot is valued at $0 spot", l.Metal),
+			})
+		}
+		if m != "silver" {
+			continue // the fineness only reaches the money math on silver
+		}
+		if _, class := finenessFraction(l.Fineness); class == fineUnparseable {
+			out = append(out, Anomaly{
+				LotID: l.ID, Product: l.Product, Field: "fineness", Value: l.Fineness,
+				Detail: fmt.Sprintf("fineness %q is not a fineness — the dealer haircut fell back to the most conservative known factor", l.Fineness),
+			})
+		}
+	}
+	return out
 }
 
 // Compute runs the full engine over a resolved dataset. Faithful port of
@@ -213,7 +426,9 @@ func Compute(d model.Dataset) Report {
 	for _, l := range bullion {
 		bBasis += l.BasisUSD
 		bMarket += l.MarketUSD
-		if l.Metal == "gold" {
+		// Normalized like spotFor, or a "Gold" row would be valued at gold spot in
+		// bullion_market yet vanish from the gold_* KPIs.
+		if m, _ := normalizeMetal(l.Metal); m == "gold" {
 			gOz += l.FineOz
 			gBasis += l.BasisUSD
 			gMarket += l.MarketUSD
@@ -444,6 +659,11 @@ func Compute(d model.Dataset) Report {
 		TotalBasis:  tBasis,
 		TotalMarket: tMarket,
 		TotalUnreal: tMarket - tBasis,
+
+		// Additive (om-t0fs): the rows whose classification did not resolve. Live
+		// lots only — a disposed lot's P&L is proceeds − basis, so its metal never
+		// reaches spot and cannot silently misvalue anything.
+		Anomalies: classify(d.Lots),
 	}
 }
 

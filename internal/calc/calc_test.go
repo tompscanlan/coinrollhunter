@@ -413,3 +413,231 @@ func TestInvariants(t *testing.T) {
 		})
 	}
 }
+
+// --- om-t0fs: classification of free-text metal / fineness -------------------
+//
+// The money math used to key off raw human text: buybackFactor prefix-matched the
+// fineness string and spotFor did an exact, case-sensitive switch on the metal.
+// Both failed SILENTLY (full melt payout / $0 spot). These tables pin the parse.
+
+// TestBuybackFactorClassification is AC1/AC2/AC3: the fineness is normalized to a
+// numeric fine-fraction and classified by RANGE — no prefix matching — and the
+// metal guard folds case/whitespace like spotFor does.
+func TestBuybackFactorClassification(t *testing.T) {
+	s := model.DefaultSettings() // 40% -> 0.80, 90% -> 0.90
+	const (
+		f90   = 0.90 // SilverBuyback90pct
+		f40   = 0.80 // SilverBuyback40pct (war nickels lump in here too)
+		none  = 1.00 // no dealer haircut
+		worst = 0.80 // the conservative branch: min(40pct, 90pct, 1.0)
+	)
+	for _, tc := range []struct {
+		name     string
+		metal    string
+		fineness string
+		want     float64
+	}{
+		// AC1 — every notation for 90% junk silver takes the 90% haircut.
+		{"90 pct sign", "silver", "90%", f90},
+		{"90 bare", "silver", "90", f90},
+		{"90 point-nine-hundred", "silver", ".900", f90},
+		{"90 zero-point-nine-hundred", "silver", "0.900", f90},
+		{"90 padded pct", "silver", " 90% ", f90},
+		{"90 per-mille", "silver", "900", f90},
+		// AC1 — 40% junk silver.
+		{"40 pct sign", "silver", "40%", f40},
+		{"40 point-four-hundred", "silver", ".400", f40},
+		{"40 padded pct", "silver", " 40% ", f40},
+		// AC1 — war nickels stay lumped with the 40% haircut (deliberate).
+		{"35 war nickel pct", "silver", "35%", f40},
+		{"35 war nickel decimal", "silver", ".350", f40},
+		// AC2 — a weight is NOT a fineness: no 40% haircut off "40".
+		{"40 grain is a weight", "silver", "40 grain", worst},
+		{"90 grain is a weight", "silver", "90 grain", worst},
+		{"pure gibberish", "silver", "junk", worst},
+		// AC3 — the metal guard normalizes: a 'Silver' lot reaches the haircut.
+		{"capitalized Silver 90%", "Silver", "90%", f90},
+		{"shouty SILVER 90%", "SILVER", ".900", f90},
+		{"padded silver 40%", " silver ", "40%", f40},
+		{"capitalized Silver, bad fineness", "Silver", "40 grain", worst},
+		// Non-junk but perfectly parseable finenesses keep full melt (unchanged).
+		{"999 bullion round", "silver", ".999", none},
+		{"9999 bullion", "silver", ".9999", none},
+		{"sterling", "silver", ".925", none},
+		{"world 80% with annotation", "silver", "80% (CAD)", none},
+		{"blank fineness is not stated, not corrupt", "silver", "", none},
+		// Non-silver never takes a silver haircut, whatever the fineness says.
+		{"gold 22k", "gold", "22k .9167", none},
+		{"gold that reads like 90", "gold", "90%", none},
+		{"blank metal", "", "90%", none},
+		{"unknown metal", "rhodium", "90%", none},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := model.Lot{Activity: "crh", Metal: tc.metal, Fineness: tc.fineness, Qty: 1, FineOzEach: 1}
+			if got := buybackFactor(l, s); math.Abs(got-tc.want) > tol {
+				t.Errorf("buybackFactor(metal=%q, fineness=%q) = %.4f, want %.4f",
+					tc.metal, tc.fineness, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSpotForNormalizesMetal is AC3/AC4: case and surrounding whitespace fold to
+// the right spot price; a BLANK metal still values at $0 (legal, load-bearing —
+// clad junk carries no melt metal); an unknown metal still values at $0.
+func TestSpotForNormalizesMetal(t *testing.T) {
+	s := model.Spot{GoldUSD: 4000, SilverUSD: 60, PlatinumUSD: 1000, PalladiumUSD: 900}
+	for _, tc := range []struct {
+		metal string
+		want  float64
+	}{
+		{"gold", 4000}, {"Gold", 4000}, {"GOLD", 4000}, {" gold ", 4000},
+		{"silver", 60}, {"Silver", 60}, {"SILVER", 60}, {" silver ", 60},
+		{"platinum", 1000}, {"Platinum", 1000}, {"PLATINUM", 1000}, {" platinum ", 1000},
+		{"palladium", 900}, {"Palladium", 900}, {"PALLADIUM", 900}, {" palladium ", 900},
+		{"", 0},           // AC4: blank is legal — $0, silently
+		{"   ", 0},        // whitespace-only is blank
+		{"rhodium", 0},    // unknown metal: no price column
+		{"silver-ish", 0}, // not a metal we price
+	} {
+		t.Run("metal="+tc.metal, func(t *testing.T) {
+			if got := spotFor(s, tc.metal); got != tc.want {
+				t.Errorf("spotFor(%q) = %.2f, want %.2f", tc.metal, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFinenessFraction pins the normalizer itself: free text in, a numeric fine
+// fraction (or "unparseable") out. The classification above is a RANGE test on
+// this number, which is why "40 grain" must not yield 0.40.
+func TestFinenessFraction(t *testing.T) {
+	for _, tc := range []struct {
+		in    string
+		want  float64
+		class fineClass
+	}{
+		{"90%", 0.90, fineParsed},
+		{"90", 0.90, fineParsed},
+		{".900", 0.900, fineParsed},
+		{"0.900", 0.900, fineParsed},
+		{" 90% ", 0.90, fineParsed},
+		{"900", 0.900, fineParsed},
+		{"40%", 0.40, fineParsed},
+		{".400", 0.400, fineParsed},
+		{" 40% ", 0.40, fineParsed},
+		{"35%", 0.35, fineParsed},
+		{".350", 0.350, fineParsed},
+		{".999", 0.999, fineParsed},
+		{"9999", 0.9999, fineParsed},
+		{"22k .9167", 22.0 / 24.0, fineParsed},
+		{"80% (CAD)", 0.80, fineParsed},
+		{"90% (pre-1965)", 0.90, fineParsed},
+		{"", 0, fineUnstated},
+		{"   ", 0, fineUnstated},
+		{"40 grain", 0, fineUnparseable},
+		{"junk", 0, fineUnparseable},
+		{"-", 0, fineUnparseable},
+		{"900%", 0, fineUnparseable}, // 9.0 fine is not a thing
+		{"0", 0, fineUnparseable},
+	} {
+		t.Run("fineness="+tc.in, func(t *testing.T) {
+			got, class := finenessFraction(tc.in)
+			if class != tc.class {
+				t.Fatalf("finenessFraction(%q) class = %v, want %v", tc.in, class, tc.class)
+			}
+			if class == fineParsed && math.Abs(got-tc.want) > 1e-9 {
+				t.Errorf("finenessFraction(%q) = %.6f, want %.6f", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDoubleWhammyCapitalMetal is the headline defect: a historical/imported row
+// with metal="Silver" used to miss BOTH halves of the money math — $0 spot from
+// spotFor AND no dealer haircut from buybackFactor. It must now compute exactly
+// like its lowercase twin.
+func TestDoubleWhammyCapitalMetal(t *testing.T) {
+	build := func(metal string) model.Dataset {
+		return model.Dataset{
+			Spot:     model.Spot{SilverUSD: 60},
+			Settings: model.DefaultSettings(),
+			Lots: []model.Lot{
+				{ID: 1, Activity: "crh", Metal: metal, Fineness: "90%", Qty: 10, FineOzEach: 0.18084, BasisUSD: 2.50},
+			},
+		}
+	}
+	lower := Compute(build("silver"))
+	upper := Compute(build("Silver"))
+
+	approx(t, "find_melt: 'Silver' values at silver spot", upper.FindMelt, 10*0.18084*60) // 108.504
+	approx(t, "find_melt matches the lowercase twin", upper.FindMelt, lower.FindMelt)
+	approx(t, "find_realizable takes the 90% haircut", upper.FindRealizable, 10*0.18084*60*0.90)
+	approx(t, "find_realizable matches the lowercase twin", upper.FindRealizable, lower.FindRealizable)
+	approx(t, "crh_net_real matches the lowercase twin", upper.CRHNetReal, lower.CRHNetReal)
+	if len(upper.Anomalies) != 0 {
+		t.Errorf("a resolvable metal is not an anomaly, got %+v", upper.Anomalies)
+	}
+}
+
+// TestClassificationAnomalies is AC5: the additive Report field records the rows
+// whose classification did not resolve — and AC4: a BLANK metal is NOT one of
+// them. Blank is legal (clad junk carries no melt metal); flagging it would fire
+// on correct data across a huge share of the ledger.
+func TestClassificationAnomalies(t *testing.T) {
+	d := model.Dataset{
+		Spot:     model.Spot{GoldUSD: 4000, SilverUSD: 60},
+		Settings: model.DefaultSettings(),
+		Lots: []model.Lot{
+			// clean rows — no anomaly
+			{ID: 1, Activity: "bullion", Product: "Gold Eagle", Metal: "gold", Fineness: "22k .9167", Qty: 1, FineOzEach: 1},
+			{ID: 2, Activity: "crh", Product: "90% quarter", Metal: "Silver", Fineness: ".900", Qty: 1, FineOzEach: 0.18084},
+			// AC4: blank metal is LEGAL — $0 melt, and NO anomaly.
+			{ID: 3, Activity: "crh", Product: "1972 error cent", Metal: "", Fineness: "", Qty: 1, FineOzEach: 0},
+			// (a) non-blank metal that resolves to no known spot metal
+			{ID: 4, Activity: "bullion", Product: "mystery round", Metal: "rhodium", Fineness: ".999", Qty: 1, FineOzEach: 1},
+			// (b) unparseable fineness on a silver lot
+			{ID: 5, Activity: "crh", Product: "mislabelled half", Metal: "silver", Fineness: "40 grain", Qty: 1, FineOzEach: 0.1479},
+		},
+	}
+	r := Compute(d)
+
+	if len(r.Anomalies) != 2 {
+		t.Fatalf("got %d anomalies, want 2 (rhodium metal + '40 grain' fineness); %+v", len(r.Anomalies), r.Anomalies)
+	}
+	for _, a := range r.Anomalies {
+		if a.LotID == 3 {
+			t.Errorf("blank metal was flagged — it is LEGAL and must stay silent: %+v", a)
+		}
+	}
+	metal, fine := r.Anomalies[0], r.Anomalies[1]
+	if metal.LotID != 4 || metal.Field != "metal" || metal.Value != "rhodium" {
+		t.Errorf("metal anomaly = %+v, want lot 4 / field metal / value rhodium", metal)
+	}
+	if metal.Product != "mystery round" {
+		t.Errorf("anomaly must identify the offending row: product = %q", metal.Product)
+	}
+	if fine.LotID != 5 || fine.Field != "fineness" || fine.Value != "40 grain" {
+		t.Errorf("fineness anomaly = %+v, want lot 5 / field fineness / value '40 grain'", fine)
+	}
+	if metal.Detail == "" || fine.Detail == "" {
+		t.Error("every anomaly needs a human-readable detail")
+	}
+
+	// AC6 — the unparseable fineness took the CONSERVATIVE branch, not full melt.
+	// Lot 5 melt = 0.1479 * 60 = 8.874; realizable must be the worst known haircut
+	// (0.80), NOT 1.0. Lot 2 (90%) contributes its own 0.90 haircut.
+	melt5, melt2 := 0.1479*60, 0.18084*60
+	approx(t, "unparseable fineness takes the worst known haircut", r.FindRealizable, melt2*0.90+melt5*0.80)
+	if r.FindRealizable >= r.FindMelt {
+		t.Error("an unparseable fineness must not silently pay full melt (the most flattering answer)")
+	}
+}
+
+// TestSampleReportNoAnomalies is AC7's other half: the clean committed fixture
+// must produce ZERO anomalies — no false positives on correct data.
+func TestSampleReportNoAnomalies(t *testing.T) {
+	if a := Compute(sampleDataset()).Anomalies; len(a) != 0 {
+		t.Errorf("clean sample fixture produced anomalies: %+v", a)
+	}
+}
