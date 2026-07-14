@@ -263,6 +263,11 @@ func TestCRHNetLifetime(t *testing.T) {
 	// The lifetime figure restores the truth: the hunt made money.
 	approx(t, "crh_net_lifetime = live + realized crh", r.CRHNetLifetime, 69.50)
 
+	// Emit the headline figures so `go test -v` carries the worked example in its
+	// output — the flip this bead is about is legible without reading the source.
+	t.Logf("om-nass worked example: crh_net_real = %.2f · realized_gain_crh = %.2f · crh_net_lifetime = %.2f",
+		r.CRHNetReal, r.RealizedGainCRH, r.CRHNetLifetime)
+
 	// D4: Verdict() stays keyed on the LIVE figure — unchanged by this bead.
 	if r.Verdict() != "COSTING MONEY" {
 		t.Errorf("verdict = %q, want COSTING MONEY (Verdict keys off crh_net_real)", r.Verdict())
