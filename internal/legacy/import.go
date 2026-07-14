@@ -217,3 +217,39 @@ func kindFor(category string) string {
 		return strings.ToLower(category)
 	}
 }
+
+// --- error reporting (om-u3el) ------------------------------------------------
+
+// RowError is one rejected row: where it came from and what is wrong with it. Err
+// is the model.FieldError, so it names the offending field.
+type RowError struct {
+	Where string // e.g. `crh_ledger.json roll_transactions[3]`
+	Err   error  // a model.FieldError (unwraps to model.ErrInvalid)
+}
+
+func (e *RowError) Error() string { return e.Where + ": " + e.Err.Error() }
+func (e *RowError) Unwrap() error { return e.Err }
+
+// ImportErrors is the pre-validate pass's report: EVERY bad row in the file, not
+// just the first. Failing one row at a time is what burns the on-ramp — the user
+// fixes a row, re-runs, and hits the next one.
+type ImportErrors struct{ Rows []*RowError }
+
+func (e *ImportErrors) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d invalid row(s); nothing was written:", len(e.Rows))
+	for _, r := range e.Rows {
+		b.WriteString("\n  - " + r.Error())
+	}
+	return b.String()
+}
+
+// Unwrap exposes every row error, so errors.Is(err, model.ErrInvalid) holds for the
+// whole report (each RowError unwraps to a FieldError, which unwraps to ErrInvalid).
+func (e *ImportErrors) Unwrap() []error {
+	out := make([]error, len(e.Rows))
+	for i, r := range e.Rows {
+		out[i] = r
+	}
+	return out
+}
