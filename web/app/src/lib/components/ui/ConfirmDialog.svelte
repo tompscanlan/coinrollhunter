@@ -7,6 +7,7 @@
   // Deliberately NOT window.confirm: a browser confirm cannot show the row's
   // identity in the app's own voice, is unstyled, and is un-testable.
   import type { Snippet } from 'svelte'
+  import { onMount } from 'svelte'
   import Button from '$lib/components/ui/Button.svelte'
 
   let {
@@ -28,16 +29,62 @@
 
   let card = $state<HTMLDivElement | null>(null)
 
-  // Cancel takes focus on open, and is deliberately FIRST in the card's DOM order.
-  // The dialog interrupts a grid you commit cells with by pressing Enter, so Enter
-  // is the key most likely to already be under the user's finger: the safe control
-  // is the one it lands on.
-  $effect(() => {
-    card?.querySelector('button')?.focus()
-  })
-</script>
+  // The control the dialog opened from — the trash button — captured NOW, before we
+  // move focus off it. Restored on teardown so the keyboard user lands back where they
+  // were, not on <body>. Read at script-init (synchronous with the mount), while the
+  // opener still holds focus.
+  const opener = document.activeElement as HTMLElement | null
 
-<svelte:window onkeydown={(e) => e.key === 'Escape' && onCancel()} />
+  /** The dialog's own focusable controls, in DOM order. */
+  function focusables(): HTMLElement[] {
+    if (!card) return []
+    return [
+      ...card.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter((el) => !el.hasAttribute('disabled'))
+  }
+
+  onMount(() => {
+    // Cancel takes focus on open, and is deliberately FIRST in the card's DOM order.
+    // The dialog interrupts a grid you commit cells with by pressing Enter, so Enter is
+    // the key most likely already under the user's finger: the safe control is the one
+    // it lands on.
+    focusables()[0]?.focus()
+    // Every close path unmounts us (the parent nulls its state), so this one cleanup
+    // covers Cancel / Escape / backdrop / a completed delete alike.
+    return () => opener?.focus?.()
+  })
+
+  // A real focus trap — aria-modal is a promise the keyboard must keep. Without this,
+  // Tab walks straight out the back of the dialog into the live grid: Shift+Tab could
+  // land on ANOTHER row's trash button (re-arming the dialog on a different row) or on
+  // a hidden grid input, where typing then fires saveRow on blur — a blind write behind
+  // a "modal". So Tab and Shift+Tab wrap first↔last within the card, and nothing else
+  // is reachable. Scoped to the card, not the window, so it only governs an open dialog.
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      onCancel()
+      return
+    }
+    if (e.key !== 'Tab') return
+    const items = focusables()
+    if (items.length === 0) return
+    const first = items[0]
+    const last = items[items.length - 1]
+    const active = document.activeElement
+    if (e.shiftKey) {
+      if (active === first || !card?.contains(active)) {
+        e.preventDefault()
+        last.focus()
+      }
+    } else if (active === last || !card?.contains(active)) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+</script>
 
 <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
   <!-- The backdrop is a <button>, not a div with a click handler: click-outside-to-
@@ -51,11 +98,15 @@
     onclick={onCancel}
   ></button>
 
+  <!-- tabindex=-1: the dialog can receive programmatic focus but is never a Tab stop
+       itself (and focusables() excludes it), so the trap cycles only the buttons. -->
   <div
     bind:this={card}
     role="dialog"
     aria-modal="true"
     aria-label={heading}
+    tabindex="-1"
+    onkeydown={onKeydown}
     class="relative w-full max-w-sm space-y-4 rounded-xl border bg-card p-5 shadow-lg"
   >
     <div class="space-y-1">
