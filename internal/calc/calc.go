@@ -81,13 +81,28 @@ type Report struct {
 	CRHNetMelt float64 `json:"crh_net_melt"`
 	CRHNetReal float64 `json:"crh_net_real"`
 	CRHNetTime float64 `json:"crh_net_time"`
-	HourlyRate float64 `json:"hourly_rate"`
+	// CRHNetLifetime is the "is coin roll hunting costing you money?" answer over
+	// the WHOLE history of the hunt (om-nass): CRHNetReal + RealizedGainCRH. The
+	// crhNet* figures above are live-only, so selling a winning find drops its
+	// value out of them while the op costs that produced it remain — the headline
+	// flips negative on a hunt that made money. This ADDS the sold finds' realized
+	// P&L back in; it does not mutate CRHNetReal (which stays the "current
+	// holdings" figure). Bullion realized gain is NOT part of it.
+	CRHNetLifetime float64 `json:"crh_net_lifetime"`
+	HourlyRate     float64 `json:"hourly_rate"`
 
 	// Realized (sold holdings)
 	Realized         []RealizedLot `json:"realized"`
 	RealizedProceeds float64       `json:"realized_proceeds"`
 	RealizedBasis    float64       `json:"realized_basis"`
 	RealizedGain     float64       `json:"realized_gain"`
+	// The realized gain split by activity, so a bullion sale can never be read as
+	// a hunt result (om-nass). "Bullion" is everything that is not a CRH find —
+	// including a disposed lot with a blank/unknown activity — so the identity
+	// RealizedGain == RealizedGainCRH + RealizedGainBullion is exact for any
+	// dataset. Only RealizedGainCRH feeds CRHNetLifetime.
+	RealizedGainCRH     float64 `json:"realized_gain_crh"`
+	RealizedGainBullion float64 `json:"realized_gain_bullion"`
 
 	// Whole portfolio
 	TotalBasis  float64 `json:"total_basis"`
@@ -333,13 +348,36 @@ func Compute(d model.Dataset) Report {
 	}
 
 	// --- realized (sold holdings) ---
+	// om-nass: split the realized gain by activity while we already have the lot
+	// in hand. A CRH find's P&L is realized here — separately from crhNet* above,
+	// which is live-only by ADR-008 (c) — and rGainCRH is what folds it back into
+	// the LIFETIME figure below. Note this touches the GAIN (proceeds − basis), a
+	// different quantity from the disposed find's BASIS: the basis stays float-only
+	// (disposedFindFace → keptFace) and is still barred from fCost / crhNet* /
+	// tBasis. Widening fCost is the one-liner ADR-008 §Alternatives rejects.
+	//
+	// "Bullion" is deliberately NOT-crh (else), not Activity == "bullion", so a lot
+	// with a blank/unknown activity still lands somewhere and
+	// realized_gain == realized_gain_crh + realized_gain_bullion holds exactly.
+	// (Mirrors the UI's `activity !== 'crh'` bullion filter.)
 	realized := make([]RealizedLot, len(d.Disposed))
 	var rProceeds, rBasis float64
+	var rGainCRH, rGainBullion float64
 	for i, dl := range d.Disposed {
-		realized[i] = RealizedLot{DisposedLot: dl, GainUSD: dl.ProceedsUSD - dl.BasisUSD}
+		g := dl.ProceedsUSD - dl.BasisUSD
+		realized[i] = RealizedLot{DisposedLot: dl, GainUSD: g}
 		rProceeds += dl.ProceedsUSD
 		rBasis += dl.BasisUSD
+		if dl.Activity == "crh" {
+			rGainCRH += g
+		} else {
+			rGainBullion += g
+		}
 	}
+	// The lifetime answer to "is the hunt costing you money?": the live finds you
+	// still hold, plus what the finds you already sold actually earned. Bullion
+	// realized gain is excluded — it is a separate long-term hold, not a hunt result.
+	crhNetLifetime := crhNetReal + rGainCRH
 
 	// --- totals ---
 	tBasis := bBasis + fCost
@@ -390,15 +428,18 @@ func Compute(d model.Dataset) Report {
 		FaceSearched: buys,
 		BoxYields:    boxYields,
 
-		CRHNetMelt: crhNetMelt,
-		CRHNetReal: crhNetReal,
-		CRHNetTime: crhNetTime,
-		HourlyRate: s.HourlyRateUSD,
+		CRHNetMelt:     crhNetMelt,
+		CRHNetReal:     crhNetReal,
+		CRHNetTime:     crhNetTime,
+		CRHNetLifetime: crhNetLifetime,
+		HourlyRate:     s.HourlyRateUSD,
 
-		Realized:         realized,
-		RealizedProceeds: rProceeds,
-		RealizedBasis:    rBasis,
-		RealizedGain:     rProceeds - rBasis,
+		Realized:            realized,
+		RealizedProceeds:    rProceeds,
+		RealizedBasis:       rBasis,
+		RealizedGain:        rProceeds - rBasis,
+		RealizedGainCRH:     rGainCRH,
+		RealizedGainBullion: rGainBullion,
 
 		TotalBasis:  tBasis,
 		TotalMarket: tMarket,

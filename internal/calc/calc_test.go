@@ -222,6 +222,68 @@ func TestDisposedFindStaysKept(t *testing.T) {
 	approx(t, "sold total_basis = bullion+find_cost (live-only)", sold.TotalBasis, sold.BullionBasis+sold.FindCost)
 }
 
+// TestCRHNetLifetime is the worked example for om-nass: the LIVE headline
+// (crh_net_real) legitimately reads a loss the moment you sell a winning find —
+// the find leaves the live set, its realizable value goes with it, and the op
+// costs of the hunt that produced it remain. That is not a bug to "fix" by
+// widening fCost (ADR-008 §Alternatives rejects exactly that); the answer is a
+// SECOND figure, crh_net_lifetime = crh_net_real + realized_gain_crh, which
+// folds the separately-realized CRH P&L back in.
+//
+// The bead's example: a 90% silver find, $0.50 face, sold for $90, against $20
+// of logged op costs. Live: −$20. Lifetime: +$69.50.
+func TestCRHNetLifetime(t *testing.T) {
+	// A sold CRH find and nothing else live. op_cost comes from a supply row
+	// (gas is derived from trips × mileage, so a supply is the clean $20).
+	sold := model.Dataset{
+		Spot:     model.Spot{SilverUSD: 60},
+		Settings: model.DefaultSettings(),
+		Supplies: []model.Supply{{Date: "2026-04-01", Item: "coin tubes", CostUSD: 20.00}},
+		Disposed: []model.DisposedLot{
+			{Activity: "crh", Metal: "silver", Qty: 1, BasisUSD: 0.50, ProceedsUSD: 90.00, Disposed: "2026-05-01"},
+		},
+	}
+	r := Compute(sold)
+
+	// The find is sold, so the LIVE find terms are empty.
+	approx(t, "find_cost (live-only)", r.FindCost, 0)
+	approx(t, "find_realizable (live-only)", r.FindRealizable, 0)
+	approx(t, "op_cost", r.OpCost, 20.00)
+	approx(t, "losses", r.Losses, 0)
+
+	// The defect symptom, preserved deliberately: the live figure reads a $20
+	// loss. crh_net_real MUST stay live-only (ADR-008 (c) / om-co69).
+	approx(t, "crh_net_real is live-only (reads the op-cost loss)", r.CRHNetReal, -20.00)
+
+	// The sold find's P&L is realized separately — and now aggregated by activity.
+	approx(t, "realized_gain_crh = proceeds - basis", r.RealizedGainCRH, 89.50)
+	approx(t, "realized_gain_bullion (none disposed)", r.RealizedGainBullion, 0)
+	approx(t, "realized_gain = crh + bullion", r.RealizedGain, 89.50)
+
+	// The lifetime figure restores the truth: the hunt made money.
+	approx(t, "crh_net_lifetime = live + realized crh", r.CRHNetLifetime, 69.50)
+
+	// D4: Verdict() stays keyed on the LIVE figure — unchanged by this bead.
+	if r.Verdict() != "COSTING MONEY" {
+		t.Errorf("verdict = %q, want COSTING MONEY (Verdict keys off crh_net_real)", r.Verdict())
+	}
+
+	// AC6 — bullion realized gain is SEPARATE and never enters the CRH lifetime
+	// figure. Same dataset, but the disposed lot is bullion: crh_net_lifetime is
+	// EXACTLY crh_net_real (nothing added), while realized_gain still moves.
+	bullionSale := sold
+	bullionSale.Disposed = []model.DisposedLot{
+		{Activity: "bullion", Metal: "gold", Qty: 1, BasisUSD: 3950.00, ProceedsUSD: 4200.00, Disposed: "2026-05-01"},
+	}
+	b := Compute(bullionSale)
+	approx(t, "bullion sale: realized_gain_bullion", b.RealizedGainBullion, 250.00)
+	approx(t, "bullion sale: realized_gain_crh stays 0", b.RealizedGainCRH, 0)
+	if b.CRHNetLifetime != b.CRHNetReal {
+		t.Errorf("bullion sale moved crh_net_lifetime: lifetime %.6f != live %.6f — bullion P&L must never enter the CRH figure",
+			b.CRHNetLifetime, b.CRHNetReal)
+	}
+}
+
 // TestInvariants asserts the accounting identities that must hold for ANY
 // dataset, regardless of the specific numbers. These survive intentional changes
 // to spot prices, haircuts, or fixtures — they encode what the math *means*.
@@ -267,6 +329,40 @@ func TestInvariants(t *testing.T) {
 			RollTxns: []model.RollTxn{{Action: "buy", Denom: "halves", FaceUSD: 500}, {Action: "return", FaceUSD: 480}},
 			Keepers:  []model.Keeper{{Denom: "halves", FaceUSD: 15}},
 		}},
+		// om-nass: disposed lots of every activity flavour at once — a crh find, a
+		// bullion lot, and one whose activity is BLANK/unknown (a legacy or hand-
+		// imported row). The realized split is "crh vs everything else", so the
+		// blank one lands in realized_gain_bullion and the AC3 identity
+		// (realized_gain == crh + bullion) stays EXACT rather than leaking a lot.
+		{"disposed-mixed-activities", model.Dataset{
+			Settings: model.DefaultSettings(),
+			Spot:     model.Spot{GoldUSD: 4000, SilverUSD: 60},
+			Lots: []model.Lot{
+				{Activity: "crh", Metal: "silver", Fineness: "90%", Qty: 1, FineOzEach: 0.18084, BasisUSD: 0.25},
+			},
+			Disposed: []model.DisposedLot{
+				{Activity: "crh", Metal: "silver", Qty: 1, BasisUSD: 0.50, ProceedsUSD: 90.00, Disposed: "2026-05-01"},
+				{Activity: "bullion", Metal: "gold", Qty: 1, BasisUSD: 3950.00, ProceedsUSD: 4200.00, Disposed: "2026-05-02"},
+				{Activity: "", Metal: "silver", Qty: 1, BasisUSD: 10.00, ProceedsUSD: 7.50, Disposed: "2026-05-03"},
+			},
+			RollTxns: []model.RollTxn{{Action: "buy", Denom: "halves", FaceUSD: 500}, {Action: "return", FaceUSD: 480}},
+			Supplies: []model.Supply{{Item: "coin tubes", CostUSD: 20.00}},
+			Keepers:  []model.Keeper{{Denom: "halves", FaceUSD: 15}},
+		}},
+		// om-nass / AC6: ONLY a bullion sale. The CRH lifetime figure must not move
+		// at all — a bullion sale is not a hunt result.
+		{"disposed-bullion-only", model.Dataset{
+			Settings: model.DefaultSettings(),
+			Spot:     model.Spot{GoldUSD: 4000, SilverUSD: 60},
+			Lots: []model.Lot{
+				{Activity: "crh", Metal: "silver", Fineness: "90%", Qty: 2, FineOzEach: 0.18084, BasisUSD: 0.50},
+			},
+			Disposed: []model.DisposedLot{
+				{Activity: "bullion", Metal: "gold", Qty: 1, BasisUSD: 3950.00, ProceedsUSD: 4200.00, Disposed: "2026-05-01"},
+			},
+			RollTxns: []model.RollTxn{{Action: "buy", Denom: "halves", FaceUSD: 500}, {Action: "return", FaceUSD: 480}},
+			Keepers:  []model.Keeper{{Denom: "halves", FaceUSD: 15}},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Compute(tc.d)
@@ -278,6 +374,16 @@ func TestInvariants(t *testing.T) {
 			approx(t, "to_redeposit = buys-returns-kept-lost", r.ToRedeposit, r.Buys-r.Returns-r.KeptFace-r.Losses)
 			approx(t, "crh_net_real = realizable-cost-op-loss", r.CRHNetReal, r.FindRealizable-r.FindCost-r.OpCost-r.Losses)
 			approx(t, "crh_net_melt = melt-cost-op-loss", r.CRHNetMelt, r.FindMelt-r.FindCost-r.OpCost-r.Losses)
+			// om-nass: the lifetime CRH figure folds the separately-realized CRH P&L
+			// back into the live one — and NOTHING else. Bullion realized gain stays
+			// out (that's a separate investment, ADR-005's "bullion is a separate
+			// long-term hold"), so the two identities below are what keep them apart.
+			approx(t, "crh_net_lifetime = crh_net_real + realized_gain_crh", r.CRHNetLifetime, r.CRHNetReal+r.RealizedGainCRH)
+			approx(t, "realized_gain = realized_gain_crh + realized_gain_bullion", r.RealizedGain, r.RealizedGainCRH+r.RealizedGainBullion)
+			// No disposed CRH find ⇒ the lifetime figure IS the live figure, exactly.
+			if r.RealizedGainCRH == 0 && r.CRHNetLifetime != r.CRHNetReal {
+				t.Errorf("no realized crh gain, but crh_net_lifetime %.6f != crh_net_real %.6f", r.CRHNetLifetime, r.CRHNetReal)
+			}
 			approx(t, "bullion_unreal = market-basis", r.BullionUnreal, r.BullionMarket-r.BullionBasis)
 			approx(t, "total_basis = bullion+find_cost", r.TotalBasis, r.BullionBasis+r.FindCost)
 			approx(t, "total_market = bullion+realizable", r.TotalMarket, r.BullionMarket+r.FindRealizable)
