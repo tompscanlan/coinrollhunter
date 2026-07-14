@@ -213,4 +213,32 @@ broken the e2e gate. Also: a **non-loopback `--addr` is now refused** unless
 relaxes the *Host* check to the bound address — but still refuses cross-origin requests.
 **If a guard change makes you want to edit `qa/`, the guard is wrong.**
 
+Added 2026-07-14 (server-side validation, om-1czp): the API used to decode a JSON body
+**straight into the store with nothing between decode and insert** — so a typo, an editable
+grid, or a direct curl could land a record that *can't be true* (a negative basis, an unknown
+metal, an unparseable date) and then silently poison every downstream number. Now
+**`internal/model/validate.go`** gives every mutable type a field-level `Validate()`, and the
+**store is the single chokepoint** that calls it: all 8 `Insert*`, all 8 `Update*` (the PUT
+merge was unvalidated too, not just create), `SellHolding`, `PutSpot`, `PutSettings` — so
+every writer (API, demo seeder, legacy import, spot poller) is covered by construction. A
+`model.ErrInvalid` maps to **HTTP 400** with the field-named message the grids already render
+and revert on; nothing else in `writeErr` changed. **Scope is money-corruption only, tied to a
+consequence read off `calc`**: the four enums whose bad value silently corrupts money — `metal`
+(→ $0 via `spotFor`), `roll_txns.action` (→ the txn vanishes from the buy/return switch),
+`lots.weight_unit` (→ ~31× fine-oz error), `lots.activity` (→ invisible to every report) —
+plus non-negative money/counts, `purity` 0..1, and ISO dates on the required/optional date
+fields. The **open vocabularies stay open** (ADR-006: category/subcategory/source/location,
+losses.reason/scope, supplies.item, item_type.kind, denom/unit/source_type), **blank metal /
+blank weight_unit / 0 purity are legal** (clad junk types, derived fine oz), and **`spot.as_of`
+is left alone** (the poller writes RFC3339, not ISO). **No migration, no CHECK constraint, no
+schema change** — deliberately: it was *proven* that adding a CHECK to an existing table makes
+any user database holding one pre-existing bad row **fail to open** (the rebuild's
+`INSERT...SELECT` aborts inside the migration's transaction), which is strictly worse than the
+bug. `internal/store/validate_ast_test.go` walks the package AST and **fails if a future
+mutation reaches the DB without a `Validate*` call** (so the next writer can't quietly reopen
+the hole), and the **brick test** (`TestExistingBadDataStillOpens`) pins that a DB carrying raw
+bad rows still opens, lists, and lets you delete them. The DB-level backstop (TRIGGERs, not
+CHECK) and a `doctor` command to report pre-existing bad rows are deliberately **separate
+follow-up beads**. No frontend change (`api.ts` + `EditableGrid.svelte` already render `{error}`).
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
