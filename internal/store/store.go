@@ -37,10 +37,59 @@ type Store struct {
 // WithWrite runs fn while holding the store's write lock, making a read-modify-write
 // sequence atomic with respect to the other writers that take it. Not reentrant: fn
 // must not call another WithWrite (or a store method that takes the lock itself).
+//
+// It is a MUTEX, not a transaction — there is no Begin/Commit/Rollback here, and
+// nothing it wraps is rolled back on failure. If you need a multi-row write to land
+// all-or-nothing (om-u3el: the legacy importer), use WithTx.
 func (s *Store) WithWrite(fn func() error) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	return fn()
+}
+
+// execer is the write surface shared by *sql.DB and *sql.Tx. Every statement in this
+// package's insert path is issued against one of these, so the exact same SQL serves
+// the auto-commit *Store methods and their transaction-bound *Tx twins.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// Tx is a transaction-bound writer: the handle WithTx hands its callback. Its
+// mutations carry the same names, signatures and validation as their *Store
+// counterparts — they just write through an open transaction instead of
+// auto-committing, so the whole sequence lands or none of it does.
+//
+// A *Tx is only valid inside the WithTx callback that produced it; do not retain it.
+type Tx struct{ db *sql.Tx }
+
+// WithTx runs fn inside ONE database transaction: everything fn writes through the
+// *Tx commits together, and ANY error fn returns — a rejected row, a missing table,
+// a disk-full, a panic-free early return — rolls the whole thing back. It takes the
+// store write lock for the same reason SellHolding and MergeBranches do (a
+// read-modify-write elsewhere must not interleave with a multi-row sequence).
+//
+// *** fn MUST write ONLY through the *Tx it is handed. *** Calling any *Store method
+// from inside fn DEADLOCKS, silently and permanently: Open sets SetMaxOpenConns(1)
+// (SQLite tolerates one writer), so the open transaction holds the pool's only
+// connection and the Store method's s.db.Exec blocks forever waiting for it to come
+// back — and Store methods that take wmu themselves would block on the lock this
+// already holds. The symptom is a hung test, not an error. This is why the insert
+// path is tx-aware (data.go) rather than the transaction simply being wrapped around
+// the existing auto-commit inserts.
+func (s *Store) WithTx(fn func(*Tx) error) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // no-op once Commit succeeds; the safety net on every error path
+	if err := fn(&Tx{db: tx}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies any

@@ -45,7 +45,7 @@ func TestMigration0008Backfill(t *testing.T) {
 
 	// The two "Chase Main St" rows (exact + whitespace) share one branch_id; the
 	// "Chase Main Street" typo forks its own; the empty row stays NULL.
-	exact := branchOf(t, db, 500) // id 1, "Chase Main St"
+	exact := branchOf(t, db, 500)  // id 1, "Chase Main St"
 	spaced := branchOf(t, db, 250) // id 3, " Chase Main St " → folds into id 1's branch
 	typo := branchOfTypo(t, db)
 	empty := branchOfEmpty(t, db)
@@ -122,7 +122,7 @@ func TestBranchResolveMergeRoundtrip(t *testing.T) {
 		}
 	}
 	// The loser's old spelling still resolves — its alias moved to the survivor.
-	got, err := s.resolveBranchID("Chase Main Street")
+	got, err := resolveBranchID(s.db, "Chase Main Street")
 	if err != nil {
 		t.Fatal(err)
 	}

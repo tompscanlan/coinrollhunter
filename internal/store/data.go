@@ -28,13 +28,18 @@ func newUID() string {
 // Mirrors the Holdings grid's find-or-create of an item_type (ADR-003). An empty
 // name resolves to 0 (a NULL branch_id). A newly-typed variant still forks a fresh
 // branch by design; the address-book merge (ADR-010 (b)) is how forks get repointed.
-func (s *Store) resolveBranchID(name string) (int64, error) {
+//
+// It is the store's hidden writer: called by InsertRollTxn, InsertTrip and their
+// Update twins, it INSERTs on a miss. It takes an execer rather than binding to
+// s.db so that a branch forked inside a transaction is rolled back with it — before
+// om-u3el a failed import could leave an orphan bank branch behind.
+func resolveBranchID(x execer, name string) (int64, error) {
 	n := strings.TrimSpace(name)
 	if n == "" {
 		return 0, nil
 	}
 	var id int64
-	err := s.db.QueryRow(
+	err := x.QueryRow(
 		`SELECT b.id FROM branches b
 		 LEFT JOIN branch_aliases a ON a.branch_id = b.id
 		 WHERE b.name = ? OR a.alias = ? LIMIT 1`, n, n).Scan(&id)
@@ -42,13 +47,32 @@ func (s *Store) resolveBranchID(name string) (int64, error) {
 	case err == nil:
 		return id, nil
 	case err == sql.ErrNoRows:
-		return s.InsertBranch(model.Branch{Name: n, Buys: true, Dumps: true, Active: true})
+		b := model.Branch{Name: n, Buys: true, Dumps: true, Active: true}
+		// The branch is synthesized here, not supplied by a caller, but it still goes
+		// through the model rules: this is a write into the ledger like any other, and
+		// nothing may reach insertBranch without passing them.
+		if err := b.Validate(); err != nil {
+			return 0, err
+		}
+		return insertBranch(x, b)
 	default:
 		return 0, fmt.Errorf("resolve branch %q: %w", n, err)
 	}
 }
 
 // --- inserts -----------------------------------------------------------------
+//
+// Each insert exists twice: an exported method on *Store (auto-commit — one
+// statement, its own implicit transaction) and its twin on *Tx (the same write,
+// inside a caller's WithTx transaction). Both validate, then hand the SQL to one
+// private helper that takes an execer, so there is exactly one copy of every
+// statement and the two paths cannot drift.
+//
+// The repeated `x.Validate()` line is deliberate and must stay in each method's own
+// body: internal/store/validate_ast_test.go reads the BODY of every mutation, and
+// folding the call into the shared helper would blind that chokepoint guard. The
+// guard is what stops a transaction-bound writer from becoming a second,
+// UNVALIDATED door into the ledger — precisely the hole om-1czp closed.
 
 // InsertItemType inserts a catalog row and returns its new id. As with lots and
 // roll_txns, the uid is server-generated and never taken from the caller: it is the
@@ -58,7 +82,19 @@ func (s *Store) InsertItemType(t model.ItemType) (int64, error) {
 	if err := t.Validate(); err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(
+	return insertItemType(s.db, t)
+}
+
+// InsertItemType inserts a catalog row inside the transaction. See *Store.InsertItemType.
+func (tx *Tx) InsertItemType(t model.ItemType) (int64, error) {
+	if err := t.Validate(); err != nil {
+		return 0, err
+	}
+	return insertItemType(tx.db, t)
+}
+
+func insertItemType(x execer, t model.ItemType) (int64, error) {
+	res, err := x.Exec(
 		`INSERT INTO item_type (uid, kind, name, metal, fine_oz_each, fineness, year, mint, mintmark, refs)
 		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		newUID(), t.Kind, t.Name, t.Metal, t.FineOzEach, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References)
@@ -76,7 +112,19 @@ func (s *Store) InsertHolding(h model.Holding) (int64, error) {
 	if err := h.Validate(); err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(
+	return insertHolding(s.db, h)
+}
+
+// InsertHolding inserts a specimen row inside the transaction. See *Store.InsertHolding.
+func (tx *Tx) InsertHolding(h model.Holding) (int64, error) {
+	if err := h.Validate(); err != nil {
+		return 0, err
+	}
+	return insertHolding(tx.db, h)
+}
+
+func insertHolding(x execer, h model.Holding) (int64, error) {
+	res, err := x.Exec(
 		`INSERT INTO lots (uid, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
@@ -97,11 +145,25 @@ func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
 	if err := t.Validate(); err != nil {
 		return 0, err
 	}
-	bid, err := s.resolveBranchID(t.Bank)
+	return insertRollTxn(s.db, t)
+}
+
+// InsertRollTxn inserts a roll transaction inside the transaction — including any
+// branch its bank name forks, which rolls back with it. See *Store.InsertRollTxn.
+func (tx *Tx) InsertRollTxn(t model.RollTxn) (int64, error) {
+	// Validate before resolveBranchID: a bad txn must not fork a branch as a side effect.
+	if err := t.Validate(); err != nil {
+		return 0, err
+	}
+	return insertRollTxn(tx.db, t)
+}
+
+func insertRollTxn(x execer, t model.RollTxn) (int64, error) {
+	bid, err := resolveBranchID(x, t.Bank)
 	if err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(
+	res, err := x.Exec(
 		`INSERT INTO roll_txns (uid, date, branch_id, action, denom, unit, amount, face_usd, source_type, notes)
 		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		newUID(), t.Date, nullID(bid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
@@ -117,11 +179,25 @@ func (s *Store) InsertTrip(t model.Trip) (int64, error) {
 	if err := t.Validate(); err != nil {
 		return 0, err
 	}
-	bid, err := s.resolveBranchID(t.Bank)
+	return insertTrip(s.db, t)
+}
+
+// InsertTrip inserts a trip inside the transaction — including any branch its bank
+// name forks, which rolls back with it. See *Store.InsertTrip.
+func (tx *Tx) InsertTrip(t model.Trip) (int64, error) {
+	// Validate before resolveBranchID: a bad trip must not fork a branch as a side effect.
+	if err := t.Validate(); err != nil {
+		return 0, err
+	}
+	return insertTrip(tx.db, t)
+}
+
+func insertTrip(x execer, t model.Trip) (int64, error) {
+	bid, err := resolveBranchID(x, t.Bank)
 	if err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`INSERT INTO trips (date, branch_id, miles, hours) VALUES (?,?,?,?)`,
+	res, err := x.Exec(`INSERT INTO trips (date, branch_id, miles, hours) VALUES (?,?,?,?)`,
 		t.Date, nullID(bid), t.Miles, t.Hours)
 	if err != nil {
 		return 0, fmt.Errorf("insert trip: %w", err)
@@ -136,7 +212,22 @@ func (s *Store) InsertBranch(b model.Branch) (int64, error) {
 	if err := b.Validate(); err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(
+	return insertBranch(s.db, b)
+}
+
+// InsertBranch inserts a branch inside the transaction. See *Store.InsertBranch.
+func (tx *Tx) InsertBranch(b model.Branch) (int64, error) {
+	if err := b.Validate(); err != nil {
+		return 0, err
+	}
+	return insertBranch(tx.db, b)
+}
+
+// insertBranch writes the branch and its canonical-name alias — TWO statements, which
+// is why it must be able to run inside the caller's transaction: on the auto-commit
+// path a failure between them leaves a branch with no alias.
+func insertBranch(x execer, b model.Branch) (int64, error) {
+	res, err := x.Exec(
 		`INSERT INTO branches (uid, name, institution, address, phone, lat, lon, hours,
 		   buys, dumps, denoms, box_limit, box_lead_days, coin_fee_usd, cooldown_days, notes, active)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -151,7 +242,7 @@ func (s *Store) InsertBranch(b model.Branch) (int64, error) {
 		return 0, err
 	}
 	if name := strings.TrimSpace(b.Name); name != "" {
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO branch_aliases (branch_id, alias) VALUES (?,?)`, id, name); err != nil {
+		if _, err := x.Exec(`INSERT OR IGNORE INTO branch_aliases (branch_id, alias) VALUES (?,?)`, id, name); err != nil {
 			return 0, fmt.Errorf("insert branch alias: %w", err)
 		}
 	}
@@ -163,8 +254,20 @@ func (s *Store) InsertSupply(x model.Supply) (int64, error) {
 	if err := x.Validate(); err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`INSERT INTO supplies (date, item, cost_usd) VALUES (?,?,?)`,
-		x.Date, x.Item, x.CostUSD)
+	return insertSupply(s.db, x)
+}
+
+// InsertSupply inserts a supply inside the transaction. See *Store.InsertSupply.
+func (tx *Tx) InsertSupply(x model.Supply) (int64, error) {
+	if err := x.Validate(); err != nil {
+		return 0, err
+	}
+	return insertSupply(tx.db, x)
+}
+
+func insertSupply(x execer, sup model.Supply) (int64, error) {
+	res, err := x.Exec(`INSERT INTO supplies (date, item, cost_usd) VALUES (?,?,?)`,
+		sup.Date, sup.Item, sup.CostUSD)
 	if err != nil {
 		return 0, fmt.Errorf("insert supply: %w", err)
 	}
@@ -176,7 +279,19 @@ func (s *Store) InsertLoss(l model.Loss) (int64, error) {
 	if err := l.Validate(); err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`INSERT INTO losses (date, amount_usd, reason, scope) VALUES (?,?,?,?)`,
+	return insertLoss(s.db, l)
+}
+
+// InsertLoss inserts a loss inside the transaction. See *Store.InsertLoss.
+func (tx *Tx) InsertLoss(l model.Loss) (int64, error) {
+	if err := l.Validate(); err != nil {
+		return 0, err
+	}
+	return insertLoss(tx.db, l)
+}
+
+func insertLoss(x execer, l model.Loss) (int64, error) {
+	res, err := x.Exec(`INSERT INTO losses (date, amount_usd, reason, scope) VALUES (?,?,?,?)`,
 		l.Date, l.AmountUSD, l.Reason, l.Scope)
 	if err != nil {
 		return 0, fmt.Errorf("insert loss: %w", err)
@@ -190,7 +305,19 @@ func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
 	if err := k.Validate(); err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`INSERT INTO keepers (denom, count, face_usd, date, roll_txn_id) VALUES (?,?,?,?,?)`,
+	return insertKeeper(s.db, k)
+}
+
+// InsertKeeper inserts a keeper inside the transaction. See *Store.InsertKeeper.
+func (tx *Tx) InsertKeeper(k model.Keeper) (int64, error) {
+	if err := k.Validate(); err != nil {
+		return 0, err
+	}
+	return insertKeeper(tx.db, k)
+}
+
+func insertKeeper(x execer, k model.Keeper) (int64, error) {
+	res, err := x.Exec(`INSERT INTO keepers (denom, count, face_usd, date, roll_txn_id) VALUES (?,?,?,?,?)`,
 		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), nullID(k.RollTxnID))
 	if err != nil {
 		return 0, fmt.Errorf("insert keeper: %w", err)
@@ -285,7 +412,19 @@ func (s *Store) PutSpot(sp model.Spot) error {
 	if err := sp.Validate(); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(
+	return putSpot(s.db, sp)
+}
+
+// PutSpot upserts a spot observation inside the transaction. See *Store.PutSpot.
+func (tx *Tx) PutSpot(sp model.Spot) error {
+	if err := sp.Validate(); err != nil {
+		return err
+	}
+	return putSpot(tx.db, sp)
+}
+
+func putSpot(x execer, sp model.Spot) error {
+	_, err := x.Exec(
 		`INSERT INTO spot (as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source)
 		 VALUES (?,?,?,?,?,?)
 		 ON CONFLICT(as_of) DO UPDATE SET gold_usd=excluded.gold_usd,
@@ -306,6 +445,21 @@ func (s *Store) PutSettings(cfg model.Settings) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	return putSettings(s.db, cfg)
+}
+
+// PutSettings writes the settings inside the transaction — six upserts that land or
+// roll back as one. It is what keeps a REJECTED import file from silently rewriting
+// the user's settings (they are upserts, so they used to survive the failure).
+// See *Store.PutSettings.
+func (tx *Tx) PutSettings(cfg model.Settings) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	return putSettings(tx.db, cfg)
+}
+
+func putSettings(x execer, cfg model.Settings) error {
 	box, err := json.Marshal(cfg.BoxFaceUSD)
 	if err != nil {
 		return err
@@ -319,7 +473,7 @@ func (s *Store) PutSettings(cfg model.Settings) error {
 		"box_face_usd":                  string(box),
 	}
 	for k, v := range kv {
-		if _, err := s.db.Exec(
+		if _, err := x.Exec(
 			`INSERT INTO settings (key, value) VALUES (?,?)
 			 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, k, v); err != nil {
 			return fmt.Errorf("put setting %s: %w", k, err)

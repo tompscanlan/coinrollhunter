@@ -11,14 +11,21 @@ import (
 	"testing"
 )
 
-// The chokepoint guard, and the criterion this bead lives or dies on: validation
-// that covers only the generic create route is the bug, not the fix. This walks the
-// store package's AST and asserts that EVERY exported mutation on *Store calls a
-// model validator before it can reach the DB. It is mechanical on purpose — a future
-// writer (the photos work will add InsertPhoto in a new file) fails this test until
-// it validates, which forces the new door shut rather than trusting a reviewer to
-// notice. If a mutation legitimately cannot validate, add it to validateAllowlist
-// with a reason; do not delete this test.
+// The chokepoint guard, and the criterion om-1czp lived or died on: validation that
+// covers only the generic create route is the bug, not the fix. This walks the store
+// package's AST and asserts that EVERY exported mutation calls a model validator
+// before it can reach the DB. It is mechanical on purpose — a future writer (the
+// photos work will add InsertPhoto in a new file) fails this test until it validates,
+// which forces the new door shut rather than trusting a reviewer to notice. If a
+// mutation legitimately cannot validate, add it to validateAllowlist with a reason;
+// do not delete this test.
+//
+// Widened by om-u3el: it used to walk only *Store receivers. The transaction-bound
+// writer (*Tx, store.go) carries a full twin of the insert path, and a guard that
+// only knew about Store would have been BLIND to it — a second, unvalidated door into
+// the ledger, exactly the hole om-1czp closed. So the walk now covers EVERY method
+// receiver in the package, and mutations are keyed Receiver.Method: the next writer
+// cannot escape the guard by inventing a new receiver either.
 
 // mutationRE matches the exported store mutation method names. Deletes/List/Get/
 // Merge/Resolve/Load/Backup are deliberately excluded: a delete of a bad row must
@@ -26,19 +33,25 @@ import (
 var mutationRE = regexp.MustCompile(`^(Insert|Update|Put|Sell)[A-Z]`)
 
 // validateAllowlist names store mutations that legitimately do NOT call a validator,
-// each with the reason. Empty today. Add here (with a reason) rather than removing a
-// method from the guard.
+// each with the reason. Keyed Receiver.Method. Empty today. Add here (with a reason)
+// rather than removing a method from the guard.
 var validateAllowlist = map[string]string{}
 
-// expectedMutations is the mutation set as of this bead — the 19 the scout enumerated
-// (8 inserts + 8 updates + SellHolding + PutSpot + PutSettings). The guard asserts it
-// actually saw all of them, so a broken parse can't pass the test vacuously.
+// expectedMutations is the mutation set as of om-u3el, keyed Receiver.Method: the 19
+// on *Store (8 inserts + 8 updates + SellHolding + PutSpot + PutSettings) and the 10
+// on the transaction-bound *Tx (the 8 inserts + PutSpot + PutSettings). The guard
+// asserts it actually saw all of them, so a broken parse can't pass the test
+// vacuously — and so that dropping or renaming one is a failure, not a silent gap.
 var expectedMutations = []string{
-	"InsertItemType", "InsertHolding", "InsertRollTxn", "InsertTrip", "InsertBranch",
-	"InsertSupply", "InsertLoss", "InsertKeeper",
-	"UpdateItemType", "UpdateHolding", "UpdateRollTxn", "UpdateTrip", "UpdateBranch",
-	"UpdateSupply", "UpdateKeeper", "UpdateLoss",
-	"SellHolding", "PutSpot", "PutSettings",
+	"Store.InsertItemType", "Store.InsertHolding", "Store.InsertRollTxn", "Store.InsertTrip",
+	"Store.InsertBranch", "Store.InsertSupply", "Store.InsertLoss", "Store.InsertKeeper",
+	"Store.UpdateItemType", "Store.UpdateHolding", "Store.UpdateRollTxn", "Store.UpdateTrip",
+	"Store.UpdateBranch", "Store.UpdateSupply", "Store.UpdateKeeper", "Store.UpdateLoss",
+	"Store.SellHolding", "Store.PutSpot", "Store.PutSettings",
+
+	"Tx.InsertItemType", "Tx.InsertHolding", "Tx.InsertRollTxn", "Tx.InsertTrip",
+	"Tx.InsertBranch", "Tx.InsertSupply", "Tx.InsertLoss", "Tx.InsertKeeper",
+	"Tx.PutSpot", "Tx.PutSettings",
 }
 
 func TestEveryStoreMutationValidates(t *testing.T) {
@@ -50,7 +63,7 @@ func TestEveryStoreMutationValidates(t *testing.T) {
 		t.Fatalf("parse store package: %v", err)
 	}
 
-	validated := map[string]bool{} // mutation name -> calls a validator
+	validated := map[string]bool{} // Receiver.Method -> calls a validator
 	seen := map[string]bool{}
 	for _, pkg := range pkgs {
 		for _, file := range pkg.Files {
@@ -59,13 +72,13 @@ func TestEveryStoreMutationValidates(t *testing.T) {
 				if !ok || fn.Recv == nil || fn.Body == nil {
 					continue
 				}
-				if recvTypeName(fn.Recv) != "Store" {
+				// Deliberately NOT filtered to one receiver type: a mutation on any
+				// receiver is a door into the ledger and must validate.
+				recv := recvTypeName(fn.Recv)
+				if recv == "" || !mutationRE.MatchString(fn.Name.Name) {
 					continue
 				}
-				name := fn.Name.Name
-				if !mutationRE.MatchString(name) {
-					continue
-				}
+				name := recv + "." + fn.Name.Name
 				seen[name] = true
 				validated[name] = bodyCallsValidator(fn.Body)
 			}
@@ -92,6 +105,21 @@ func TestEveryStoreMutationValidates(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("expected store mutation %s was not found by the AST walk — "+
 				"the guard is not covering it (renamed? moved? parse broken?)", want)
+		}
+	}
+
+	// A new mutation on a new receiver is a new door into the ledger. It is caught by
+	// the validation check above, but it must also be DECLARED here, so that adding one
+	// is a deliberate act with a test edit behind it rather than a quiet widening of the
+	// write surface.
+	want := map[string]bool{}
+	for _, name := range expectedMutations {
+		want[name] = true
+	}
+	for name := range seen {
+		if !want[name] {
+			t.Errorf("undeclared store mutation %s — a new writer appeared. Add it to "+
+				"expectedMutations (and make sure it validates).", name)
 		}
 	}
 	if t.Failed() {

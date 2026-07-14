@@ -152,7 +152,7 @@ func (s *Store) UpdateRollTxn(id int64, t model.RollTxn) error {
 	if err := t.Validate(); err != nil {
 		return err
 	}
-	bid, err := s.resolveBranchID(t.Bank)
+	bid, err := resolveBranchID(s.db, t.Bank)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func (s *Store) UpdateTrip(id int64, t model.Trip) error {
 	if err := t.Validate(); err != nil {
 		return err
 	}
-	bid, err := s.resolveBranchID(t.Bank)
+	bid, err := resolveBranchID(s.db, t.Bank)
 	if err != nil {
 		return err
 	}

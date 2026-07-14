@@ -216,7 +216,23 @@ func runMigrate(args []string) error {
 	defer s.Close()
 
 	if err := legacy.Import(s, holdings, crh); err != nil {
-		return err
+		// The import is atomic (om-u3el): a failure wrote NOTHING, so the fix-and-rerun
+		// loop is safe. Say so — and if the file has invalid rows, print EVERY one of
+		// them, each naming its row and its field, so the user fixes the whole file in
+		// one pass instead of rediscovering the next typo on every re-run. This is the
+		// new-user on-ramp; it is the first thing the app ever says to them.
+		var bad *legacy.ImportErrors
+		if errors.As(err, &bad) {
+			fmt.Fprintf(os.Stderr, "%s could not be imported — %d row(s) need fixing:\n\n",
+				*holdingsPath+" / "+*crhPath, len(bad.Rows))
+			for _, r := range bad.Rows {
+				fmt.Fprintf(os.Stderr, "  %s\n      %s\n", r.Where, r.Err)
+			}
+			fmt.Fprintf(os.Stderr, "\nNothing was written to %s. Fix the rows above and run it again —\n"+
+				"a failed import changes nothing, so re-running cannot duplicate anything.\n", *dbPath)
+			return fmt.Errorf("%d invalid row(s); nothing was written", len(bad.Rows))
+		}
+		return fmt.Errorf("%w (nothing was written to %s — the import is atomic)", err, *dbPath)
 	}
 
 	// Report a quick summary so the user sees it worked.
