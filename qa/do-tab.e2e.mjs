@@ -567,15 +567,16 @@ try {
   const supplyRows = () => page.locator(supplyRowSel)
   const supplyItems = async () => (await api('/supplies')).map((s) => s.item)
   // The grid renders values into <input>s, so a row is found by input VALUE, not text.
-  const trashFor = async (item) =>
-    supplyRows()
-      .nth(
-        await supplyRows().evaluateAll(
-          (rows, it) => rows.findIndex((r) => [...r.querySelectorAll('input')].some((i) => i.value === it)),
-          item,
-        ),
-      )
-      .locator('button[title="Delete row"]')
+  const trashFor = async (item) => {
+    const idx = await supplyRows().evaluateAll(
+      (rows, it) => rows.findIndex((r) => [...r.querySelectorAll('input')].some((i) => i.value === it)),
+      item,
+    )
+    // findIndex → -1 on a miss, and Playwright's .nth(-1) selects the LAST row instead
+    // of erroring — so a lookup miss would silently click the wrong row's trash. Fail loud.
+    if (idx < 0) throw new Error(`trashFor: no supply row with an input value === ${JSON.stringify(item)}`)
+    return supplyRows().nth(idx).locator('button[title="Delete row"]')
+  }
   const confirmDlg = page.getByRole('dialog')
   const cancelBtn = () => confirmDlg.getByRole('button', { name: 'Cancel', exact: true })
   const awaitRowCount = (n) =>
@@ -587,6 +588,11 @@ try {
       )
       .catch(() => {}) // let the ok() below report the miss, with numbers
 
+  // Wait for the async GET /api/supplies to populate the grid BEFORE counting — the
+  // `thead th` we waited on renders before load() resolves, so a bare count here would
+  // race the fetch and could read 0 (the flake class tracked in om-yd1h). We seeded
+  // exactly two rows into this otherwise-untouched grid, so 2 is the settled count.
+  await awaitRowCount(2)
   const rowsBefore = await supplyRows().count()
   ok('fixture: both QA supply rows are in the grid',
     rowsBefore === 2 && (await supplyItems()).includes(SUPPLY_GONE), `${rowsBefore} row(s)`)
@@ -600,9 +606,25 @@ try {
     dialogText.includes(SUPPLY_GONE) && dialogText.includes('$13.37') && !dialogText.includes(SUPPLY_KEPT),
     JSON.stringify(dialogText))
 
-  // --- Cancel KEEPS the row ---
+  // Default focus is on Cancel — asserted BEFORE any Tab moves it (a stray Enter, the
+  // key already under your finger in a grid you commit cells with, then cancels).
   ok('Cancel is the default-focused control (so a stray Enter cancels, not deletes)',
     await cancelBtn().evaluate((el) => el === document.activeElement))
+
+  // --- Focus is trapped: aria-modal is a promise the keyboard must keep ---
+  // Tab from Cancel (Cancel → Delete → wrap back to Cancel). Without the trap, the
+  // second Tab would walk out into the live grid — onto another row's trash button or
+  // a hidden input whose blur fires a write behind the "modal".
+  const inDialog = () =>
+    confirmDlg.evaluate((el) => el.contains(document.activeElement) && document.activeElement.tagName === 'BUTTON')
+  await page.keyboard.press('Tab')
+  ok('Tab keeps focus inside the dialog (1st)', await inDialog())
+  await page.keyboard.press('Tab')
+  ok('Tab wraps within the dialog rather than escaping to the grid (2nd)', await inDialog())
+  await page.keyboard.press('Shift+Tab')
+  ok('Shift+Tab also stays inside the dialog', await inDialog())
+
+  // --- Cancel KEEPS the row ---
   await cancelBtn().click()
   await confirmDlg.waitFor({ state: 'detached', timeout: 5000 })
   ok('Cancel keeps the row (grid)', (await supplyRows().count()) === rowsBefore)
@@ -615,6 +637,10 @@ try {
   await confirmDlg.waitFor({ state: 'detached', timeout: 5000 })
   ok('Escape keeps the row',
     (await supplyRows().count()) === rowsBefore && (await supplyItems()).includes(SUPPLY_GONE))
+  // Closing returns focus to the trash button that opened it — not <body> — so the
+  // keyboard user resumes where they were.
+  ok('closing restores focus to the trash button that opened the dialog',
+    await page.evaluate(() => document.activeElement?.getAttribute('title') === 'Delete row'))
 
   // --- Confirm REMOVES it — from the grid AND from the database ---
   await (await trashFor(SUPPLY_GONE)).click()
