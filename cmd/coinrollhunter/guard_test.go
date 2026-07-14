@@ -57,6 +57,17 @@ func TestCrossOriginSimplePostCannotQuitOrSell(t *testing.T) {
 		t.Errorf("the lot was SOLD by a cross-origin request (disposed=%q, disposed_usd=%v)", got.Disposed, got.DisposedUSD)
 	}
 
+	// 2b. The userinfo dodge, end-to-end through the shipped handler: "localhost" is the
+	// USERNAME, evil.example is the host. It must NOT sell the lot. This pins the bypass
+	// closed against a future "simplify" of the origin check to a substring match.
+	rec = attack(h, "POST", fmt.Sprintf("/api/lots/%d/sell", lotID), "http://localhost@evil.example", sale)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("userinfo-disguised cross-origin sell → %d, want 403", rec.Code)
+	}
+	if got := holding(t, s, lotID); got.Disposed != "" {
+		t.Errorf("a userinfo-disguised origin (localhost@evil.example) SOLD the lot (disposed=%q)", got.Disposed)
+	}
+
 	// The server is still serving — the point of the quit check is the process, not
 	// the status code.
 	if rec := attack(h, "GET", "/api/health", "", ""); rec.Code != http.StatusOK {

@@ -158,8 +158,7 @@ func hostnameOf(hostport string) string {
 	if err != nil {
 		h = strings.Trim(hostport, "[]") // no port
 	}
-	// A trailing dot is a legal absolute FQDN ("localhost.") and resolves the same.
-	return strings.TrimSuffix(h, ".")
+	return h
 }
 
 // isLoopback reports whether h names this machine — 127.0.0.0/8, ::1, or the literal
@@ -168,7 +167,14 @@ func hostnameOf(hostport string) string {
 // Nothing else, on purpose. A name like "localtest.me" resolves to 127.0.0.1 and would
 // happily serve as a rebinding vector; the point of the check is the NAME the request
 // carried, not where DNS says it points today.
+//
+// The trailing-dot normalization lives here, not in hostnameOf, so BOTH callers agree:
+// hostAllowed reaches us through hostnameOf, but originAllowed passes url.Hostname()
+// straight in, and url.Hostname() does NOT strip the dot. Without this, a page loaded via
+// "http://localhost.:8787" would be served (Host ok) but its own fetches would 403
+// (Origin mismatch). A trailing dot is a legal absolute FQDN and resolves the same.
 func isLoopback(h string) bool {
+	h = strings.TrimSuffix(h, ".")
 	if ip := net.ParseIP(h); ip != nil {
 		return ip.IsLoopback()
 	}

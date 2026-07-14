@@ -30,6 +30,16 @@ func TestGuardLoopbackOnly(t *testing.T) {
 		{"localhost host and origin", "GET", "/api/health", "localhost:8787", "http://localhost:8787", http.StatusOK},
 		{"ipv6 loopback", "GET", "/api/health", "[::1]:8787", "http://[::1]:8787", http.StatusOK},
 		{"127.0.0.2 is still loopback", "GET", "/api/health", "127.0.0.2:8787", "http://127.0.0.2:8787", http.StatusOK},
+		// The loopback match is case-insensitive: a browser is free to send LOCALHOST.
+		{"uppercased localhost", "GET", "/api/health", "LOCALHOST:8787", "http://LOCALHOST:8787", http.StatusOK},
+		// An IPv4-mapped IPv6 literal is still 127.0.0.1 — IsLoopback sees through it.
+		{"ipv4-mapped ipv6 loopback", "GET", "/api/health", "[::ffff:127.0.0.1]:8787", "http://[::ffff:127.0.0.1]:8787", http.StatusOK},
+		// F1 regression: a trailing FQDN dot is legal and resolves the same, and the Host
+		// and Origin paths MUST agree on it. url.Hostname() does not strip the dot, so
+		// before the fix "http://localhost.:8787" 403'd while "localhost.:8787" as a Host
+		// was allowed — a page loaded via localhost. worked but its own fetches failed.
+		{"trailing-dot FQDN on both", "GET", "/api/health", "localhost.:8787", "http://localhost.:8787", http.StatusOK},
+		{"trailing-dot FQDN origin only", "POST", "/api/spot", "127.0.0.1:8787", "http://localhost.:8787", http.StatusOK},
 
 		// --- the port is NOT pinned ---------------------------------------------
 		// The ephemeral-port fallback (launch.go) and `serve --addr :NNNN` both move it,
@@ -52,6 +62,15 @@ func TestGuardLoopbackOnly(t *testing.T) {
 		{"a suffix that only looks loopback", "POST", "/api/quit", "127.0.0.1:8787", "http://localhost.evil.example", http.StatusForbidden},
 		{"an ip-shaped prefix that only looks loopback", "POST", "/api/quit", "127.0.0.1:8787", "http://127.0.0.1.evil.example", http.StatusForbidden},
 		{"a public name that resolves to loopback", "POST", "/api/quit", "127.0.0.1:8787", "http://localtest.me:8787", http.StatusForbidden},
+		// THE userinfo bypass: "localhost" here is the USERNAME, the host is evil.example.
+		// url.Hostname() correctly returns evil.example — but nothing pinned it, so a later
+		// "simplify" to strings.Contains(origin,"localhost") or HasSuffix would pass the
+		// whole existing suite while letting this through. This row is the tripwire.
+		{"userinfo: localhost is the username, not the host", "POST", "/api/quit", "127.0.0.1:8787", "http://localhost@evil.example", http.StatusForbidden},
+		{"userinfo on sell too", "POST", "/api/lots/1/sell", "127.0.0.1:8787", "http://127.0.0.1@evil.example", http.StatusForbidden},
+		// An integer/short-form IP is not parseable as an IP by net.ParseIP, so it falls
+		// through to the literal-"localhost" name check and is rejected — it is not our page.
+		{"integer-encoded ip 127.1", "POST", "/api/quit", "127.0.0.1:8787", "http://127.1", http.StatusForbidden},
 
 		// --- DNS rebinding: the Host is the attacker's name, and there is no Origin
 		// at all because by then the page is "same-origin" with us. GETs included —
