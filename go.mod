@@ -2,6 +2,8 @@ module github.com/tompscanlan/coinrollhunter
 
 go 1.26.4
 
+toolchain go1.26.5
+
 require (
 	github.com/mattn/go-isatty v0.0.20
 	modernc.org/sqlite v1.53.0
