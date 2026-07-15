@@ -37,11 +37,15 @@ var mutationRE = regexp.MustCompile(`^(Insert|Update|Put|Sell)[A-Z]`)
 // rather than removing a method from the guard.
 var validateAllowlist = map[string]string{}
 
-// expectedMutations is the mutation set as of om-u3el, keyed Receiver.Method: the 19
-// on *Store (8 inserts + 8 updates + SellHolding + PutSpot + PutSettings) and the 10
-// on the transaction-bound *Tx (the 8 inserts + PutSpot + PutSettings). The guard
-// asserts it actually saw all of them, so a broken parse can't pass the test
-// vacuously — and so that dropping or renaming one is a failure, not a silent gap.
+// expectedMutations is the mutation set, keyed Receiver.Method: the 19 on *Store (8
+// inserts + 8 updates + SellHolding + PutSpot + PutSettings) and the 12 on the
+// transaction-bound *Tx (the 8 inserts + PutSpot + PutSettings + UpdateItemType +
+// UpdateHolding). The two *Tx updates were added by om-2sl6 so the compound
+// holdings-with-type workflow can find-or-create-then-update a catalog row and
+// merge-update a holding inside one transaction (compound.go) — twins that validate in
+// their own body, exactly as om-u3el's note prescribes. The guard asserts it actually
+// saw all of them, so a broken parse can't pass the test vacuously — and so that
+// dropping or renaming one is a failure, not a silent gap.
 var expectedMutations = []string{
 	"Store.InsertItemType", "Store.InsertHolding", "Store.InsertRollTxn", "Store.InsertTrip",
 	"Store.InsertBranch", "Store.InsertSupply", "Store.InsertLoss", "Store.InsertKeeper",
@@ -51,7 +55,7 @@ var expectedMutations = []string{
 
 	"Tx.InsertItemType", "Tx.InsertHolding", "Tx.InsertRollTxn", "Tx.InsertTrip",
 	"Tx.InsertBranch", "Tx.InsertSupply", "Tx.InsertLoss", "Tx.InsertKeeper",
-	"Tx.PutSpot", "Tx.PutSettings",
+	"Tx.PutSpot", "Tx.PutSettings", "Tx.UpdateItemType", "Tx.UpdateHolding",
 }
 
 func TestEveryStoreMutationValidates(t *testing.T) {

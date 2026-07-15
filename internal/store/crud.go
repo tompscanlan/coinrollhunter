@@ -57,7 +57,21 @@ func (s *Store) UpdateItemType(id int64, t model.ItemType) error {
 	if err := t.Validate(); err != nil {
 		return err
 	}
-	res, err := s.db.Exec(
+	return updateItemType(s.db, id, t)
+}
+
+// UpdateItemType updates a catalog row inside the transaction — the find-or-create
+// drift refresh the holdings-with-type workflow performs (om-2sl6). See
+// *Store.UpdateItemType.
+func (tx *Tx) UpdateItemType(id int64, t model.ItemType) error {
+	if err := t.Validate(); err != nil {
+		return err
+	}
+	return updateItemType(tx.db, id, t)
+}
+
+func updateItemType(x execer, id int64, t model.ItemType) error {
+	res, err := x.Exec(
 		`UPDATE item_type SET kind=?, name=?, metal=?, fine_oz_each=?, fineness=?, year=?, mint=?, mintmark=?, refs=? WHERE id=?`,
 		t.Kind, t.Name, t.Metal, t.FineOzEach, t.Fineness, t.Year, t.Mint, t.Mintmark, t.References, id)
 	return affected(res, err, "update item_type")
@@ -109,6 +123,21 @@ func (s *Store) UpdateHolding(id int64, h model.Holding) error {
 	if err := h.Validate(); err != nil {
 		return err
 	}
+	return updateHolding(s.db, id, h)
+}
+
+// UpdateHolding updates a specimen row inside the transaction — the merge target of the
+// holdings-with-type workflow's Edit-grid update (om-2sl6), which find-or-creates the
+// item_type and writes the merged holding in ONE transaction. It shares the F1
+// orphan-preservation logic with *Store.UpdateHolding through the updateHolding helper.
+func (tx *Tx) UpdateHolding(id int64, h model.Holding) error {
+	if err := h.Validate(); err != nil {
+		return err
+	}
+	return updateHolding(tx.db, id, h)
+}
+
+func updateHolding(x execer, id int64, h model.Holding) error {
 	// F1 (om-c8ei): a blank box link on the wire (RollTxnID 0) PRESERVES the stored
 	// roll_txn_uid rather than re-resolving 0 -> NULL. This is the orphan case — a find
 	// whose box was deleted reads back RollTxnID 0, and an unrelated edit must not erase
@@ -116,11 +145,11 @@ func (s *Store) UpdateHolding(id int64, h model.Holding) error {
 	// NONZERO id still resolves (D3: unknown -> NULL). See the CLAUDE.md F1 note: a true
 	// "clear the box link" also arrives as 0, so it is no longer expressible — out of scope.
 	keep := h.RollTxnID == 0
-	ruid, err := rollTxnUID(s.db, h.RollTxnID) // id->uid; nil when keep (unused by the CASE)
+	ruid, err := rollTxnUID(x, h.RollTxnID) // id->uid; nil when keep (unused by the CASE)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(
+	res, err := x.Exec(
 		`UPDATE lots SET item_type_id=?, roll_txn_uid = CASE WHEN ?=1 THEN roll_txn_uid ELSE ? END, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
 		   basis_usd=?, premium_usd=?, face_value_usd=?, acquired=?, source=?, location=?,
 		   insured_value=?, attributes=?, notes=?, category=?, subcategory=?, trophy=?, kept=?, disposed=?, disposed_usd=? WHERE id=?`,

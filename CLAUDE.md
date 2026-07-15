@@ -412,4 +412,49 @@ clad-only; a kept notable find is one flagged find, and the submission can no lo
 for a coin it just logged as a find (pinned in `qa/do-tab.e2e.mjs`, AC2). ADR-008's §Alternatives
 rejection of a keeper↔lot dedupe is **vindicated, not overturned** — we do not dedupe.
 
+Added 2026-07-14 (compound workflows are atomic, om-2sl6): every user-visible "action"
+in the Do tab used to be a **sequence of independent POSTs from the browser**, with no
+transaction spanning them — "Bought a box" (roll_txn + optional trip), "Logged finds"
+(roll_txn + N×(item_type + lot) + M×keeper), and every catalog+holding write (NewBullion,
+Reconcile.addFind, AND the Edit-tab Holdings grid on every row create/update). A failure
+after the first left the ledger **half-written with no undo**, and the user's natural
+response — re-press the still-populated form — **duplicated** the part that succeeded (a box
+you paid for once, entered twice). This is a partial-failure bug, not a concurrency one, so
+"single-user app" is no defense. The fix **moves the seam**: one endpoint per compound
+action, one transaction inside it, copying the `SellHolding`/`MergeBranches` idiom the
+codebase already trusted. **New composite store methods** live in `internal/store/compound.go`
+— `RecordPurchase`, `RecordFinds`, `RecordHolding`, `ReviseHolding` — each opening ONE
+`Store.WithTx` and composing the tx-bound, self-validating mutations om-u3el already built
+(`Tx.Insert*`), so a failure at ANY step rolls back everything. They are named Record*/Revise*
+(not Insert*/Update*) on purpose: they are **orchestrators, not leaf writers** — every actual
+write still funnels through a guarded `Tx` twin that validates in its own body, so the
+compound is a lock around existing doors, not a new one, and the AST chokepoint guard
+(`validate_ast_test.go`) stays honest. **This USED om-u3el's execer/`WithTx` surface rather
+than rebuilding it** — the DECISION the stale contract asked for ("thread an execer through
+the Insert\* funcs") was already done; branch resolution (`resolveBranchUID`) already takes an
+execer, so it runs **inside** the compound tx and a rolled-back box leaves **no orphan bank
+branch** (the 18:47 seam-f pitfall — proven by counting `branches` before/after, not just
+asserting a 400). Two new `Tx` twins were added the way om-u3el's note prescribes
+(`Tx.UpdateItemType`, `Tx.UpdateHolding`, each validating + declared in `expectedMutations`)
+so the holdings-with-type UPDATE can find-or-create-then-refresh a catalog row and
+**merge-update** a holding in one tx: the merge is the om-kyq7 guarantee (`decode` the body
+ONTO the row read *inside* the tx, so a column the client never names — notes/insured_value/
+attributes/the disposal — cannot be blanked). The endpoints are **hand-written under
+`/api/workflows/*`** (`internal/api/workflows.go`), added to `Handler()` beside the two other
+hand-written handlers; `register()` and every **granular route stay untouched** (the Edit
+grids, `/api/export`, om-1czp and the e2e suite still ride them — AC#3). `decode[T]` uses
+`DisallowUnknownFields`, so the composite request shape matches the client JSON exactly, with
+the holding carried as a nested object so it can be decoded onto a fresh row (create) or the
+stored row (merge). The **client stopped chaining**: `BoughtABox`/`LoggedFinds` issue exactly
+one `fetch`, and `grids.svelte.ts`'s `holdingsGrid.create/update` (the old client-side
+`ensureItemType` + separate lots write, which NewBullion/Reconcile also funnel through) is now
+ONE atomic call — killing the second, non-atomic write path into the same tables. **No
+idempotency key** (there is no auto-retry in `api.ts`; atomicity alone makes a human re-press
+safe), **no migration** (adds no columns). Note the **`*Store` auto-commit inserts stay
+single-statement on `s.db`** (unchanged): the demo seeder wraps ~2k inserts in its own ambient
+`BEGIN` and the poller writes bare, so wrapping `InsertRollTxn`/`InsertTrip` in their own tx
+would fire "cannot start a transaction within a transaction" — seam f is closed where a box is
+actually *rolled back*, which is only ever inside a compound workflow. `qa/do-tab.e2e.mjs`
+passes **unmodified** — the proof the UX did not change.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.

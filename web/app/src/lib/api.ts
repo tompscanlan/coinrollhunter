@@ -62,6 +62,21 @@ function crud<T extends { id: number }>(name: string): Crud<T> {
   }
 }
 
+/** The catalog half of a holdings-with-type write: the fields that find-or-create the
+    item_type a holding points at. item_type_id is resolved server-side from these. */
+export interface HoldingCatalog {
+  product: string
+  metal: string
+  fineness: string
+  fine_oz_each: number
+}
+
+/** The holding half of a holdings-with-type write — the columns the Holdings grid
+    models, WITHOUT item_type_id (the server resolves it from the catalog). On UPDATE
+    this is a MERGE, exactly like the granular PUT /api/lots/{id}: a field not named here
+    is preserved (notes/insured_value/attributes/the disposal — om-kyq7). */
+export type WorkflowHolding = Partial<Omit<Holding, 'id' | 'uid' | 'item_type_id'>>
+
 export const api = {
   summary: () => req<Report>('GET', '/summary'),
   // hit-rate report: the "1 per face $" view per denom × category × source (ADR-006)
@@ -94,6 +109,50 @@ export const api = {
   supplies: crud<Supply>('supplies'),
   keepers: crud<Keeper>('keepers'),
   losses: crud<Loss>('losses'),
+  // --- Compound workflow endpoints (/api/workflows/*, om-2sl6) -----------------
+  // Each Do-tab action is ONE request to ONE endpoint wrapping ONE store transaction,
+  // so a mid-sequence failure can no longer half-record the action — and because
+  // nothing lands on failure, a human re-press of the still-populated form is safe (no
+  // idempotency key). The granular crud() endpoints above stay: the Edit grids, export
+  // and the e2e suite still use them.
+  workflows: {
+    // "Bought a box": a roll_txn buy plus an optional bank trip. trip is null when the
+    // user did not log one.
+    boughtABox: (body: {
+      purchase: Omit<RollTxn, 'id' | 'uid' | 'branch_id'>
+      trip: Omit<Trip, 'id' | 'branch_id'> | null
+    }) => req<{ roll_txn_id: number; trip_id: number }>('POST', '/workflows/bought-a-box', body),
+    // "Logged finds": an optional box (existing or created inline), N CRH finds (each
+    // find-or-creating its item_type server-side) and M clad keepers — all attributed to
+    // the box, all in one transaction. The box link for every find/keeper is resolved on
+    // the server, so the rows carry no from_box of their own.
+    loggedFinds: (body: {
+      box: { existing_id: number } | { new: Omit<RollTxn, 'id' | 'uid' | 'branch_id'> } | null
+      finds: {
+        product: string
+        metal: string
+        fineness: string
+        fine_oz_each: number
+        qty: number
+        basis_usd: number
+        premium_usd: number
+        face_value_usd: number
+        acquired: string
+        source: string
+        kept: boolean
+      }[]
+      keepers: { denom: string; count: number; face_usd: number; date: string }[]
+    }) => req<void>('POST', '/workflows/logged-finds', body),
+  },
+  // Holdings grid create/update as ONE atomic request: find-or-create the item_type and
+  // write the holding in a single store transaction (replaces the client-side
+  // ensureItemType + a separate lots write). create returns the new id; update is a merge.
+  holdingWithType: {
+    create: async (catalog: HoldingCatalog, holding: WorkflowHolding) =>
+      (await req<{ id: number }>('POST', '/workflows/holdings-with-type', { catalog, holding })).id,
+    update: (id: number, catalog: HoldingCatalog, holding: WorkflowHolding) =>
+      req<{ id: number }>('PUT', `/workflows/holdings-with-type/${id}`, { catalog, holding }).then(() => {}),
+  },
   // Stop the local server. The double-clicked app has no console, so this is the
   // only way to quit it short of Task Manager (om-9p0l).
   quit: () => req<void>('POST', '/quit'),

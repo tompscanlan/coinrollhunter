@@ -15,7 +15,7 @@ import {
   FIND_SUBCATEGORIES,
 } from './presets'
 import type { GridColumn } from './components/EditableGrid.svelte'
-import type { ItemType, Holding, RollTxn, Trip, Branch, Supply, Keeper, Loss } from './types'
+import type { ItemType, RollTxn, Trip, Branch, Supply, Keeper, Loss } from './types'
 
 // --- Autocomplete caches -----------------------------------------------------
 // Refreshed by each grid's load(); the column suggestion/autofill closures read
@@ -126,7 +126,7 @@ export interface GridConfig<T extends { id: number }> {
 
 /** The flat row the spreadsheet edits — joins a holding to its item type.
     The CRH find taxonomy (category/subcategory/trophy, ADR-006) is optional so
-    bullion callers (NewBullion) can omit it; toHolding coerces the defaults. */
+    bullion callers (NewBullion) can omit it; holdingFields coerces the defaults. */
 export interface FlatHolding {
   id: number
   activity: 'bullion' | 'crh'
@@ -152,8 +152,8 @@ export interface FlatHolding {
   // The sale, surfaced read-only (om-5k35). A sold lot used to look exactly like
   // one you still own, so you could edit a completed sale without knowing — and
   // silently move the cost basis under a realized gain you had already booked.
-  // Read-only here on purpose: `toHolding` never names these, so the PUT merge
-  // leaves the disposal untouched, and selling stays the job of the Sell action.
+  // Read-only here on purpose: `holdingFields` never names these, so the workflow
+  // merge leaves the disposal untouched, and selling stays the job of the Sell action.
   disposed?: string
   disposed_usd?: number
 }
@@ -163,62 +163,31 @@ export const isSold = (h: Pick<FlatHolding, 'disposed'>) => !!h.disposed
 
 const norm = (s: string) => (s ?? '').trim().toLowerCase()
 
-/** Find an item_type matching name+metal+fineness, else create one. Updates the
-    catalog's fine_oz_each if it drifted. Returns the type id. */
-async function ensureItemType(row: Omit<FlatHolding, 'id'>): Promise<number> {
-  const types = await api.itemTypes.list()
-  const match = types.find(
-    (t) =>
-      norm(t.name) === norm(row.product) &&
-      norm(t.metal) === norm(row.metal) &&
-      norm(t.fineness) === norm(row.fineness),
-  )
-  if (match) {
-    if (Math.abs((match.fine_oz_each ?? 0) - (row.fine_oz_each ?? 0)) > 1e-9) {
-      await api.itemTypes.update(match.id, { ...match, fine_oz_each: row.fine_oz_each } as Omit<ItemType, 'id'>)
-    }
-    return match.id
-  }
-  const kind = row.activity === 'crh' ? 'junk' : 'coin'
-  return api.itemTypes.create({
-    kind,
-    name: row.product || 'Unnamed',
-    metal: row.metal,
-    fine_oz_each: row.fine_oz_each,
-    fineness: row.fineness,
-  } as Omit<ItemType, 'id'>)
-}
+// The item_type find-or-create that used to live here (ensureItemType) moved
+// SERVER-SIDE (om-2sl6): create/update now issue ONE atomic request to
+// /api/workflows/holdings-with-type, which find-or-creates the catalog row and writes
+// the holding in ONE store transaction. A failure can no longer leave an orphan catalog
+// entry with no lot, and the client no longer chains GET-then-POST/PUT-then-POST.
 
-/** Exactly the lot columns the Holdings grid models — and no others.
+/** The catalog half of a holdings-with-type write — product/metal/fineness/fine-oz
+    identify (find-or-create) the item_type; item_type_id is resolved on the server. */
+const catalogOf = (row: Omit<FlatHolding, 'id'>) => ({
+  product: row.product,
+  metal: row.metal,
+  fineness: row.fineness,
+  fine_oz_each: Number(row.fine_oz_each) || 0,
+})
+
+/** Exactly the lot columns the Holdings grid models, WITHOUT item_type_id (the server
+    resolves that from the catalog in the same transaction).
 
     A lot has fields this grid has never shown: notes (which the spreadsheet import
     fills), insured_value, attributes, and the disposal record written by a sale. They
-    are absent here on purpose. PUT is a merge, so a column we do not name is a column
-    we do not touch; naming one we cannot edit is how it would get blanked. */
-type GridHolding = Pick<
-  Holding,
-  | 'item_type_id'
-  | 'roll_txn_id'
-  | 'activity'
-  | 'qty'
-  | 'gross_weight'
-  | 'purity'
-  | 'weight_unit'
-  | 'basis_usd'
-  | 'premium_usd'
-  | 'face_value_usd'
-  | 'acquired'
-  | 'source'
-  | 'location'
-  | 'category'
-  | 'subcategory'
-  | 'trophy'
-  | 'kept'
->
-
-function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): GridHolding {
+    are absent here on purpose. The workflow UPDATE is a merge, so a column we do not
+    name is a column we do not touch; naming one we cannot edit is how it would get
+    blanked (om-kyq7). */
+function holdingFields(row: Omit<FlatHolding, 'id'>) {
   return {
-    item_type_id,
     roll_txn_id: Number(row.from_box) || 0,
     activity: row.activity,
     qty: Number(row.qty) || 0,
@@ -364,16 +333,13 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
       } satisfies FlatHolding
     })
   },
-  create: async (row) => {
-    const tid = await ensureItemType(row)
-    // A brand-new lot starts with no notes; POST has no row to merge onto, so unlike
+  // Create + update are ONE atomic request each (om-2sl6): the server find-or-creates the
+  // item_type and writes the holding in one transaction.
+  create: (row) =>
+    // A brand-new lot starts with no notes; the create has no row to merge onto, so unlike
     // update() it must say so.
-    return api.holdings.create({ ...toHolding(row, tid), notes: '' })
-  },
-  update: async (id, row) => {
-    const tid = await ensureItemType(row)
-    await api.holdings.update(id, toHolding(row, tid))
-  },
+    api.holdingWithType.create(catalogOf(row), { ...holdingFields(row), notes: '' }),
+  update: (id, row) => api.holdingWithType.update(id, catalogOf(row), holdingFields(row)),
   remove: (id) => api.holdings.remove(id),
   blank: () => ({
     activity: 'bullion',
