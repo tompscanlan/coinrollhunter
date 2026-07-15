@@ -335,6 +335,56 @@ Three consequences worth writing down, because they were not obvious:
   photos). Two different promises — *"restore my app"* and *"leave with my data"* — so there
   is no `crh.db` inside the bundle.
 
+### (f) Photos at runtime: ingest, derivatives, delete, backup, transport (bead `om-6hlp`)
+
+(a)–(e) fixed the *identity* of a photo (the `uid`, the path, the table, the export shape).
+This is how the bytes actually move — the four things a future reader will ask "why?" about.
+Decision (k) said amend this ADR rather than open ADR-013; here it is.
+
+- **Ingest — keep the raw original AND generate derivatives, server-side.** One `photos`
+  row per photo, and that row **is the immutable original**, stored verbatim at
+  `photos/<owner_uid>/<uid>.<ext>`. Thumb + display **derivatives** are a **regenerable
+  cache** in a *separate* sibling tree `photos-cache/<owner_uid>/<uid>-{thumb,display}.jpg`
+  — gitignored, generated at ingest, lazily rebuilt from the original on a serve-time miss,
+  and in **neither** the backup **nor** the export bundle (both carry originals only, because
+  a derivative is by definition reproducible). This reversed the scout's client-side-resize
+  sketch: the server now **decodes untrusted image bytes**. Acceptable because `image/jpeg`
+  + `image/png` are stdlib and `golang.org/x/image/{webp,draw}` is pure Go — one dependency,
+  **no CGO**, the win/mac cross-compile (om-9p0l) intact.
+- **The decode guard is an acceptance criterion, not a nicety.** Because the server now
+  decodes attacker-influenceable bytes, `image.DecodeConfig` reads the dimensions from the
+  header and refuses an absurd size **before** any full decode allocates a pixel buffer
+  (a decompression bomb). The type comes from a **magic-byte sniff** (`http.DetectContentType`),
+  never the client's filename — `ext` is a path segment and must not be user-controlled text.
+  The upload body is capped at 10 MB with a real `http.MaxBytesReader`, not advice.
+- **EXIF: one global setting, strip-at-ingest, default KEEP.** Off by default so the archive
+  stays complete and camera data is never destroyed without the user asking; on, a **newly**
+  imported original has its EXIF removed. Future imports only — a toggle never rewrites an
+  already-stored original. Accepted residual risk: no strip-on-export, so an export ships
+  whatever EXIF (incl. phone GPS) the originals carry; the export UI says so plainly.
+- **Delete is SOFT (migration 0013, an `inactive` flag), the file stays on disk.** A photo is
+  the least reproducible data in the app and a file delete has no undo, so "delete" flags the
+  row `inactive=1` and keeps the bytes. The gallery hides it; export still carries it (row +
+  file) with the flag as a column. Deleting a **lot** soft-flags its photos the same way
+  (they have no FK to `lots`, so a bare delete would leave them dangling *active* against a
+  recyclable `owner_uid`). A moved-file trash was rejected: it would point every row at
+  nothing.
+- **Backup is now a restorable DIRECTORY bundle (db + originals).** The moment photos were
+  files, `backup DEST.db`'s "complete, self-contained database" claim became false. `backup`
+  now writes a directory holding `crh.db` **and** the `photos/` originals; `backup DEST.db`
+  (the old single-file form) is a **hard error**, taken deliberately — nobody silently
+  receives a backup missing their pictures. The derivative cache is excluded (regenerable).
+- **Transport — multipart upload IN, a DB-lookup serve route OUT.** `POST /api/photos`
+  (multipart, streams, gets the byte cap for free). `GET /api/photos/{uid}/file` validates
+  the `uid` against the DB **before** it builds any path — a whitelist, not a sanitizer, so
+  path traversal is structurally impossible and a miss is a plain 404, never a fall-through to
+  the SPA's `index.html`-with-200. Consequence accepted: `api.Handler` learns the photos +
+  cache dirs.
+- **Partial sale: photos stay with the RETAINED lot.** `SellHolding` carves the sold portion
+  into a new lot with a new `uid`, born photo-less; the retained lot keeps its `uid` and its
+  photos. No code needed — noted here so the next reader knows it was a choice, not an
+  oversight. Copying files onto the sold lot would silently double disk for an ambiguous gain.
+
 ## Consequences
 
 - **+** A photo can never silently re-attach to the wrong coin. The identifier outlives

@@ -457,4 +457,32 @@ would fire "cannot start a transaction within a transaction" — seam f is close
 actually *rolled back*, which is only ever inside a compound workflow. `qa/do-tab.e2e.mjs`
 passes **unmodified** — the proof the UX did not change.
 
+Added 2026-07-14 (photos are local files with a regenerable cache, om-6hlp): a lot can carry
+**N photos**, keyed by the stable `lots.uid` (never the recyclable rowid — the whole reason
+ADR-009 exists). The **original is the immutable source of truth** at
+`photos/<owner_uid>/<photo_uid>.<ext>`; **thumb+display derivatives are a regenerable cache** in
+a *separate* sibling `photos-cache/` (gitignored, generated at ingest, lazily rebuilt on a
+serve-time miss, in **neither** backup nor export). Both trees live **beside the database**,
+derived via `export.PhotoRoot(export.ResolveDBPath(dbPath))` — REUSE those helpers, don't
+re-derive, or the CLI's relative `crh.db` + symlink traps bite. This is the app's first
+**untrusted-bytes** surface, so the server decodes behind a **decompression-bomb guard**
+(`image.DecodeConfig` dimensions checked BEFORE any full decode; a magic-byte sniff, never the
+filename, picks the `ext`) using `internal/imaging` — pure Go (`image/jpeg`+`image/png` stdlib,
+`golang.org/x/image/{webp,draw}`), **no CGO**, all six cross-compile targets intact. Upload is
+**multipart** with a 10 MB `MaxBytesReader`; the serve route `GET /api/photos/{uid}/file`
+validates the uid against the DB **before** building any path (whitelist → traversal impossible,
+404 on a miss, never spaHandler's HTML-200). Ingest is **file-first**: write the temp original →
+INSERT the row in a `WithTx` → rename temp→final → generate derivatives (best-effort). Invariant:
+**a committed row always has its original on disk**; the only tolerable residue of a failed upload
+is an orphan FILE with no row. Delete is **SOFT** (`photos.inactive`, migration **0013**,
+user_version→13): the row is flagged, the file stays; deleting a **lot** soft-flags its photos
+(no FK to `lots`). `coinrollhunter backup` is now a **restorable DIRECTORY bundle** (db +
+originals); `backup DEST.db` is a **hard error**. EXIF: one Settings key `strip_exif_on_import`,
+default KEEP, future-imports-only. Store side follows the three-form pattern
+(`insertPhoto`/`InsertPhoto`/`Tx.InsertPhoto` + `Update*`/soft-delete twins, each validating in
+its own body + declared in `expectedMutations`). UI: a camera cell on the Holdings grid → a
+**detail drawer** (`CoinDetail.svelte`, SettingsPanel's modal shell) around a shared
+`PhotoGallery.svelte`, plus an image rotation in `TrophyFeed.svelte` (Insights, keyed off the
+existing `lots.trophy` — nothing added to Dashboard, ADR-012 §2). Full rationale: **ADR-009 (f)**.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
