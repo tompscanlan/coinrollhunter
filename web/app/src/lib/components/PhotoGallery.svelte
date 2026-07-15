@@ -1,9 +1,18 @@
 <script lang="ts" module>
   // Roles the picker suggests, scoped by owner kind (open vocabulary — you can type
   // anything, these are just nudges; the server does not enforce them, ADR-009/ADR-006).
+  // 'receipt' is a first-class suggestion for BOTH kinds: a purchase receipt hangs off the
+  // holding (lot) it documents just as naturally as off the box buy (roll_txn) — om-9o4n.1.
   const ROLE_SUGGESTIONS: Record<string, string[]> = {
-    lot: ['obverse', 'reverse', 'detail', 'edge', 'slab-label'],
+    lot: ['obverse', 'reverse', 'detail', 'edge', 'slab-label', 'receipt'],
     roll_txn: ['box-end', 'receipt', 'detail'],
+  }
+
+  // prettyRole renders a role slug ('slab-label') as a human label ('Slab label') for the
+  // upload-time <select>. The stored value stays the slug — this is display only.
+  function prettyRole(r: string): string {
+    const s = r.replace(/-/g, ' ')
+    return s.charAt(0).toUpperCase() + s.slice(1)
   }
 </script>
 
@@ -35,6 +44,11 @@
   let busy = $state(false)
   let pendingDelete = $state<Photo | null>(null)
   let fileInput = $state<HTMLInputElement | null>(null)
+  // The role the NEXT upload is tagged with (om-9o4n.1). Defaults to 'detail' (the server's
+  // own default) so nothing changes for a plain coin photo; pick 'Receipt' to file a receipt
+  // scan without the old upload-then-re-role two-step. Sticky across uploads, so several
+  // receipts in a row stay one click each. Post-upload re-role (the free-text box) is unchanged.
+  let uploadRole = $state('detail')
 
   const selected = $derived(photos.find((p) => p.uid === selectedUid) ?? photos[0] ?? null)
   const roleOptions = $derived(ROLE_SUGGESTIONS[ownerKind] ?? ROLE_SUGGESTIONS.lot)
@@ -63,8 +77,9 @@
     busy = true
     error = ''
     try {
-      // Default role 'detail' server-side; the user re-roles from the strip after.
-      const p = await api.photos.upload(ownerKind, ownerUid, file)
+      // Tag the upload with the picked role (default 'detail') so a receipt is filed as one
+      // at ingest; the user can still re-role from the strip after (om-9o4n.1).
+      const p = await api.photos.upload(ownerKind, ownerUid, file, uploadRole)
       await reload()
       selectedUid = p.uid
       onChanged?.()
@@ -223,7 +238,8 @@
     </div>
   {/if}
 
-  <!-- Upload affordance. A plain file input the browser wraps in multipart. -->
+  <!-- Upload affordance. A plain file input the browser wraps in multipart. The role picker
+       tags the next upload (e.g. as a Receipt) at ingest — om-9o4n.1. -->
   <div>
     <input
       bind:this={fileInput}
@@ -232,10 +248,23 @@
       class="hidden"
       onchange={onPick}
     />
-    <Button variant="secondary" onclick={() => fileInput?.click()} disabled={busy}>
-      <Upload class="size-4" /> {busy ? 'Uploading…' : 'Add a photo'}
-    </Button>
-    <p class="mt-1 text-xs text-muted-foreground">JPEG, PNG or WebP, up to 10 MB. The original is kept; a smaller copy is made for quick viewing.</p>
+    <div class="flex flex-wrap items-center gap-2">
+      <label class="flex items-center gap-1.5 text-xs text-muted-foreground">
+        Add as
+        <select
+          bind:value={uploadRole}
+          disabled={busy}
+          title="What kind of photo this is"
+          class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground focus:border-ring focus:outline-none"
+        >
+          {#each roleOptions as r (r)}<option value={r}>{prettyRole(r)}</option>{/each}
+        </select>
+      </label>
+      <Button variant="secondary" onclick={() => fileInput?.click()} disabled={busy}>
+        <Upload class="size-4" /> {busy ? 'Uploading…' : 'Add a photo'}
+      </Button>
+    </div>
+    <p class="mt-1 text-xs text-muted-foreground">JPEG, PNG or WebP, up to 10 MB — a photo or scan of a receipt works too. The original is kept; a smaller copy is made for quick viewing.</p>
   </div>
 </div>
 
