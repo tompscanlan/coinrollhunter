@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tompscanlan/coinrollhunter/internal/api"
@@ -493,6 +494,11 @@ func TestServePDFOriginalContentTypeAndNosniff(t *testing.T) {
 		}
 		if xo := r.Header.Get("X-Content-Type-Options"); xo != "nosniff" {
 			t.Errorf("variant %q X-Content-Type-Options %q, want nosniff", variant, xo)
+		}
+		// om-rix0: a doc is served as an ATTACHMENT (downloads), never inline — so a
+		// same-origin PDF-viewer bug can't script the unauthenticated local API.
+		if cd := r.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+			t.Errorf("variant %q Content-Disposition %q, want it to start with \"attachment\"", variant, cd)
 		}
 		if !bytes.Equal(body, pdf) {
 			t.Errorf("variant %q served %d bytes, want the exact %d PDF bytes", variant, len(body), len(pdf))

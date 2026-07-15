@@ -335,12 +335,22 @@ func (h *photoHandler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveDoc streams a document attachment's original (a PDF today, om-9o4n.2). Unlike an
-// image it is served with X-Content-Type-Options: nosniff, so the browser HONORS the declared
-// application/pdf and never MIME-sniffs the un-decoded bytes into something it would render or
-// execute — the security crux of accepting a file we deliberately never decode (ADR-009 (f)
-// untrusted-bytes posture). It never touches the derivative path, and reuses the same
-// DB-vouched path assembly (owner_uid + validated uid + ext) as every other serve.
+// serveDoc streams a document attachment's original (a PDF today, om-9o4n.2). It never
+// touches the derivative path, and reuses the same DB-vouched path assembly (owner_uid +
+// validated uid + ext) as every other serve. Two headers make accepting a file we
+// deliberately never decode safe (ADR-009 (f) untrusted-bytes posture):
+//
+//   - X-Content-Type-Options: nosniff — the browser HONORS the declared application/pdf and
+//     never MIME-sniffs the un-decoded bytes into something it would render or execute.
+//   - Content-Disposition: attachment — the PDF DOWNLOADS instead of rendering INLINE
+//     (om-rix0). nosniff does nothing about the browser's OWN PDF viewer: a same-origin
+//     pdf.js-class viewer bug (e.g. CVE-2024-4367, script execution in the viewer context)
+//     would run in THIS origin, and the om-6ex5 loopback guard is inert against same-origin
+//     requests — so one malicious dealer-emailed receipt could reach the unauthenticated
+//     local API. Downloading moves the file out of the app's origin entirely, closing that
+//     vector regardless of any future viewer vuln. The filename is built ONLY from the
+//     regex-validated uid + closed-set ext (never a client-supplied name), and %q escapes it,
+//     so nothing user-controlled can inject into the header.
 func (h *photoHandler) serveDoc(w http.ResponseWriter, r *http.Request, photo model.Photo) {
 	f, err := os.Open(h.originalPath(photo.OwnerUID, photo.UID, photo.Ext))
 	if err != nil {
@@ -355,6 +365,7 @@ func (h *photoHandler) serveDoc(w http.ResponseWriter, r *http.Request, photo mo
 	}
 	w.Header().Set("Content-Type", contentTypeForExt(photo.Ext)) // application/pdf for a doc
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", photo.UID+"."+photo.Ext))
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 }
 

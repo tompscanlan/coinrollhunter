@@ -376,11 +376,12 @@ try {
         pResp.status === 201 && pdfDoc.ext === 'pdf' && pdfDoc.role === 'receipt',
         `status ${pResp.status} ext ${pdfDoc.ext} role ${pdfDoc.role}`)
       const pdfFile = await fetch(`${BASE}/api/photos/${pdfDoc.uid}/file?variant=original`)
-      ok('a PDF original serves as application/pdf with nosniff',
+      ok('a PDF original serves as application/pdf with nosniff + attachment disposition',
         pdfFile.status === 200 &&
           pdfFile.headers.get('content-type') === 'application/pdf' &&
-          pdfFile.headers.get('x-content-type-options') === 'nosniff',
-        `status ${pdfFile.status} ct ${pdfFile.headers.get('content-type')} xcto ${pdfFile.headers.get('x-content-type-options')}`)
+          pdfFile.headers.get('x-content-type-options') === 'nosniff' &&
+          /^attachment/.test(pdfFile.headers.get('content-disposition') || ''),
+        `status ${pdfFile.status} ct ${pdfFile.headers.get('content-type')} xcto ${pdfFile.headers.get('x-content-type-options')} cd ${pdfFile.headers.get('content-disposition')}`)
       const pdfThumb = await fetch(`${BASE}/api/photos/${pdfDoc.uid}/file?variant=thumb`)
       ok('a PDF has no thumbnail — thumb 404s (never a decoded-PDF 500, never HTML)',
         pdfThumb.status === 404 && !/html/i.test(pdfThumb.headers.get('content-type') || ''),
