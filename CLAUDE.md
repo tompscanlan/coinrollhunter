@@ -353,4 +353,27 @@ matching heuristic throws false positives on legitimate data and would silently 
 rows, which is worse). The fix **stops NEW re-adoption; it cannot undo the old.** A doctor
 command that reports the blanked (true-orphan) class is a separate follow-up bead.
 
+Added 2026-07-14 (om-c8ei follow-ups F1/F4, Tom-adjudicated). **F1 — a blank/0 box link on
+`Update*` PRESERVES the stored `*_uid`.** A find whose box was deleted reads back
+`RollTxnID 0` (and a merged-away branch reads back `Bank ""`); before this, editing any
+*other* cell re-resolved that 0/blank to NULL and **erased the dead box's uid** — the exact
+forensic orphan trace export now keeps. So `UpdateHolding`/`UpdateKeeper`/`UpdateRollTxn`/
+`UpdateTrip` now leave the stored uid **unchanged** when the incoming link is blank (integer
+`0`, or an empty bank name), mirroring `SellHolding`; a **nonzero** id still resolves (D3:
+unknown → NULL). Tradeoff Tom accepted: a genuine **"clear the box link"** also arrives as
+`0`, so it is **no longer expressible over the integer wire** and is out of scope (the wire
+carries the resolved integer, and there is no distinct "unset" value). Implemented as a
+one-param `CASE WHEN ?=1 THEN col ELSE ? END` at each update seam; pinned by
+`TestUpdatePreservesOrphaned{Box,Branch}Uid` (fail before, pass after) and D3 is pinned on
+the write path by `TestWriteWithUnknownBoxIsStoredAsNull`. **F4 — the export CSV column
+ORDER changed for the link columns** (accepted + documented, no refactor): `lots.csv`,
+`keepers.csv`, `roll_txns.csv` and `trips.csv` still carry **both** the id and uid link
+columns, but the inversion made the **stored uid** take the slot the integer used to hold and
+**appended the derived integer** after the other derived columns (e.g. `lots.csv` ends
+`… item_type_uid, roll_txn_id` where the uid now sits mid-row). Every other column is
+byte-identical. **Consumers must key by header NAME, not column position** — which the bundle
+already invites (row 1 is the header, and the whole point of the uid columns is name-based
+joins). The set-based coverage guard (`TestBundleCoversEveryColumn`) and the orphan-export
+shape (`TestUIDLeadsAndForeignKeysResolveToUIDs`, which now seeds a real orphan) pin this.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
