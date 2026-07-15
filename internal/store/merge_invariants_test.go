@@ -46,7 +46,7 @@ func TestHoldingRoundTripsEveryColumnItWrites(t *testing.T) {
 		Acquired: "2026-02-02", Source: "estate sale", Location: "safe deposit box 214",
 		InsuredValue: 3100, Attributes: `{"grade":"MS65","cert":"12345678"}`,
 		Notes:    "grandfather's; do not sell",
-		Category: "Silver", Subcategory: "Mercury", Trophy: true,
+		Category: "Silver", Subcategory: "Mercury", Trophy: true, Kept: true,
 		Disposed: "2026-05-05", DisposedUSD: 2750,
 	}
 	id, err := s.InsertHolding(want)
