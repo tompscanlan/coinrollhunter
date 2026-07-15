@@ -28,15 +28,19 @@ import (
 //     (owner_uid, ext) plus the validated uid — a WHITELIST, not a sanitizer, so a
 //     traversal ('..', an absolute path, a non-v4 uid) is structurally impossible and a
 //     miss 404s in JSON, never falling through to the SPA's index.html-200 (AC8).
-//   - The upload is FILE-FIRST with a temp+rename: the temp original is written, the row
-//     is INSERTed in one WithTx, and only then is the temp renamed into place — so once the
-//     rename lands a committed row has its original on disk, and the tolerable residue of a
-//     FAILED upload is an orphan FILE with no row (invisible, reapable later), never a row
-//     with no original. The one remaining gap is a hard crash BETWEEN the commit and the
-//     rename: the bytes survive under the .upload-*.part temp name but not yet at the final
-//     path (the uid, hence the final name, is assigned inside the tx, so the rename must
-//     follow the commit). Recorded honestly; closing it — mint the uid before the insert, or
-//     a reaper — is om-9occ. Derivatives (thumb/display) are a best-effort, regenerable cache.
+//   - The upload is FILE-FIRST with NO rename (om-9occ): the uid is minted with store.NewUID
+//     BEFORE the transaction, so the final path is known up front; the original is written
+//     straight to that path with O_EXCL, then the row is INSERTed in one WithTx carrying that
+//     same pre-minted uid, and on ANY tx failure the file is removed. Because there is no
+//     post-commit rename, a committed row has its original at its final path across a PROCESS
+//     crash (SIGKILL at any instruction) — the write precedes the commit — which the old
+//     commit→rename window did not survive (it stranded the bytes under a .upload-*.part temp
+//     name). One residual remains, narrower and honestly stated: the file is not fsync'd before
+//     the tx commits, so a POWER LOSS inside the OS writeback window can leave a durable row
+//     whose not-yet-flushed original is missing — closing that needs an fsync of the file+dir
+//     before commit (om-0j33). The only tolerable residue of a FAILED upload is an orphan FILE
+//     with no row (invisible, reapable later), never a row with no original.
+//     Derivatives (thumb/display) are a best-effort, regenerable cache.
 //
 // photosDir is where originals live (photos/<owner_uid>/<uid>.<ext>); cacheDir is the
 // separate, gitignored, backup/export-excluded derivative tree. Both may be "" (a store
@@ -157,79 +161,19 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 		data = imaging.StripJPEGMetadata(data)
 	}
 
-	// --- file-first: temp original -> INSERT (WithTx) -> rename -> derivatives ---
-	ownerDir := filepath.Join(h.photosDir, ownerUID)
-	if err := os.MkdirAll(ownerDir, 0o755); err != nil {
-		writeErr(w, err)
-		return
-	}
-	tmp, err := os.CreateTemp(ownerDir, ".upload-*.part")
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		writeErr(w, err)
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		writeErr(w, err)
-		return
-	}
-
-	var photo model.Photo
-	var ownerGone bool
-	err = h.s.WithTx(func(tx *store.Tx) error {
-		// Re-check the owner INSIDE the tx. The early ownerExists above races a concurrent
-		// DeleteHolding (there is no FK from photos to the owner), so an upload that began
-		// before a delete committed would otherwise land an ACTIVE photo on a nonexistent
-		// lot — the exact orphan the early check exists to prevent. This re-check sees the
-		// deletion (same connection, serialized by the write lock) and rolls back instead.
-		switch ok, err := tx.OwnerExists(ownerKind, ownerUID); {
-		case err != nil:
-			return err
-		case !ok:
-			ownerGone = true
-			return errOwnerDeletedDuringUpload
-		}
-		p, err := tx.InsertPhoto(model.Photo{
-			OwnerKind: ownerKind, OwnerUID: ownerUID, Role: role, Ext: ext, Caption: caption,
-		})
-		if err != nil {
-			return err
-		}
-		photo = p
-		return nil
-	})
+	// --- file-first, no rename (om-9occ): mint uid -> write original at its FINAL path
+	// (O_EXCL) -> INSERT (WithTx) that same uid -> derivatives. The uid is known before the
+	// write, so there is no post-commit rename and thus no commit→rename crash window.
+	uid := store.NewUID()
+	photo, ownerGone, err := h.writeOriginalAndInsert(uid, ownerKind, ownerUID, role, ext, caption, data)
 	if ownerGone {
-		// The owner was deleted between the early check and the insert — nothing committed,
-		// remove the temp, and report the same 404 the early check would have.
-		os.Remove(tmpName)
+		// The owner was deleted between the early check and the in-tx re-check — nothing
+		// committed, the file was removed, and we report the same 404 the early check would.
 		writeJSON(w, http.StatusNotFound, errBody(fmt.Errorf("no %s with uid %q", ownerKind, ownerUID)))
 		return
 	}
 	if err != nil {
-		// Nothing committed → the only residue is the temp file, which we remove: a failed
-		// upload leaves neither a row nor a stray final original.
-		os.Remove(tmpName)
 		writeErr(w, err)
-		return
-	}
-
-	// The row is committed; publish its original by renaming the temp into place (same
-	// directory → atomic). Only after this does "row exists" imply "original on disk".
-	final := h.originalPath(photo.OwnerUID, photo.UID, photo.Ext)
-	if err := os.Rename(tmpName, final); err != nil {
-		// A committed row whose rename failed is the one case we cannot silently undo (the
-		// row is durable). Leave the bytes on disk under the temp name and shout — do NOT
-		// remove them, which would guarantee the loss this whole feature exists to prevent.
-		log.Printf("photos: committed row %s but could not place its original (%s -> %s): %v",
-			photo.UID, tmpName, final, err)
-		writeJSON(w, http.StatusInternalServerError, errBody(fmt.Errorf("stored the photo record but could not write its file: %w", err)))
 		return
 	}
 
@@ -238,6 +182,73 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 	h.generateDerivatives(photo.OwnerUID, photo.UID, data)
 
 	writeJSON(w, http.StatusCreated, photo)
+}
+
+// writeOriginalAndInsert is the crash-window-free ingest core (om-9occ). It writes data at
+// the ORIGINAL's final path — named by the caller-minted uid, created with O_EXCL so a uid
+// collision fails the create rather than overwriting an existing original — then INSERTs the
+// row carrying that same uid inside one WithTx (with the in-tx owner re-check). On ANY tx
+// failure OR a vanished owner it removes the file it wrote, so the only residue of a failed
+// upload is nothing at all (the tolerable orphan-file case is a hard crash between the write
+// and the commit, not a clean failure). There is deliberately no post-commit rename anywhere:
+// because the original is at its final path before the row commits, a committed row has its
+// original across a process crash — power-loss durability additionally needs an fsync before
+// commit (om-0j33). Returns the stored photo; ownerGone signals the owner disappeared
+// mid-upload (mapped to 404).
+func (h *photoHandler) writeOriginalAndInsert(uid, ownerKind, ownerUID, role, ext, caption string, data []byte) (model.Photo, bool, error) {
+	ownerDir := filepath.Join(h.photosDir, ownerUID)
+	if err := os.MkdirAll(ownerDir, 0o755); err != nil {
+		return model.Photo{}, false, err
+	}
+	final := h.originalPath(ownerUID, uid, ext)
+	// O_EXCL: never overwrite an existing original. A v4 collision is astronomically
+	// unlikely; if it (or any create error) happens, fail rather than clobber the other file.
+	f, err := os.OpenFile(final, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return model.Photo{}, false, err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(final)
+		return model.Photo{}, false, err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(final)
+		return model.Photo{}, false, err
+	}
+
+	var photo model.Photo
+	var ownerGone bool
+	err = h.s.WithTx(func(tx *store.Tx) error {
+		// Re-check the owner INSIDE the tx. The early ownerExists in upload() races a
+		// concurrent DeleteHolding (there is no FK from photos to the owner), so an upload
+		// that began before a delete committed would otherwise land an ACTIVE photo on a
+		// nonexistent lot — the exact orphan the early check exists to prevent. This re-check
+		// sees the deletion (same connection, serialized by the write lock) and rolls back.
+		switch ok, err := tx.OwnerExists(ownerKind, ownerUID); {
+		case err != nil:
+			return err
+		case !ok:
+			ownerGone = true
+			return errOwnerDeletedDuringUpload
+		}
+		p, err := tx.InsertPhoto(model.Photo{
+			UID: uid, OwnerKind: ownerKind, OwnerUID: ownerUID, Role: role, Ext: ext, Caption: caption,
+		})
+		if err != nil {
+			return err
+		}
+		photo = p
+		return nil
+	})
+	if ownerGone || err != nil {
+		// Nothing committed → remove the original we wrote: a failed upload leaves neither a
+		// row nor a stray final file. (An orphan file with no row is only ever the residue of
+		// a HARD crash between the write and the commit, which is tolerable and reapable.)
+		os.Remove(final)
+		return model.Photo{}, ownerGone, err
+	}
+	return photo, false, nil
 }
 
 // list returns an owner's active photos, ordered (seq, uid).
@@ -270,6 +281,15 @@ func (h *photoHandler) serve(w http.ResponseWriter, r *http.Request) {
 	photo, err := h.s.PhotoByUID(uid)
 	if err != nil {
 		notFound(w) // ErrNotFound (or any read error) → 404, never HTML
+		return
+	}
+	// A soft-deleted (trashed) photo is deleted to a VIEWER: 404 it for every variant
+	// (original/thumb/display), so a uid holder can no longer pull the bytes back after a
+	// delete (om-hs1v Half A). PhotoByUID still resolves inactive rows on purpose — other
+	// readers (export, restore-from-trash) depend on that — so the guard lives HERE, not in
+	// the lookup.
+	if photo.Inactive {
+		notFound(w)
 		return
 	}
 	switch r.URL.Query().Get("variant") {

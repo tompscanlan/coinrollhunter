@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,10 +24,25 @@ import (
 
 // --- insert ------------------------------------------------------------------
 
-// InsertPhoto records a photo original and returns the stored row with its
-// server-assigned uid, seq (= max(seq)+1 per owner) and created stamp filled in — the
-// caller needs the uid to name the file it is about to write. The uid is
-// server-generated and never taken from the caller (ADR-009).
+// NewUID mints a fresh lowercase RFC-4122 v4 uid — the same identity newUID assigns
+// internally. Exported so the photo UPLOAD can mint the uid BEFORE its transaction
+// (om-9occ): with the final path known before the write, the original is created at that
+// path directly and the row carries the same uid, so the old commit→rename crash window
+// (a committed row whose original was still under its .upload-*.part temp name) is gone.
+func NewUID() string { return newUID() }
+
+// photoUIDRE is the shape a caller-supplied photo uid must match: a lowercase RFC-4122 v4,
+// the form NewUID mints and the serve route pathes a file under. A blank uid is minted
+// server-side; a NON-blank uid that does not match is REJECTED, never silently replaced —
+// silently minting a different uid would strand the original the upload already wrote at the
+// path named by the supplied uid, reintroducing exactly the row-with-no-file om-9occ closes.
+var photoUIDRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// InsertPhoto records a photo original and returns the stored row with its uid, seq
+// (= max(seq)+1 per owner) and created stamp filled in — the caller needs the uid to name
+// the file it stores. The uid is honored when the caller supplies a well-formed v4 (the
+// upload mints it with NewUID before the tx, om-9occ) and server-generated when blank; a
+// non-blank malformed uid is rejected (ADR-009 — a uid is server-shaped either way).
 func (s *Store) InsertPhoto(p model.Photo) (model.Photo, error) {
 	if err := p.Validate(); err != nil {
 		return model.Photo{}, err
@@ -35,8 +51,9 @@ func (s *Store) InsertPhoto(p model.Photo) (model.Photo, error) {
 }
 
 // InsertPhoto records a photo original inside the transaction. See *Store.InsertPhoto.
-// The upload path uses this: the row commits in one WithTx, then the temp original is
-// renamed into place — so a committed row always has its original on disk.
+// The upload path uses this: the original is already written at its final path (named by a
+// uid minted BEFORE the tx), and this insert commits that same uid — so a committed row
+// always has its original on disk, with no post-commit rename.
 func (tx *Tx) InsertPhoto(p model.Photo) (model.Photo, error) {
 	if err := p.Validate(); err != nil {
 		return model.Photo{}, err
@@ -45,6 +62,17 @@ func (tx *Tx) InsertPhoto(p model.Photo) (model.Photo, error) {
 }
 
 func insertPhoto(x execer, p model.Photo) (model.Photo, error) {
+	// uid: honor a caller-supplied well-formed v4 (the upload mints it BEFORE the tx so the
+	// original can be written at its final path first — om-9occ), else mint one. A NON-blank
+	// but malformed uid is rejected rather than silently replaced, so the uid that lands on
+	// the row is the exact one already naming the file the caller wrote.
+	uid := strings.TrimSpace(p.UID)
+	switch {
+	case uid == "":
+		uid = newUID()
+	case !photoUIDRE.MatchString(uid):
+		return model.Photo{}, fmt.Errorf("%w: uid must be a lowercase RFC-4122 v4", model.ErrInvalid)
+	}
 	// seq = max(seq)+1 per owner, over ALL rows including inactive ones — a new photo
 	// must never reuse a soft-deleted photo's slot. First photo lands at seq 1.
 	var seq int64
@@ -53,7 +81,6 @@ func insertPhoto(x execer, p model.Photo) (model.Photo, error) {
 		p.OwnerKind, p.OwnerUID).Scan(&seq); err != nil {
 		return model.Photo{}, fmt.Errorf("photo seq: %w", err)
 	}
-	uid := newUID()
 	// A blank role is DEFAULTED, never stored — a NULL/'' role would evaluate out of the
 	// gallery's role filter and lose the photo (the 0009 trap). ext is normalized to the
 	// lowercase form it is pathed in.
