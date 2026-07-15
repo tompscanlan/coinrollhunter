@@ -537,4 +537,32 @@ tests. **om-4h6m** (a read-only `doctor` report — Sol #1/#2/#5, Compute silent
 basis; deferred by om-1czp/om-c8ei) and **om-cqmp** (now spans keeper clad-only *prevention* per
 Sol #4, not only repair) are **tandem**.
 
+Added 2026-07-15 (receipts on holdings, om-9o4n): a purchase receipt can now be attached to a
+holding — as a **photo/scan** OR a **PDF** — and tagged `role=receipt`. Split into two fired
+halves. **om-9o4n.1 (role picker):** the server (`POST /api/photos`) and the api client already
+accepted a `role`; only the upload UI never sent one, so every upload defaulted to `detail` and
+`receipt` wasn't even suggested for lots. `PhotoGallery` gained an **"Add as" role `<select>`**
+(defaults `detail`, sticky across uploads) wired into the upload, and `receipt` joined the lot
+suggestions — UI-only, no model/store/imaging change. **om-9o4n.2 (PDF/document attachments):** a
+document rides the **existing `photos` table** (no new "attachments" concept, **no migration**) but
+**skips the imaging pipeline** — `imaging.Sniff` recognizes `%PDF`→`pdf` and a new `IsDocument`
+predicate gates the branch, so a doc never reaches `CheckConfig`/EXIF-strip/`Derive` (all assume
+decodable pixels). The **closed ext whitelist** gained `pdf` in BOTH places that enforce it
+(`imaging.docExts` + `model.Photo.Validate`) — ext is a path segment, so it stays closed, never
+arbitrary text. Ingest is unchanged: a doc rides the same file-first `O_EXCL`/`WithTx`/
+remove-on-failure `writeOriginalAndInsert`, so the crash-window-free guarantee (om-9occ) still
+holds. **Serve** (`serveDoc`): a doc's original streams `application/pdf` + `X-Content-Type-Options:
+nosniff` + **`Content-Disposition: attachment`** — the attachment is the security crux (om-rix0):
+`nosniff` does nothing about the browser's OWN PDF viewer, and a same-origin pdf.js-class viewer
+bug (CVE-2024-4367) would script the unauthenticated local API past the inert-same-origin om-6ex5
+guard, so a doc **downloads** instead of rendering inline, moving it out of the app's origin;
+thumb/display variants **404** (no derivative to decode — never a 500, never HTML). The **frontend**
+renders a doc as a **document card** (FileText + open/download), never an `<img>` — including the
+Insights **TrophyFeed** hero, which now picks the first **non-document** photo as its cover (a
+doc-only trophy contributes no hero, like a photo-less one). The doc-ext predicate lives once in
+**`$lib/photos`** (`isDocumentExt`), shared by both consumers — the adversarial review caught
+TrophyFeed as a third `fileUrl` consumer the first cut missed (it would have rendered a broken hero
+`<img>` for a PDF-first trophy). CGO stays off, **no PDF-render dependency** (a generic doc tile, not
+a first-page raster). **Follow-up om-6x06:** the >10 MB→413 upload cap still lacks a test.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
