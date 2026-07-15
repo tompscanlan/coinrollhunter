@@ -79,6 +79,35 @@ func insertPhoto(x execer, p model.Photo) (model.Photo, error) {
 	return out, nil
 }
 
+// OwnerExists reports whether the lot / roll_txn named by (ownerKind, ownerUID) is present.
+// The upload path re-checks this INSIDE its WithTx before inserting the photo row: the
+// handler's early check races a concurrent DeleteHolding (there is no FK from photos to the
+// owner), and without the in-tx re-check that race would leave an ACTIVE photo pointing at a
+// deleted lot. ownerKind is already constrained to "lot"/"roll_txn" by Photo.Validate. This
+// is deliberately NOT folded into insertPhoto: the export tests seed photos with synthetic
+// owner_uids, and the store helper must stay permissive — the integrity gate is the caller
+// that owns a real coin (the upload), which is where the race lives.
+func (tx *Tx) OwnerExists(ownerKind, ownerUID string) (bool, error) {
+	return photoOwnerExists(tx.db, ownerKind, ownerUID)
+}
+
+func photoOwnerExists(x execer, ownerKind, ownerUID string) (bool, error) {
+	table := "lots"
+	if ownerKind == "roll_txn" {
+		table = "roll_txns"
+	}
+	// table is chosen from a closed set above, never from user input.
+	var one int
+	switch err := x.QueryRow(`SELECT 1 FROM `+table+` WHERE uid=? LIMIT 1`, ownerUID).Scan(&one); err {
+	case nil:
+		return true, nil
+	case sql.ErrNoRows:
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
 // --- update (role / seq / caption) -------------------------------------------
 
 // UpdatePhoto changes a photo's role, seq or caption — and NOTHING that touches its
