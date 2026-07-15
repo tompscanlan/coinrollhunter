@@ -342,6 +342,22 @@ try {
     ok('the gallery lists the uploaded photo',
       (await api(`/photos?owner_kind=lot&owner_uid=${photoLot.uid}`)).length === 1)
 
+    // om-9o4n.1: a role picked at upload reaches the server and is stored — a receipt files
+    // as a receipt, no upload-then-re-role two-step. Cleaned up immediately so the obverse
+    // soft-delete flow below still sees the gallery go 1 → 0.
+    {
+      const rfd = new FormData()
+      rfd.append('owner_kind', 'lot')
+      rfd.append('owner_uid', photoLot.uid)
+      rfd.append('role', 'receipt')
+      rfd.append('file', new Blob([Buffer.from(TEST_PNG_B64, 'base64')], { type: 'image/png' }), 'receipt.png')
+      const rResp = await fetch(BASE + '/api/photos', { method: 'POST', body: rfd })
+      const receipt = await rResp.json()
+      ok('a receipt-tagged upload is stored with role=receipt',
+        rResp.status === 201 && receipt.role === 'receipt', `status ${rResp.status} role ${receipt.role}`)
+      await apiDelete(`/photos/${receipt.id}`)
+    }
+
     const fileResp = await fetch(`${BASE}/api/photos/${photo.uid}/file?variant=display`)
     ok('the photo file serves an image (not the SPA index.html)',
       fileResp.ok && /image\//.test(fileResp.headers.get('content-type') || ''),
@@ -358,6 +374,9 @@ try {
     await drawer.waitFor({ timeout: 5000 })
     ok('the coin detail drawer opens with an add-photo affordance',
       await drawer.getByRole('button', { name: 'Add a photo' }).isVisible())
+    // om-9o4n.1: the add-photo affordance carries a role picker offering Receipt.
+    ok('the upload affordance offers a role picker with a Receipt option',
+      (await drawer.locator('select option[value="receipt"]').count()) > 0)
     await drawer.locator('button[title="Close"]').click()
     await drawer.waitFor({ state: 'detached', timeout: 5000 })
 
