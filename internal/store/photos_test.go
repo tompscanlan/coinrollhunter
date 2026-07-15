@@ -64,6 +64,92 @@ func TestInsertPhotoAssignsSeqUIDAndDefaultRole(t *testing.T) {
 	}
 }
 
+// AC1 (om-9occ): InsertPhoto and its *Tx twin HONOR a caller-supplied, well-formed v4 uid
+// (the upload mints it before the tx so the original is written at its final path first), and
+// the row lands with exactly that uid — not a fresh one. Both forms are exercised, since both
+// name the file the caller already placed.
+func TestInsertPhotoHonorsCallerSuppliedUID(t *testing.T) {
+	s := openTestStore(t)
+	owner := mkLot(t, s)
+
+	const want = "12345678-1234-4234-8234-123456789abc" // a well-formed lowercase v4
+	got, err := s.InsertPhoto(model.Photo{UID: want, OwnerKind: "lot", OwnerUID: owner, Ext: "jpg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UID != want {
+		t.Errorf("*Store.InsertPhoto minted %q, want the caller-supplied %q", got.UID, want)
+	}
+	var stored string
+	if err := s.db.QueryRow(`SELECT uid FROM photos WHERE id=?`, got.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != want {
+		t.Errorf("row uid %q != caller-supplied %q — the file the upload wrote at that uid would be orphaned", stored, want)
+	}
+
+	// The *Tx twin (the path the upload actually uses) honors it too.
+	const wantTx = "abcdef01-2345-4678-9abc-def012345678"
+	var txGot model.Photo
+	if err := s.WithTx(func(tx *Tx) error {
+		p, err := tx.InsertPhoto(model.Photo{UID: wantTx, OwnerKind: "lot", OwnerUID: owner, Ext: "png"})
+		txGot = p
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if txGot.UID != wantTx {
+		t.Errorf("Tx.InsertPhoto minted %q, want the caller-supplied %q", txGot.UID, wantTx)
+	}
+}
+
+// AC1 (om-9occ): a BLANK uid is still minted server-side (a fresh v4), so callers that do
+// not pre-mint keep the old behavior.
+func TestInsertPhotoMintsWhenUIDBlank(t *testing.T) {
+	s := openTestStore(t)
+	owner := mkLot(t, s)
+	got, err := s.InsertPhoto(model.Photo{OwnerKind: "lot", OwnerUID: owner, Ext: "jpg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !looksLikeUUIDv4(got.UID) {
+		t.Errorf("a blank uid was not minted into a v4: %q", got.UID)
+	}
+}
+
+// AC1 (om-9occ): a NON-blank but malformed uid is REJECTED (ErrInvalid), never silently
+// replaced — and no row lands. Silently minting a different uid would strand the original the
+// upload already wrote at the path named by the supplied uid. Covers both forms.
+func TestInsertPhotoRejectsMalformedCallerUID(t *testing.T) {
+	s := openTestStore(t)
+	owner := mkLot(t, s)
+
+	for _, bad := range []string{
+		"not-a-uid",
+		"12345678-1234-1234-8234-123456789abc", // well-formed shape but version nibble != 4
+		"ABCDEF01-2345-4678-9ABC-DEF012345678", // uppercase — not the lowercase form pathed
+		"12345678123446789abcdef012345678",     // no hyphens
+	} {
+		if _, err := s.InsertPhoto(model.Photo{UID: bad, OwnerKind: "lot", OwnerUID: owner, Ext: "jpg"}); !errors.Is(err, model.ErrInvalid) {
+			t.Errorf("*Store.InsertPhoto(uid=%q): err = %v, want ErrInvalid", bad, err)
+		}
+		if err := s.WithTx(func(tx *Tx) error {
+			_, err := tx.InsertPhoto(model.Photo{UID: bad, OwnerKind: "lot", OwnerUID: owner, Ext: "jpg"})
+			return err
+		}); !errors.Is(err, model.ErrInvalid) {
+			t.Errorf("Tx.InsertPhoto(uid=%q): err = %v, want ErrInvalid", bad, err)
+		}
+	}
+	// No row landed for any of the rejected uids.
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM photos WHERE owner_uid=?`, owner).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("a malformed-uid insert landed %d row(s) — it must reject before the DB write", n)
+	}
+}
+
 // AC6: a gallery read is ORDER BY (seq, uid) — deterministic across repeated reads, even
 // for rows left at the default seq 0 — and a role='detail' (the default) photo IS visible
 // (the NULL-role trap 0009 called out: an unrendered photo is a lost one).
