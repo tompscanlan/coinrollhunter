@@ -10,6 +10,7 @@
   // lots.trophy flag, and it simply does not appear when no trophy has a photo yet.
   import type { Report } from '$lib/types'
   import { api } from '$lib/api'
+  import { isDocumentExt } from '$lib/photos'
   import { money, oz } from '$lib/format'
   import Card from '$lib/components/ui/Card.svelte'
   import Badge from '$lib/components/ui/Badge.svelte'
@@ -19,9 +20,12 @@
 
   const trophies = $derived(report.lots.filter((l) => l.trophy))
 
-  // Covers for the rotation: each trophy that has at least one photo contributes its cover
-  // (the first photo, seq/uid order). Fetched per trophy — few trophies, and a feed image is
-  // strictly optional, so a failure is swallowed.
+  // Covers for the rotation: each trophy that has at least one IMAGE photo contributes its
+  // cover (the first non-document photo, seq/uid order). Fetched per trophy — few trophies,
+  // and a feed image is strictly optional, so a failure is swallowed. A document attachment
+  // (a PDF receipt, om-9o4n.2) is SKIPPED as a cover: it has no display derivative, so an
+  // <img> over it would only ever show broken. A trophy whose only photo is a doc therefore
+  // contributes no hero — the feed simply omits it, exactly as it does a photo-less trophy.
   let covers = $state<{ uid: string; label: string; sub: string }[]>([])
   let idx = $state(0)
 
@@ -34,9 +38,12 @@
         if (!l.uid) continue
         try {
           const ps = await api.photos.list('lot', l.uid)
-          if (ps.length) {
+          // First IMAGE photo (seq/uid order) is the cover; a document (PDF) has no display
+          // image and is skipped, so a doc-only trophy contributes no hero (om-9o4n.2).
+          const cover = ps.find((p) => !isDocumentExt(p.ext))
+          if (cover) {
             const sub = [l.category, l.subcategory].filter(Boolean).join(' · ')
-            found.push({ uid: ps[0].uid, label: l.product || 'Find', sub })
+            found.push({ uid: cover.uid, label: l.product || 'Find', sub })
           }
         } catch {
           /* a missing feed image is not an error */

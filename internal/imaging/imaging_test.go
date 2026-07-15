@@ -47,6 +47,59 @@ func smallPNG(t *testing.T, w, h int) []byte {
 	return buf.Bytes()
 }
 
+// --- document (PDF) attachments (om-9o4n.2) ----------------------------------
+//
+// A receipt can be a PDF: a document that is STORED + LINKED but never imaged. Sniff must
+// recognize it by magic bytes (like the image types) and return "pdf", and IsDocument must
+// classify it so the upload/serve handlers branch AWAY from the image-only pipeline.
+
+// minimalPDF returns bytes http.DetectContentType classifies as application/pdf. The server
+// never decodes a document, so the "%PDF-" magic is all the sniff (and these tests) need — it
+// need not be a fully-valid PDF, only PDF-sniffable.
+func minimalPDF() []byte {
+	return []byte("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
+}
+
+// TestSniffRecognizesPDF pins AC1: a %PDF blob sniffs to "pdf"; a type we accept as neither
+// image nor document is still ErrUnsupported.
+func TestSniffRecognizesPDF(t *testing.T) {
+	ext, err := Sniff(minimalPDF())
+	if err != nil {
+		t.Fatalf("Sniff(pdf) error: %v", err)
+	}
+	if ext != "pdf" {
+		t.Errorf("Sniff(pdf) = %q, want \"pdf\"", ext)
+	}
+	// A GIF (image we do not accept) and plain text are both still refused.
+	if _, err := Sniff([]byte("GIF89a\x00\x00")); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("Sniff(gif) err = %v, want ErrUnsupported", err)
+	}
+	if _, err := Sniff([]byte("just some text, not any known type")); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("Sniff(text) err = %v, want ErrUnsupported", err)
+	}
+}
+
+// TestIsDocumentAndDocSkipsImaging pins that IsDocument identifies a PDF (case-folded) and
+// only a PDF — and the WHY behind the branch: a document has no decodable pixels, so the
+// image-only guards (CheckConfig, Derive) ERROR on it. The upload/serve paths must branch on
+// IsDocument and never hand a doc to those, which this proves by exercising them directly.
+func TestIsDocumentAndDocSkipsImaging(t *testing.T) {
+	if !IsDocument("pdf") || !IsDocument("PDF") {
+		t.Error("IsDocument must classify pdf/PDF as a document (case-insensitive)")
+	}
+	for _, img := range []string{"jpg", "jpeg", "png", "webp", "", "gif"} {
+		if IsDocument(img) {
+			t.Errorf("IsDocument(%q) = true, want false — only a document skips imaging", img)
+		}
+	}
+	if _, _, err := CheckConfig(minimalPDF()); err == nil {
+		t.Error("CheckConfig(pdf) succeeded — a PDF has no image header; a doc MUST skip CheckConfig")
+	}
+	if _, err := Derive(minimalPDF(), ThumbEdge); err == nil {
+		t.Error("Derive(pdf) succeeded — a PDF cannot be decoded; a doc MUST skip Derive")
+	}
+}
+
 // --- strip-all-formats coverage (om-65nv) ------------------------------------
 //
 // PROVEN-FAIL-PRE-FIX: before this bead, StripJPEGMetadata handled only JPEG and

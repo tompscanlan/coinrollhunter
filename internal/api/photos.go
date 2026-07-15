@@ -71,10 +71,12 @@ func registerPhotos(mux *http.ServeMux, s *store.Store, photosDir, cacheDir stri
 	mux.HandleFunc("DELETE /api/photos/{id}", h.del)
 }
 
-// upload ingests one multipart photo for an owner (owner_kind + owner_uid), with an
-// optional role and caption. The bytes are capped, sniffed, and bomb-guarded before a
-// single byte touches the disk; the ORIGINAL is stored verbatim (minus EXIF iff the
-// global setting says strip); the derivatives are generated best-effort.
+// upload ingests one multipart attachment for an owner (owner_kind + owner_uid), with an
+// optional role and caption. The bytes are capped and sniffed before a single byte touches
+// the disk. An IMAGE (jpg/png/webp) is then bomb-guarded, EXIF-stripped iff the setting says
+// strip, and gets thumb/display derivatives. A DOCUMENT (pdf, om-9o4n.2) SKIPS all of that
+// and is stored verbatim — same file-first ingest, no imaging step. Either way the ORIGINAL
+// is the immutable source of truth at photos/<owner_uid>/<uid>.<ext>.
 func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 	if h.photosDir == "" {
 		writeJSON(w, http.StatusInternalServerError, errBody(errors.New("photos are not available on this store")))
@@ -138,27 +140,38 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sniff the type from the MAGIC BYTES (never the filename) and refuse anything but
-	// jpg/png/webp; then bomb-guard the dimensions from the header BEFORE any full decode.
+	// Sniff the type from the MAGIC BYTES (never the filename) and refuse anything but the
+	// accepted image (jpg/png/webp) and document (pdf) types.
 	ext, err := imaging.Sniff(data)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errBody(errors.New("unsupported image type (accepted: jpg, png, webp)")))
+		writeJSON(w, http.StatusBadRequest, errBody(errors.New("unsupported type (accepted: jpg, png, webp, pdf)")))
 		return
 	}
-	if _, _, err := imaging.CheckConfig(data); err != nil {
-		writeJSON(w, http.StatusBadRequest, errBody(fmt.Errorf("rejected image: %w", err)))
-		return
-	}
+	// THE BRANCH POINT (om-9o4n.2): a DOCUMENT (PDF) is stored + linked WITHOUT any imaging.
+	// It has no decodable pixels, so it must SKIP the image-only steps below — CheckConfig
+	// (the bomb guard), the EXIF strip, and derivative generation — each of which assumes an
+	// image and would error on a PDF. An image keeps the EXACT current path. The doc's whole
+	// gate is the 10MB MaxBytesReader (already applied) + the %PDF magic sniff above.
+	isDoc := imaging.IsDocument(ext)
 
-	// EXIF: strip at ingest only when the global setting says so (default KEEP), and only
-	// for this NEW import — already-imported originals are never rewritten (N4).
-	cfg, err := h.s.GetSettings()
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	if cfg.StripEXIFOnImport {
-		data = imaging.StripJPEGMetadata(data)
+	if !isDoc {
+		// Bomb-guard the image dimensions from the header BEFORE any full decode.
+		if _, _, err := imaging.CheckConfig(data); err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(fmt.Errorf("rejected image: %w", err)))
+			return
+		}
+
+		// EXIF: strip at ingest only when the global setting says so (default KEEP), and only
+		// for this NEW import — already-imported originals are never rewritten (N4). A document
+		// carries no camera metadata and is never decoded, so the whole strip step is image-only.
+		cfg, err := h.s.GetSettings()
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if cfg.StripEXIFOnImport {
+			data = imaging.StripJPEGMetadata(data)
+		}
 	}
 
 	// --- file-first, no rename (om-9occ): mint uid -> write original at its FINAL path
@@ -178,8 +191,12 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Derivatives are a regenerable cache: a failure here is logged, never fatal, and the
-	// serve route will lazily regenerate on a miss anyway.
-	h.generateDerivatives(photo.OwnerUID, photo.UID, data)
+	// serve route will lazily regenerate on a miss anyway. A DOCUMENT (PDF) has no image to
+	// derive — thumb/display of a doc 404 by design — so derivative generation is skipped for
+	// it entirely (imaging.Derive would only error on a PDF).
+	if !isDoc {
+		h.generateDerivatives(photo.OwnerUID, photo.UID, data)
+	}
 
 	writeJSON(w, http.StatusCreated, photo)
 }
@@ -292,6 +309,20 @@ func (h *photoHandler) serve(w http.ResponseWriter, r *http.Request) {
 		notFound(w)
 		return
 	}
+	// A DOCUMENT (PDF) rides the same photos row but never entered the imaging pipeline, so
+	// it has no thumb/display derivative and must NOT be decoded on the serve path either
+	// (om-9o4n.2). Its ORIGINAL streams with a strict content-type + nosniff; every other
+	// variant is an honest 404 — never a 500 from trying to Derive() a PDF, never a fall-
+	// through to the raw bytes under an image URL. This block is separate from the image
+	// switch below precisely so the image paths stay byte-identical to before.
+	if imaging.IsDocument(photo.Ext) {
+		if v := r.URL.Query().Get("variant"); v == "" || v == "original" {
+			h.serveDoc(w, r, photo)
+		} else {
+			notFound(w)
+		}
+		return
+	}
 	switch r.URL.Query().Get("variant") {
 	case "", "original":
 		h.serveFile(w, r, h.originalPath(photo.OwnerUID, photo.UID, photo.Ext), contentTypeForExt(photo.Ext))
@@ -302,6 +333,40 @@ func (h *photoHandler) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		notFound(w)
 	}
+}
+
+// serveDoc streams a document attachment's original (a PDF today, om-9o4n.2). It never
+// touches the derivative path, and reuses the same DB-vouched path assembly (owner_uid +
+// validated uid + ext) as every other serve. Two headers make accepting a file we
+// deliberately never decode safe (ADR-009 (f) untrusted-bytes posture):
+//
+//   - X-Content-Type-Options: nosniff — the browser HONORS the declared application/pdf and
+//     never MIME-sniffs the un-decoded bytes into something it would render or execute.
+//   - Content-Disposition: attachment — the PDF DOWNLOADS instead of rendering INLINE
+//     (om-rix0). nosniff does nothing about the browser's OWN PDF viewer: a same-origin
+//     pdf.js-class viewer bug (e.g. CVE-2024-4367, script execution in the viewer context)
+//     would run in THIS origin, and the om-6ex5 loopback guard is inert against same-origin
+//     requests — so one malicious dealer-emailed receipt could reach the unauthenticated
+//     local API. Downloading moves the file out of the app's origin entirely, closing that
+//     vector regardless of any future viewer vuln. The filename is built ONLY from the
+//     regex-validated uid + closed-set ext (never a client-supplied name), and %q escapes it,
+//     so nothing user-controlled can inject into the header.
+func (h *photoHandler) serveDoc(w http.ResponseWriter, r *http.Request, photo model.Photo) {
+	f, err := os.Open(h.originalPath(photo.OwnerUID, photo.UID, photo.Ext))
+	if err != nil {
+		notFound(w)
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		notFound(w)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeForExt(photo.Ext)) // application/pdf for a doc
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", photo.UID+"."+photo.Ext))
+	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 }
 
 // serveDerivative serves a cached thumb/display; on a cache MISS it lazily regenerates
@@ -480,6 +545,8 @@ func contentTypeForExt(ext string) string {
 		return "image/png"
 	case "webp":
 		return "image/webp"
+	case "pdf":
+		return "application/pdf" // a document attachment, served with nosniff (om-9o4n.2)
 	default:
 		return "application/octet-stream"
 	}

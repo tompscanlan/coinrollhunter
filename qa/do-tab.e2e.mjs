@@ -358,6 +358,37 @@ try {
       await apiDelete(`/photos/${receipt.id}`)
     }
 
+    // om-9o4n.2: a receipt can be a PDF — a DOCUMENT that rides the photos table but SKIPS
+    // imaging. Upload a tiny valid PDF as a lot receipt, prove it stores as ext=pdf, that its
+    // original serves as application/pdf with nosniff, and that thumb/display 404 (no
+    // derivative to decode). Cleaned up immediately so the obverse soft-delete flow below
+    // still sees the gallery go 1 → 0.
+    {
+      const PDF_BYTES = '%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n'
+      const pfd = new FormData()
+      pfd.append('owner_kind', 'lot')
+      pfd.append('owner_uid', photoLot.uid)
+      pfd.append('role', 'receipt')
+      pfd.append('file', new Blob([PDF_BYTES], { type: 'application/pdf' }), 'invoice.pdf')
+      const pResp = await fetch(BASE + '/api/photos', { method: 'POST', body: pfd })
+      const pdfDoc = await pResp.json()
+      ok('a PDF receipt uploads and stores as ext=pdf (no imaging step)',
+        pResp.status === 201 && pdfDoc.ext === 'pdf' && pdfDoc.role === 'receipt',
+        `status ${pResp.status} ext ${pdfDoc.ext} role ${pdfDoc.role}`)
+      const pdfFile = await fetch(`${BASE}/api/photos/${pdfDoc.uid}/file?variant=original`)
+      ok('a PDF original serves as application/pdf with nosniff + attachment disposition',
+        pdfFile.status === 200 &&
+          pdfFile.headers.get('content-type') === 'application/pdf' &&
+          pdfFile.headers.get('x-content-type-options') === 'nosniff' &&
+          /^attachment/.test(pdfFile.headers.get('content-disposition') || ''),
+        `status ${pdfFile.status} ct ${pdfFile.headers.get('content-type')} xcto ${pdfFile.headers.get('x-content-type-options')} cd ${pdfFile.headers.get('content-disposition')}`)
+      const pdfThumb = await fetch(`${BASE}/api/photos/${pdfDoc.uid}/file?variant=thumb`)
+      ok('a PDF has no thumbnail — thumb 404s (never a decoded-PDF 500, never HTML)',
+        pdfThumb.status === 404 && !/html/i.test(pdfThumb.headers.get('content-type') || ''),
+        `status ${pdfThumb.status}`)
+      await apiDelete(`/photos/${pdfDoc.id}`)
+    }
+
     const fileResp = await fetch(`${BASE}/api/photos/${photo.uid}/file?variant=display`)
     ok('the photo file serves an image (not the SPA index.html)',
       fileResp.ok && /image\//.test(fileResp.headers.get('content-type') || ''),
@@ -393,11 +424,46 @@ try {
     await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
   }
 
+  // om-9o4n.2 regression guard (TrophyFeed): the "Greatest hits" hero picks each trophy's
+  // first photo as a cover and renders it as an <img>. A PDF receipt has NO display image, so
+  // if a doc were chosen the feed would show a broken image. Attach a PDF as the trophy's ONLY
+  // photo (all earlier photos were cleaned up above), then prove the feed (a) never requests a
+  // display/thumb variant for it and (b) renders no hero image for it. Insights unmounts on tab
+  // switch (App.svelte {#if view === 'insights'}), so this navigation re-runs the cover fetch
+  // fresh with the PDF present.
+  const trophyPdf = await (async () => {
+    const tfd = new FormData()
+    tfd.append('owner_kind', 'lot')
+    tfd.append('owner_uid', photoLot.uid)
+    tfd.append('role', 'receipt')
+    tfd.append('file', new Blob(['%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n'], { type: 'application/pdf' }), 'invoice.pdf')
+    const r = await fetch(BASE + '/api/photos', { method: 'POST', body: tfd })
+    return r.json()
+  })()
+  const brokenHeroReqs = []
+  const onResp = (r) => {
+    if (r.url().includes(trophyPdf.uid) && /variant=(display|thumb)/.test(r.url())) brokenHeroReqs.push(`${r.status()} ${r.url()}`)
+  }
+  page.on('response', onResp)
+  // Arm the wait for the feed's per-trophy photos.list BEFORE navigating, so we can settle on it.
+  const feedListed = page
+    .waitForResponse((r) => r.url().includes(`/photos?owner_kind=lot&owner_uid=${photoLot.uid}`), { timeout: 5000 })
+    .catch(() => null)
+
   // trophy feed surfaces it back on the Insights tab (analysis lives in Insights
   // since the ADR-012 IA refactor — not the read-only Overview).
   await page.getByRole('button', { name: 'Insights', exact: true }).click()
   await page.getByRole('heading', { name: 'Greatest hits' }).waitFor({ timeout: 5000 })
   ok('trophy feed shows the trophy', (await page.getByText('Mercury dime (trophy)', { exact: false }).count()) > 0)
+
+  await feedListed // the cover-selection fetch has resolved
+  await page.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)))) // let it render
+  ok('the trophy feed never requests a display/thumb variant for a PDF cover (no broken hero <img>)',
+    brokenHeroReqs.length === 0, brokenHeroReqs.join(' ; '))
+  ok('a doc-only trophy contributes no Greatest-hits hero image',
+    (await page.locator('section:has(h2:has-text("Greatest hits")) img').count()) === 0)
+  page.off('response', onResp)
+  await apiDelete(`/photos/${trophyPdf.id}`)
 
   // === Settings editor (audit gap #8): edits persist via PUT /api/settings ===
   await page.locator('button[title="Settings"]').click()

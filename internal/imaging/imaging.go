@@ -17,6 +17,7 @@ import (
 	"image"
 	"image/jpeg"
 	"net/http"
+	"strings"
 
 	// Register the decoders. image/jpeg + image/png self-register on import; x/image/webp
 	// registers "webp" for image.Decode/DecodeConfig the same way. Blank imports because we
@@ -58,10 +59,12 @@ var (
 	ErrUnsupported = errors.New("unsupported image type")
 )
 
-// Sniff returns the canonical extension (jpg|png|webp) for the image bytes, by MAGIC
-// BYTES (http.DetectContentType), never the client's filename — ext is a path segment
-// and must not be user-controlled text (c/N2 sub-decision). A non-image, or a gif/bmp/…
-// we do not accept, returns ErrUnsupported.
+// Sniff returns the canonical extension for the bytes, by MAGIC BYTES
+// (http.DetectContentType), never the client's filename — ext is a path segment and must
+// not be user-controlled text (c/N2 sub-decision). It recognizes the accepted IMAGE types
+// (jpg|png|webp) AND the document types (pdf, om-9o4n.2); a non-image/non-document, or a
+// gif/bmp/… we do not accept, returns ErrUnsupported. The caller branches on IsDocument to
+// decide whether the byte stream enters the imaging pipeline or is stored as-is.
 func Sniff(data []byte) (string, error) {
 	switch http.DetectContentType(data) {
 	case "image/jpeg":
@@ -70,9 +73,30 @@ func Sniff(data []byte) (string, error) {
 		return "png", nil
 	case "image/webp":
 		return "webp", nil
+	case "application/pdf":
+		// A PDF is a DOCUMENT attachment (a receipt scan/invoice), not decodable pixels.
+		// http.DetectContentType matches the "%PDF-" magic, so we recognize it here and
+		// return "pdf"; the upload/serve handlers then branch on IsDocument and SKIP the
+		// whole decode/bomb-guard/derivative pipeline, which assumes an image (om-9o4n.2).
+		return "pdf", nil
 	default:
 		return "", ErrUnsupported
 	}
+}
+
+// docExts is the CLOSED set of attachment types that are STORED + LINKED but never imaged.
+// A PDF is the only member in v1: it has no decodable pixels, so CheckConfig, Derive and
+// StripJPEGMetadata (all of which assume an image) must never see it. Mirrors the ext
+// whitelist in model.Photo.Validate — ext is a path segment, so the set stays closed, not
+// arbitrary text. Add a new document type in BOTH places (here and validate) deliberately.
+var docExts = map[string]bool{"pdf": true}
+
+// IsDocument reports whether ext names a document attachment (a PDF today) rather than a
+// decodable image. Callers branch on THIS, not on a "pdf" string literal, so the "skip
+// imaging for a doc" decision lives in one place per concern (upload branch, serve branch).
+// Case-folded because contentTypeForExt and the stored ext are compared lowercase.
+func IsDocument(ext string) bool {
+	return docExts[strings.ToLower(ext)]
 }
 
 // CheckConfig reads the image header ONLY (image.DecodeConfig — no full decode, no pixel

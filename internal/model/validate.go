@@ -294,8 +294,11 @@ func (p Photo) Validate() error {
 	}
 	// ext is a path segment, sniffed from the bytes server-side — never the client's
 	// filename. Compared lowercase because that is the form it is stored and pathed in.
-	if err := exact("ext", strings.ToLower(strings.TrimSpace(p.Ext)), "jpg, jpeg, png, or webp",
-		"jpg", "jpeg", "png", "webp"); err != nil {
+	// The set stays CLOSED: the accepted IMAGE types plus 'pdf', the document attachment
+	// (om-9o4n.2) — a doc rides this same row, its ext just skips the imaging pipeline.
+	// Do NOT open this to arbitrary text: ext names a file on disk.
+	if err := exact("ext", strings.ToLower(strings.TrimSpace(p.Ext)), "jpg, jpeg, png, webp, or pdf",
+		"jpg", "jpeg", "png", "webp", "pdf"); err != nil {
 		return err
 	}
 	return nonNegInt("seq", p.Seq)

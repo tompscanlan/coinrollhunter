@@ -9,10 +9,12 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tompscanlan/coinrollhunter/internal/api"
@@ -420,6 +422,123 @@ func TestEXIFStrippedOnlyWhenSettingEnabled(t *testing.T) {
 	if !bytes.Contains(keptBytes, []byte("Exif")) {
 		t.Error("enabling strip must not rewrite an already-imported original")
 	}
+}
+
+// --- PDF / document attachments (om-9o4n.2) ----------------------------------
+
+// minimalPDF returns bytes http.DetectContentType classifies as application/pdf. The server
+// never decodes a document, so the "%PDF-" magic is all these tests need.
+func minimalPDF() []byte {
+	return []byte("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
+}
+
+// AC2/AC10: a PDF tagged role=receipt rides the photos table but SKIPS imaging — it is stored
+// verbatim at <owner>/<uid>.pdf with ext="pdf" and the role preserved, and NO thumb/display
+// derivative is generated (a document has no image to derive). The image path is untouched
+// (proven by the unchanged image tests above); this is the purely-additive document path.
+func TestUploadPDFStoresWithoutImaging(t *testing.T) {
+	e := newPhotoEnv(t)
+	pdf := minimalPDF()
+
+	resp, p := e.uploadPhoto(t, e.ownerUID, "receipt", "invoice.pdf", pdf)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PDF upload status %d, want 201", resp.StatusCode)
+	}
+	if p.Ext != "pdf" {
+		t.Errorf("stored ext = %q, want \"pdf\"", p.Ext)
+	}
+	if p.Role != "receipt" {
+		t.Errorf("stored role = %q, want \"receipt\"", p.Role)
+	}
+	// Stored verbatim at the uid-named path — no EXIF strip, no rewrite (a doc is never decoded).
+	orig := filepath.Join(e.photosDir, e.ownerUID, p.UID+".pdf")
+	got, err := os.ReadFile(orig)
+	if err != nil {
+		t.Fatalf("PDF original not at %s: %v", orig, err)
+	}
+	if !bytes.Equal(got, pdf) {
+		t.Error("the stored PDF was rewritten — a document must be stored byte-for-byte (no imaging step)")
+	}
+	// NO derivative for a doc: the cache tree has no thumb/display for it.
+	for _, v := range []string{"thumb", "display"} {
+		if _, err := os.Stat(filepath.Join(e.cacheDir, e.ownerUID, p.UID+"-"+v+".jpg")); !os.IsNotExist(err) {
+			t.Errorf("a %s derivative was generated for a PDF (stat err=%v) — a document skips imaging", v, err)
+		}
+	}
+}
+
+// AC4: GET the original of a PDF → 200, Content-Type application/pdf, X-Content-Type-Options
+// nosniff (so the browser never MIME-sniffs the un-decoded bytes), streaming the exact bytes.
+// The default (no variant) and explicit ?variant=original behave identically.
+func TestServePDFOriginalContentTypeAndNosniff(t *testing.T) {
+	e := newPhotoEnv(t)
+	pdf := minimalPDF()
+	_, p := e.uploadPhoto(t, e.ownerUID, "receipt", "invoice.pdf", pdf)
+
+	for _, variant := range []string{"", "original"} {
+		url := e.srv.URL + "/api/photos/" + p.UID + "/file"
+		if variant != "" {
+			url += "?variant=" + variant
+		}
+		r, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != 200 {
+			t.Errorf("variant %q status %d, want 200", variant, r.StatusCode)
+		}
+		if ct := r.Header.Get("Content-Type"); ct != "application/pdf" {
+			t.Errorf("variant %q Content-Type %q, want application/pdf", variant, ct)
+		}
+		if xo := r.Header.Get("X-Content-Type-Options"); xo != "nosniff" {
+			t.Errorf("variant %q X-Content-Type-Options %q, want nosniff", variant, xo)
+		}
+		// om-rix0: a doc is served as an ATTACHMENT (downloads), never inline — so a
+		// same-origin PDF-viewer bug can't script the unauthenticated local API.
+		if cd := r.Header.Get("Content-Disposition"); !strings.HasPrefix(cd, "attachment") {
+			t.Errorf("variant %q Content-Disposition %q, want it to start with \"attachment\"", variant, cd)
+		}
+		if !bytes.Equal(body, pdf) {
+			t.Errorf("variant %q served %d bytes, want the exact %d PDF bytes", variant, len(body), len(pdf))
+		}
+	}
+}
+
+// AC5: thumb/display of a document → 404, NEVER a 500 (from trying to decode a PDF) and never
+// HTML (the spaHandler trap). A doc has no derivative, so the serve route refuses the variant
+// rather than falling through to the image-derivative path.
+func TestServePDFThumbAndDisplay404(t *testing.T) {
+	e := newPhotoEnv(t)
+	_, p := e.uploadPhoto(t, e.ownerUID, "receipt", "invoice.pdf", minimalPDF())
+
+	for _, variant := range []string{"thumb", "display"} {
+		r, err := http.Get(e.srv.URL + "/api/photos/" + p.UID + "/file?variant=" + variant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ct := r.Header.Get("Content-Type")
+		r.Body.Close()
+		if r.StatusCode != 404 {
+			t.Errorf("doc variant %q status %d, want 404 (a PDF has no derivative — never a 500)", variant, r.StatusCode)
+		}
+		if bytes.Contains([]byte(ct), []byte("html")) {
+			t.Errorf("doc variant %q returned HTML (%s) — must be a JSON 404, never spaHandler", variant, ct)
+		}
+	}
+}
+
+// AC8 (document half): a still-unsupported type (a GIF, plain text) is refused 400 whether or
+// not PDFs are now accepted — the sniff whitelist did not open up. No residue on a refusal.
+func TestUploadStillRefusesUnsupportedAfterPDF(t *testing.T) {
+	e := newPhotoEnv(t)
+	// A real GIF header — an image we accept as neither image nor document.
+	resp, _ := e.uploadPhoto(t, e.ownerUID, "receipt", "anim.gif", []byte("GIF89a\x01\x00\x01\x00\x00\x00\x00"))
+	if resp.StatusCode != 400 {
+		t.Fatalf("gif upload status %d, want 400 (the accepted set is still closed)", resp.StatusCode)
+	}
+	assertNoResidue(t, e)
 }
 
 // --- helpers -----------------------------------------------------------------
