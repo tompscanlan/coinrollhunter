@@ -314,4 +314,43 @@ blank would fire on correct data across a huge share of the ledger, which is how
 noise. Only a **non-blank, unrecognized** metal is an anomaly. Blank *fineness* is treated the same
 way (not stated ≠ corrupt): no haircut, no anomaly.
 
+Added 2026-07-14 (box/branch links ride the stable uid, om-c8ei): `roll_txns.id` and
+`branches.id` are bare rowid aliases, so SQLite hands out `max(rowid)+1` and a delete+insert
+**recycles** the integer — after which a NEW box **silently adopts the dead box's finds and
+keepers**, and an old trip re-parents onto the *replacement* bank. Right rows, wrong parent,
+no error; and it is on the **happy path of fixing a mistake** (delete your newest box, enter
+another — the exact om-lv4q correction workflow). The four durable links that stored that
+recyclable integer — `lots.roll_txn_id`, `keepers.roll_txn_id`, `roll_txns.branch_id`,
+`trips.branch_id` — now store the never-recycled **uid** instead (`*_uid` columns, **migration
+0011**, hard cutover: the integer columns are dropped, 0008's precedent — reversibility is a
+backup, not a dual-read window). This is **store-internal (Shape A)**: the store resolves
+id→uid on **write** (the box demonstrably exists in that statement) and uid→id on **read** (a
+`LEFT JOIN` back to the row's *current* id), so `model`/`calc`/`api`/`web` keep seeing the same
+integer `RollTxnID`/`BranchID` on the wire — now always the **right** box, never a recycled
+rowid. A deleted box/branch leaves the child's uid dangling, so it resolves to **blank**;
+**blank beats wrong**. Unknown box id on write ⇒ **NULL**, not a 400 (a 400 would give the
+legacy import a new failure mode on the new-user on-ramp). Three landmines, each load-bearing:
+(1) **NOT a foreign key.** FKs *are* enforced on this connection (`store.Open` opens with
+`_pragma=foreign_keys(1)`; `lots.item_type_id` is a live one), so a key on the new columns would
+**fire and brick** every user DB that already holds an orphan — the same mechanism om-1czp
+proved for a `CHECK`. The uid model needs none: a never-recycled key that dangles is merely
+blank. No "box must exist" validator either — that is a FK by another name. (2) **Backfill
+before repoint.** `roll_txns.uid` has no schema not-null (0009; a UNIQUE index does not imply
+one), so 0011's **first** statement re-runs the `randomblob` uid backfill `WHERE uid IS NULL`,
+or a null-uid box would blank every child that pointed at it. (3) **The partial-sale carve-out**
+(`SellHolding`) copies the box link onto the NEW lots row it carves out — miss it and every
+partially-sold find loses its box (the trap ADR-009 named). **Export** inverts by the same logic
+(`internal/export`): the uid becomes the REAL column and the integer is DERIVED by resolving it
+back, so `lots.csv`/`keepers.csv`/`roll_txns.csv`/`trips.csv` keep **both** columns and the
+bundle shape is unchanged. `branch_aliases.branch_id` **stays an integer** — it cannot orphan
+(deleted in the same transaction as its branch, repointed by `MergeBranches` before the loser
+is removed). **What this fix CANNOT do, stated plainly:** a database that was **already**
+re-adopted before 0011 carries a link that resolves to the WRONG box today, and the repoint
+**freezes it there permanently** — nothing can distinguish it from a correct link, because the
+child never recorded a uid and the deleted box left no tombstone. The migration **launders
+existing corruption into permanent, invisible corruption**; there is no honest repair (a
+matching heuristic throws false positives on legitimate data and would silently unlink correct
+rows, which is worse). The fix **stops NEW re-adoption; it cannot undo the old.** A doctor
+command that reports the blanked (true-orphan) class is a separate follow-up bead.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
