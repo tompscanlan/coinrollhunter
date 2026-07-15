@@ -358,6 +358,36 @@ try {
       await apiDelete(`/photos/${receipt.id}`)
     }
 
+    // om-9o4n.2: a receipt can be a PDF — a DOCUMENT that rides the photos table but SKIPS
+    // imaging. Upload a tiny valid PDF as a lot receipt, prove it stores as ext=pdf, that its
+    // original serves as application/pdf with nosniff, and that thumb/display 404 (no
+    // derivative to decode). Cleaned up immediately so the obverse soft-delete flow below
+    // still sees the gallery go 1 → 0.
+    {
+      const PDF_BYTES = '%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n'
+      const pfd = new FormData()
+      pfd.append('owner_kind', 'lot')
+      pfd.append('owner_uid', photoLot.uid)
+      pfd.append('role', 'receipt')
+      pfd.append('file', new Blob([PDF_BYTES], { type: 'application/pdf' }), 'invoice.pdf')
+      const pResp = await fetch(BASE + '/api/photos', { method: 'POST', body: pfd })
+      const pdfDoc = await pResp.json()
+      ok('a PDF receipt uploads and stores as ext=pdf (no imaging step)',
+        pResp.status === 201 && pdfDoc.ext === 'pdf' && pdfDoc.role === 'receipt',
+        `status ${pResp.status} ext ${pdfDoc.ext} role ${pdfDoc.role}`)
+      const pdfFile = await fetch(`${BASE}/api/photos/${pdfDoc.uid}/file?variant=original`)
+      ok('a PDF original serves as application/pdf with nosniff',
+        pdfFile.status === 200 &&
+          pdfFile.headers.get('content-type') === 'application/pdf' &&
+          pdfFile.headers.get('x-content-type-options') === 'nosniff',
+        `status ${pdfFile.status} ct ${pdfFile.headers.get('content-type')} xcto ${pdfFile.headers.get('x-content-type-options')}`)
+      const pdfThumb = await fetch(`${BASE}/api/photos/${pdfDoc.uid}/file?variant=thumb`)
+      ok('a PDF has no thumbnail — thumb 404s (never a decoded-PDF 500, never HTML)',
+        pdfThumb.status === 404 && !/html/i.test(pdfThumb.headers.get('content-type') || ''),
+        `status ${pdfThumb.status}`)
+      await apiDelete(`/photos/${pdfDoc.id}`)
+    }
+
     const fileResp = await fetch(`${BASE}/api/photos/${photo.uid}/file?variant=display`)
     ok('the photo file serves an image (not the SPA index.html)',
       fileResp.ok && /image\//.test(fileResp.headers.get('content-type') || ''),
