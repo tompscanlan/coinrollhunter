@@ -14,16 +14,6 @@
     const s = r.replace(/-/g, ' ')
     return s.charAt(0).toUpperCase() + s.slice(1)
   }
-
-  // Document attachment extensions (om-9o4n.2). A receipt can be a PDF, which rides the
-  // photos table but — unlike an image — has NO thumb/display derivative: the imaging
-  // pipeline was skipped at ingest. So a doc must render as a document CARD (a doc icon +
-  // an open/download link to the original), never an <img>, which would only ever show
-  // broken. Mirrors the server's closed ext set + imaging.IsDocument.
-  const DOC_EXTS = new Set(['pdf'])
-  function isDoc(p: { ext: string }): boolean {
-    return DOC_EXTS.has((p.ext || '').toLowerCase())
-  }
 </script>
 
 <script lang="ts">
@@ -33,6 +23,7 @@
   // the regenerable thumb/display derivatives, and "open original" links the raw file.
   // Owner-generic (lot or roll_txn), though v1 only wires it for lots.
   import { api } from '$lib/api'
+  import { isDocumentExt } from '$lib/photos'
   import type { Photo } from '$lib/types'
   import Button from '$lib/components/ui/Button.svelte'
   import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte'
@@ -62,6 +53,11 @@
 
   const selected = $derived(photos.find((p) => p.uid === selectedUid) ?? photos[0] ?? null)
   const roleOptions = $derived(ROLE_SUGGESTIONS[ownerKind] ?? ROLE_SUGGESTIONS.lot)
+
+  // A document attachment (PDF, om-9o4n.2) has no image derivative, so it renders as a
+  // document card, never an <img>. Uses the shared predicate ($lib/photos) so the doc ext
+  // set lives in ONE place across the app (this drawer + the TrophyFeed hero).
+  const isDoc = (p: { ext: string }): boolean => isDocumentExt(p.ext)
 
   async function reload() {
     try {
