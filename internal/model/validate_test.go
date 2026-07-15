@@ -77,6 +77,13 @@ func TestValidateRejectsOneCasePerInvariant(t *testing.T) {
 		{"sale negative qty", ValidateSale(-1, 10, "2026-01-01"), "qty"},
 		{"sale negative proceeds", ValidateSale(1, -1, "2026-01-01"), "proceeds_usd"},
 		{"sale bad date", ValidateSale(1, 10, "nope"), "date"},
+
+		// Photo — ext is a CLOSED path-segment whitelist; a bogus ext is a file written to a
+		// wrong-shaped name. The set is {jpg,jpeg,png,webp,pdf} (om-9o4n.2 added pdf); anything
+		// else is rejected, naming "ext".
+		{"photo svg ext rejected", Photo{OwnerKind: "lot", OwnerUID: "u", Ext: "svg"}.Validate(), "ext"},
+		{"photo exe ext rejected", Photo{OwnerKind: "lot", OwnerUID: "u", Ext: "exe"}.Validate(), "ext"},
+		{"photo gif ext rejected", Photo{OwnerKind: "lot", OwnerUID: "u", Ext: "gif"}.Validate(), "ext"},
 	}
 
 	for _, c := range cases {
@@ -121,6 +128,12 @@ func TestValidateAcceptsRealFixtureShapes(t *testing.T) {
 		{"poller spot (RFC3339 as_of not rejected)", Spot{AsOf: "2026-07-14T12:00:00Z", GoldUSD: 4000, SilverUSD: 60}.Validate()},
 		{"default settings", DefaultSettings().Validate()},
 		{"sale", ValidateSale(4, 240, "2026-04-01")},
+		// Photo — every accepted attachment ext: the images, plus 'pdf' the document (om-9o4n.2).
+		{"photo jpg", Photo{OwnerKind: "lot", OwnerUID: "u", Ext: "jpg"}.Validate()},
+		{"photo png", Photo{OwnerKind: "lot", OwnerUID: "u", Ext: "png"}.Validate()},
+		{"photo webp", Photo{OwnerKind: "lot", OwnerUID: "u", Ext: "webp"}.Validate()},
+		{"photo pdf document", Photo{OwnerKind: "lot", OwnerUID: "u", Ext: "pdf"}.Validate()},
+		{"photo pdf uppercase (stored lowercase)", Photo{OwnerKind: "roll_txn", OwnerUID: "u", Ext: "PDF"}.Validate()},
 	}
 	for _, c := range ok {
 		t.Run(c.name, func(t *testing.T) {

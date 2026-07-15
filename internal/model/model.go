@@ -291,7 +291,7 @@ type Photo struct {
 	OwnerUID  string `json:"owner_uid"`  // lots.uid | roll_txns.uid — logical link, no FK
 	Role      string `json:"role"`       // obverse|reverse|detail|edge|slab-label|box-end|receipt|… (open vocab; NOT NULL, default 'detail')
 	Seq       int64  `json:"seq"`        // lowest = cover; app assigns max(seq)+1 per owner at insert
-	Ext       string `json:"ext"`        // jpg|jpeg|png|webp (sniffed server-side, never user text)
+	Ext       string `json:"ext"`        // jpg|jpeg|png|webp (image) or pdf (document, no derivatives) — sniffed server-side, never user text (om-9o4n.2)
 	Caption   string `json:"caption,omitempty"`
 	Created   string `json:"created,omitempty"`
 	// Inactive is the soft-delete flag (migration 0013, om-6hlp f/N3): a trashed photo
