@@ -264,6 +264,68 @@ func TestServeRejectsTraversalAndNonV4(t *testing.T) {
 	}
 }
 
+// om-hs1v Half A: a soft-deleted (inactive) photo 404s on the serve route for EVERY variant —
+// deleted means deleted to a VIEWER, so a uid holder can no longer pull the bytes back after a
+// DELETE. The same photo returns 200 pre-delete. PhotoByUID still resolves the trashed row (its
+// contract is unchanged); the guard lives in serve().
+func TestServeReturns404ForSoftDeletedPhoto(t *testing.T) {
+	e := newPhotoEnv(t)
+	_, p := e.uploadPhoto(t, e.ownerUID, "detail", "x.png", smallPNG(t, 8, 8))
+	variants := []string{"", "original", "thumb", "display"}
+
+	// Pre-delete: every variant serves 200.
+	for _, v := range variants {
+		url := e.srv.URL + "/api/photos/" + p.UID + "/file"
+		if v != "" {
+			url += "?variant=" + v
+		}
+		r, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != 200 {
+			t.Errorf("pre-delete variant %q status %d, want 200", v, r.StatusCode)
+		}
+	}
+
+	// Soft-delete via the DELETE endpoint (row kept inactive, file kept on disk).
+	req, _ := http.NewRequest("DELETE", e.srv.URL+"/api/photos/"+itoa(p.ID), nil)
+	dr, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dr.Body.Close()
+	if dr.StatusCode != 204 {
+		t.Fatalf("DELETE status %d, want 204", dr.StatusCode)
+	}
+
+	// Post-delete: EVERY variant now 404s, and never falls through to HTML.
+	for _, v := range variants {
+		url := e.srv.URL + "/api/photos/" + p.UID + "/file"
+		if v != "" {
+			url += "?variant=" + v
+		}
+		r, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ct := r.Header.Get("Content-Type")
+		r.Body.Close()
+		if r.StatusCode != 404 {
+			t.Errorf("post-delete variant %q status %d, want 404 (a trashed photo must not still serve)", v, r.StatusCode)
+		}
+		if bytes.Contains([]byte(ct), []byte("html")) {
+			t.Errorf("post-delete variant %q returned HTML (%s) — must be a JSON 404, never spaHandler", v, ct)
+		}
+	}
+
+	// The file itself is still on disk (soft delete keeps bytes — Half B / purge is out of scope).
+	if _, err := os.Stat(filepath.Join(e.photosDir, e.ownerUID, p.UID+".png")); err != nil {
+		t.Errorf("soft delete removed the original file — it must survive on disk: %v", err)
+	}
+}
+
 // AC7: a PUT that changes role and seq changes NO byte of the original (mtime + size
 // identical afterwards).
 func TestUpdatePhotoDoesNotTouchTheFile(t *testing.T) {
