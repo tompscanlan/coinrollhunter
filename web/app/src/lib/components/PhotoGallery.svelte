@@ -14,6 +14,16 @@
     const s = r.replace(/-/g, ' ')
     return s.charAt(0).toUpperCase() + s.slice(1)
   }
+
+  // Document attachment extensions (om-9o4n.2). A receipt can be a PDF, which rides the
+  // photos table but — unlike an image — has NO thumb/display derivative: the imaging
+  // pipeline was skipped at ingest. So a doc must render as a document CARD (a doc icon +
+  // an open/download link to the original), never an <img>, which would only ever show
+  // broken. Mirrors the server's closed ext set + imaging.IsDocument.
+  const DOC_EXTS = new Set(['pdf'])
+  function isDoc(p: { ext: string }): boolean {
+    return DOC_EXTS.has((p.ext || '').toLowerCase())
+  }
 </script>
 
 <script lang="ts">
@@ -26,7 +36,7 @@
   import type { Photo } from '$lib/types'
   import Button from '$lib/components/ui/Button.svelte'
   import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte'
-  import { Upload, Trash2, ArrowLeft, ArrowRight, ExternalLink, ImageOff } from 'lucide-svelte'
+  import { Upload, Trash2, ArrowLeft, ArrowRight, ExternalLink, ImageOff, FileText } from 'lucide-svelte'
 
   let {
     ownerKind,
@@ -155,11 +165,29 @@
   {#if selected}
     <div class="space-y-2">
       <div class="flex items-center justify-center overflow-hidden rounded-lg border bg-muted/30">
-        <img
-          src={api.photos.fileUrl(selected.uid, 'display')}
-          alt={selected.caption || selected.role}
-          class="max-h-[46vh] w-auto object-contain"
-        />
+        {#if isDoc(selected)}
+          <!-- A document attachment (PDF) has no image derivative — render a document card
+               with an open/download link, never an <img> that would show broken (om-9o4n.2). -->
+          <a
+            href={api.photos.fileUrl(selected.uid, 'original')}
+            target="_blank"
+            rel="noopener"
+            class="flex max-h-[46vh] flex-col items-center justify-center gap-2 px-6 py-12 text-center"
+          >
+            <FileText class="size-16 text-muted-foreground" />
+            <span class="text-sm font-medium text-foreground">{selected.caption || prettyRole(selected.role)}</span>
+            <span class="text-xs uppercase tracking-wide text-muted-foreground">{selected.ext} document</span>
+            <span class="inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline">
+              <ExternalLink class="size-3" /> Open / download
+            </span>
+          </a>
+        {:else}
+          <img
+            src={api.photos.fileUrl(selected.uid, 'display')}
+            alt={selected.caption || selected.role}
+            class="max-h-[46vh] w-auto object-contain"
+          />
+        {/if}
       </div>
       <div class="flex flex-wrap items-center justify-between gap-2">
         <a
@@ -223,7 +251,15 @@
               : 'border-transparent hover:border-input'}"
             title={p.role}
           >
-            <img src={api.photos.fileUrl(p.uid, 'thumb')} alt={p.role} class="size-16 object-cover" />
+            {#if isDoc(p)}
+              <!-- A doc has no thumbnail derivative — a generic document tile stands in for it. -->
+              <span class="flex size-16 flex-col items-center justify-center gap-0.5 bg-muted/40 text-muted-foreground">
+                <FileText class="size-6" />
+                <span class="text-[9px] uppercase leading-none">{p.ext}</span>
+              </span>
+            {:else}
+              <img src={api.photos.fileUrl(p.uid, 'thumb')} alt={p.role} class="size-16 object-cover" />
+            {/if}
           </button>
           <div class="flex items-center gap-0.5">
             <Button variant="ghost" size="icon" title="Move earlier" disabled={busy} onclick={() => move(p, -1)}>
@@ -244,7 +280,7 @@
     <input
       bind:this={fileInput}
       type="file"
-      accept="image/jpeg,image/png,image/webp"
+      accept="image/jpeg,image/png,image/webp,application/pdf"
       class="hidden"
       onchange={onPick}
     />
@@ -264,7 +300,7 @@
         <Upload class="size-4" /> {busy ? 'Uploading…' : 'Add a photo'}
       </Button>
     </div>
-    <p class="mt-1 text-xs text-muted-foreground">JPEG, PNG or WebP, up to 10 MB — a photo or scan of a receipt works too. The original is kept; a smaller copy is made for quick viewing.</p>
+    <p class="mt-1 text-xs text-muted-foreground">JPEG, PNG, WebP or PDF, up to 10 MB — a photo, scan, or PDF of a receipt works. The original is always kept; images also get a smaller copy for quick viewing.</p>
   </div>
 </div>
 

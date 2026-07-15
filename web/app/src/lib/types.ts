@@ -154,7 +154,7 @@ export interface Photo {
   owner_uid: string
   role: string // obverse|reverse|detail|edge|slab-label|… (open vocab; default 'detail')
   seq: number // lowest = cover
-  ext: string // jpg|jpeg|png|webp
+  ext: string // jpg|jpeg|png|webp (image) or pdf (document attachment, no derivatives — om-9o4n.2)
   caption?: string
   created?: string
   inactive?: boolean
