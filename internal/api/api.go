@@ -206,6 +206,12 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 		list: s.ListLosses, create: s.InsertLoss, update: s.UpdateLoss, del: s.DeleteLoss,
 	})
 
+	// Composite workflow endpoints (/api/workflows/*, om-2sl6): one endpoint per
+	// compound Do-tab action, each wrapping the whole action in ONE store transaction.
+	// They coexist with the generic register()'d routes above (distinct path prefix) and
+	// with the two other hand-written handlers (lots/{id}/sell, branches/{id}/merge).
+	registerWorkflows(mux, s)
+
 	// Static UI at the root (when embedded), with an SPA fallback to index.html.
 	if webFS != nil {
 		mux.Handle("/", spaHandler(webFS))

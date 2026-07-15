@@ -200,6 +200,11 @@ func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
 	if err := t.Validate(); err != nil {
 		return 0, err
 	}
+	// Auto-commit, single statement on s.db (om-u3el's contract): the demo seeder wraps a
+	// whole run in its own ambient BEGIN and the poller writes bare, so this must NOT open
+	// its own transaction. Seam f (om-2sl6) — a "rolled-back box must leave no orphan
+	// branch" — is a COMPOUND-path concern: it is closed by RecordPurchase/RecordFinds,
+	// which resolve the branch through Tx.InsertRollTxn inside the one workflow transaction.
 	return insertRollTxn(s.db, t)
 }
 
@@ -234,6 +239,8 @@ func (s *Store) InsertTrip(t model.Trip) (int64, error) {
 	if err := t.Validate(); err != nil {
 		return 0, err
 	}
+	// Auto-commit, single statement on s.db — see *Store.InsertRollTxn on why this stays
+	// non-transactional (the demo seeder's ambient BEGIN) and where seam f is closed.
 	return insertTrip(s.db, t)
 }
 

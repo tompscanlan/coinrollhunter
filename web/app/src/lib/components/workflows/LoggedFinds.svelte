@@ -7,7 +7,7 @@
   import { onMount } from 'svelte'
   import type { Report, RollTxn, ItemType } from '$lib/types'
   import { api } from '$lib/api'
-  import { holdingsGrid, productAutofillFrom, productSuggestionsFrom } from '$lib/grids.svelte'
+  import { productAutofillFrom, productSuggestionsFrom } from '$lib/grids.svelte'
   import { money, today } from '$lib/format'
   import { DENOMS, ROLL_UNITS, SOURCE_TYPES, SILVER_PRESETS, COIN_FACE, faceFor } from '$lib/presets'
   import Card from '$lib/components/ui/Card.svelte'
@@ -134,59 +134,63 @@
     busy = true
     err = ''
     try {
-      // 1) create the buy inline if needed (and the user actually filled it in)
-      let boxId = 0
+      // ONE atomic request (om-2sl6): the (optional inline) box, every find — each
+      // find-or-creating its item_type SERVER-side — and every clad keeper land together
+      // in ONE store transaction, or none do. No more half-recorded submission that leaves
+      // a box + one find + a thrown-away boxId when find #2 fails; re-pressing is safe
+      // because nothing landed. The box link for every find/keeper is resolved on the
+      // server from `box`, so the rows carry no from_box of their own.
+      //
+      // A find you're keeping is ONE flagged find row (its `kept` flag); the keeper section
+      // is CLAD ONLY (ADR-008, om-5psc) — this submission never writes a keeper for a coin
+      // it just logged as a find, so one coin is one row and its face counts once.
+      let box: { existing_id: number } | { new: Omit<RollTxn, 'id' | 'uid' | 'branch_id'> } | null = null
       if (useNewBox) {
         if (nbBank.trim() && (Number(nbFace) || 0) > 0) {
-          boxId = await api.rollTxns.create({
-            date: nbDate || today(),
-            bank: nbBank.trim(),
-            action: 'buy',
-            denom: nbDenom,
-            unit: nbUnit,
-            source_type: nbSourceType,
-            amount: Number(nbAmount) || 0,
-            face_usd: Number(nbFace) || 0,
-            notes: '',
-          })
+          box = {
+            new: {
+              date: nbDate || today(),
+              bank: nbBank.trim(),
+              action: 'buy',
+              denom: nbDenom,
+              unit: nbUnit,
+              source_type: nbSourceType,
+              amount: Number(nbAmount) || 0,
+              face_usd: Number(nbFace) || 0,
+              notes: '',
+            },
+          }
         }
       } else {
-        boxId = Number(boxChoice) || 0
+        const id = Number(boxChoice) || 0
+        if (id) box = { existing_id: id }
       }
 
-      // 2) finds → CRH holdings, linked to the box
-      for (const f of realFinds) {
-        const faceTotal = Number(f.face) || 0
-        await holdingsGrid.create({
-          activity: 'crh',
-          product: f.product.trim(),
-          metal: f.metal,
-          fineness: f.fineness.trim(),
-          fine_oz_each: Number(f.fineOz) || 0,
-          qty: Number(f.qty) || 0,
-          basis_usd: faceTotal,
-          premium_usd: 0, // CRH finds carry no premium over melt (acquired at face)
-          face_value_usd: faceTotal,
-          acquired: chosenDate || today(),
-          source: chosenBank.trim(),
-          from_box: boxId ? String(boxId) : '',
-          kept: f.kept, // "keeping this" intent (ADR-008, om-5psc) — one flagged row, no keeper
-        })
-      }
-
-      // 3) bulk clad keepers — CLAD ONLY (ADR-008, om-5psc). A find you're keeping is
-      //    ONE flagged find row above (the "Keep" box), never a keeper here, so this
-      //    submission can no longer write a keeper for a coin it just logged as a find:
-      //    one coin, one row, its face counted once. These are the leftover bulk clad.
-      for (const k of realKeepers) {
-        await api.keepers.create({
+      await api.workflows.loggedFinds({
+        box,
+        finds: realFinds.map((f) => {
+          const faceTotal = Number(f.face) || 0
+          return {
+            product: f.product.trim(),
+            metal: f.metal,
+            fineness: f.fineness.trim(),
+            fine_oz_each: Number(f.fineOz) || 0,
+            qty: Number(f.qty) || 0,
+            basis_usd: faceTotal,
+            premium_usd: 0, // CRH finds carry no premium over melt (acquired at face)
+            face_value_usd: faceTotal,
+            acquired: chosenDate || today(),
+            source: chosenBank.trim(),
+            kept: f.kept, // "keeping this" intent (ADR-008, om-5psc) — one flagged row, no keeper
+          }
+        }),
+        keepers: realKeepers.map((k) => ({
           denom: k.denom,
           count: Number(k.count) || 0,
           face_usd: Number(k.face) || 0,
           date: chosenDate || today(),
-          roll_txn_id: boxId || 0,
-        })
-      }
+        })),
+      })
 
       onChanged()
       done = { findValue: findValueTotal, bank: chosenBank.trim() }

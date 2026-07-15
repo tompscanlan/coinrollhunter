@@ -73,25 +73,27 @@
     busy = true
     err = ''
     try {
-      await api.rollTxns.create({
-        date: date || today(),
-        bank: bank.trim(),
-        action: 'buy',
-        denom,
-        unit,
-        source_type: sourceType,
-        amount: Number(amount) || 0,
-        face_usd: faceAmt,
-        notes: notes.trim(),
-      })
-      if (logTrip && (Number(miles) > 0 || Number(hours) > 0)) {
-        await api.trips.create({
+      // ONE atomic request (om-2sl6): the purchase and the optional trip land together or
+      // not at all — no more half-recorded box with a lost trip, and re-pressing after a
+      // failure is safe because nothing landed.
+      const trip =
+        logTrip && (Number(miles) > 0 || Number(hours) > 0)
+          ? { date: date || today(), bank: bank.trim(), miles: Number(miles) || 0, hours: Number(hours) || 0 }
+          : null
+      await api.workflows.boughtABox({
+        purchase: {
           date: date || today(),
           bank: bank.trim(),
-          miles: Number(miles) || 0,
-          hours: Number(hours) || 0,
-        })
-      }
+          action: 'buy',
+          denom,
+          unit,
+          source_type: sourceType,
+          amount: Number(amount) || 0,
+          face_usd: faceAmt,
+          notes: notes.trim(),
+        },
+        trip,
+      })
       onChanged()
       done = { face: faceAmt, denom, unit }
     } catch (e) {
