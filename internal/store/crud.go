@@ -269,11 +269,34 @@ func (s *Store) ListBranches() ([]model.Branch, error) { return s.loadBranches()
 
 // UpdateBranch updates every column except the immutable uid. Editing the
 // canonical name also records it as an alias, so the old name still resolves.
+//
+// The UPDATE and the alias INSERT are a two-statement sequence, so they run in ONE
+// transaction: SetMaxOpenConns(1) means the open tx holds the pool's only connection
+// across BOTH statements, so a concurrent DeleteBranch (which now takes the write lock
+// and its own tx) cannot commit between them and orphan the alias onto a branch whose
+// row is gone (branch_aliases has no FK — migration 0008 — and a later recycled rowid
+// would then resolve that name to the WRONG branch, reopening the om-c8ei wrong-parent
+// adoption). Before this fix the pair ran as two separate auto-commit statements on the
+// shared connection, so the connection was released between them.
+//
+// The store write lock (s.wmu) is held by the CALLER, not self-acquired: the sole
+// writer of UpdateBranch is api.register's PUT handler, which already wraps its
+// read-merge-write in Store.WithWrite (the om-kyq7 RMW guarantee shared by every
+// Update* method). Self-acquiring s.wmu here would DEADLOCK that path — s.wmu is a
+// non-reentrant sync.Mutex and WithWrite already holds it. The transaction is what
+// closes the orphan race; the caller's lock provides the RMW serialization, and
+// DeleteBranch/MergeBranches take s.wmu so they serialize against that held lock.
 func (s *Store) UpdateBranch(id int64, b model.Branch) error {
 	if err := b.Validate(); err != nil {
 		return err
 	}
-	res, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(
 		`UPDATE branches SET name=?, institution=?, address=?, phone=?, lat=?, lon=?, hours=?,
 		   buys=?, dumps=?, denoms=?, box_limit=?, box_lead_days=?, coin_fee_usd=?, cooldown_days=?, notes=?, active=?
 		 WHERE id=?`,
@@ -284,17 +307,26 @@ func (s *Store) UpdateBranch(id int64, b model.Branch) error {
 		return err
 	}
 	if name := strings.TrimSpace(b.Name); name != "" {
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO branch_aliases (branch_id, alias) VALUES (?,?)`, id, name); err != nil {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO branch_aliases (branch_id, alias) VALUES (?,?)`, id, name); err != nil {
 			return fmt.Errorf("update branch alias: %w", err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // DeleteBranch removes a branch and its aliases. History rows whose branch link
 // still points here simply resolve to no name until reassigned — the merge path
 // (MergeBranches) is the safe way to retire a duplicate, since it repoints first.
+//
+// Under the store write lock, for the same reason as MergeBranches and DeleteHolding:
+// it already had the transaction, but without the lock it could interleave with a
+// concurrent UpdateBranch's UPDATE+alias-INSERT (UpdateBranch runs under s.wmu via its
+// caller's WithWrite) and leave an orphan alias. The DELETE handler calls this directly
+// — not inside WithWrite — so self-acquiring s.wmu here is safe (no reentrancy).
 func (s *Store) DeleteBranch(id int64) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
