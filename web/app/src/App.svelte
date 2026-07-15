@@ -20,6 +20,7 @@
   } from '$lib/grids.svelte'
   import type { Branch } from '$lib/types'
   import SettingsPanel from '$lib/components/SettingsPanel.svelte'
+  import CoinDetail from '$lib/components/CoinDetail.svelte'
   import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon, Power } from 'lucide-svelte'
 
   type View = 'overview' | 'do' | 'insights' | 'edit'
@@ -102,6 +103,12 @@
     sellProceeds = 0
     sellDate = today()
     sellErr = ''
+  }
+
+  // --- photos: open a lot's detail drawer (om-6hlp) ---
+  let photoRow = $state<FlatHolding | null>(null)
+  function openPhotos(row: FlatHolding) {
+    photoRow = row
   }
   async function confirmSell() {
     if (!sellRow) return
@@ -299,6 +306,8 @@
             onChanged={refresh}
             rowAction={openSell}
             rowActionTitle="Sell / dispose"
+            rowAction2={openPhotos}
+            rowActionTitle2="Photos"
             reloadSignal={holdingsReload}
           />
         {:else if dataTab === 'rolls'}
@@ -328,6 +337,16 @@
 
 {#if settingsOpen}
   <SettingsPanel spot={report?.spot} onClose={() => (settingsOpen = false)} onSaved={refresh} />
+{/if}
+
+{#if photoRow}
+  <CoinDetail
+    ownerUid={photoRow.uid ?? ''}
+    title={photoRow.product || 'This lot'}
+    subtitle={`${photoRow.activity === 'crh' ? 'CRH find' : 'Bullion'} · qty ${photoRow.qty}${photoRow.acquired ? ` · acquired ${photoRow.acquired}` : ''}`}
+    onClose={() => (photoRow = null)}
+    onChanged={refresh}
+  />
 {/if}
 
 {#if sellRow}

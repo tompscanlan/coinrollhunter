@@ -129,6 +129,10 @@ export interface GridConfig<T extends { id: number }> {
     bullion callers (NewBullion) can omit it; holdingFields coerces the defaults. */
 export interface FlatHolding {
   id: number
+  // The lot's stable uid (ADR-009), read-only. Photos hang off it (owner_uid), so the
+  // grid's camera cell opens the detail drawer keyed by this. holdingFields never names
+  // it, so the merge-update leaves it untouched — uid stays immutable (om-6hlp AC14/T2).
+  uid?: string
   activity: 'bullion' | 'crh'
   product: string
   metal: string
@@ -307,6 +311,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
       const t = byId.get(h.item_type_id)
       return {
         id: h.id,
+        uid: h.uid ?? '', // read-only; carried so the camera cell can key photos by owner_uid
         activity: h.activity,
         product: t?.name ?? '',
         metal: t?.metal ?? '',
@@ -488,7 +493,7 @@ export const suppliesGrid: GridConfig<Supply> = {
 export const keepersGrid: GridConfig<Keeper> = {
   title: 'Keepers (clad only)',
   description:
-    'Bulk / uncategorized CLAD pulled at face. Recoverable, not a loss — kept out of the redeposit float. A find you are keeping (silver OR notable clad) is a taxonomy find in Holdings with the "Keep" box checked, NOT a keeper here — one coin is one row, so its face counts once (ADR-008, om-5psc). Date/box are optional audit context.',
+    'Bulk / uncategorized CLAD pulled at face. Recoverable, not a loss — kept out of the redeposit float. A find you are keeping (silver OR notable clad) is a taxonomy find in Holdings with the "Keep" box checked, NOT a keeper here — one coin is one row, so its face counts once (ADR-008, om-5psc). Date/box are optional audit context. A keeper is a batch, not a specimen, so it carries no camera cell; a coin worth picturing is a find in Holdings.',
   columns: [
     { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '120px' } },
     { accessorKey: 'count', header: 'Count', meta: { editor: 'number', step: 1, align: 'right', width: '110px' } },
