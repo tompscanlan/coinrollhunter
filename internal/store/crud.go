@@ -159,7 +159,42 @@ func updateHolding(x execer, id int64, h model.Holding) error {
 	return affected(res, err, "update holding")
 }
 
-func (s *Store) DeleteHolding(id int64) error { return s.deleteByID("lots", id) }
+// DeleteHolding removes a lot — and first SOFT-FLAGS its photos (R1, om-6hlp): the
+// photos rows have no FK to lots (ADR-009), so a bare delete would leave them dangling
+// ACTIVE against a now-recyclable owner_uid. Instead we set inactive=1 on them and keep
+// the files (never-lose-bytes, f/N3) — a deleted lot's pictures survive in the trash and
+// still leave in an export. Flag-then-delete run in ONE transaction under the write lock
+// (an RMW, like SellHolding) so the two land or neither does.
+func (s *Store) DeleteHolding(id int64) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var uid sql.NullString
+	if err := tx.QueryRow(`SELECT uid FROM lots WHERE id=?`, id).Scan(&uid); err == sql.ErrNoRows {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if uid.Valid && uid.String != "" {
+		if _, err := tx.Exec(`UPDATE photos SET inactive=1 WHERE owner_kind='lot' AND owner_uid=?`, uid.String); err != nil {
+			return fmt.Errorf("soft-flag lot photos: %w", err)
+		}
+	}
+	res, err := tx.Exec(`DELETE FROM lots WHERE id=?`, id)
+	if err != nil {
+		return fmt.Errorf("delete lots/%d: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
+}
 
 // nullStr maps an empty string to SQL NULL (for optional text columns like a
 // keeper's audit date), else the string. Keeps nullable columns truly NULL for

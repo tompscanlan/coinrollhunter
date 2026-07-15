@@ -90,7 +90,13 @@ func grossWeightToTroyOunces(gross float64, unit string) float64 {
 // ItemType). This is what calc operates on; it mirrors the prototype's lot shape
 // so the ported math is unchanged.
 type Lot struct {
-	ID           int64   `json:"id"`
+	ID int64 `json:"id"`
+	// UID is the resolved lot's stable identity, carried through from the Holding
+	// (ADR-009). calc is blind to it, but /api/summary's report.lots is the ONLY
+	// place the front end sees a lot's uid (model.Lot, not model.Holding, is what the
+	// Overview/Insights render), so surfacing photos on the trophy feed needs it here
+	// (om-6hlp T3). Purely additive — no existing consumer reads it.
+	UID          string  `json:"uid"`
 	RollTxnID    int64   `json:"roll_txn_id,omitempty"` // box this find came from (0 = none)
 	Activity     string  `json:"activity"`              // "bullion" | "crh"
 	Product      string  `json:"product"`               // from ItemType.Name
@@ -123,6 +129,7 @@ func Resolve(h Holding, t ItemType) Lot {
 	}
 	return Lot{
 		ID:           h.ID,
+		UID:          h.UID,
 		RollTxnID:    h.RollTxnID,
 		Activity:     h.Activity,
 		Product:      t.Name,
@@ -271,6 +278,29 @@ type DisposedLot struct {
 	Subcategory string  `json:"subcategory,omitempty"` // toward lifetime hit-rate (survivorship)
 }
 
+// Photo is one image attached to a specimen (lots) or a box/roll record (roll_txns)
+// — arbitrary N per owner, each with a role and an explicit order (ADR-009, om-6hlp).
+// The ROW is the immutable ORIGINAL: derivatives (thumb/display) are a regenerable
+// cache the row does not describe. The file lives at photos/<owner_uid>/<photo_uid>.<ext>
+// — nothing mutable is in the path, so re-ordering or re-roling is an UPDATE, never a
+// filesystem rename. UID/Seq/Ext/Created are server-assigned at insert.
+type Photo struct {
+	ID        int64  `json:"id"`
+	UID       string `json:"uid"`        // opaque v4, the file's path stem; never taken from the caller
+	OwnerKind string `json:"owner_kind"` // "lot" | "roll_txn"
+	OwnerUID  string `json:"owner_uid"`  // lots.uid | roll_txns.uid — logical link, no FK
+	Role      string `json:"role"`       // obverse|reverse|detail|edge|slab-label|box-end|receipt|… (open vocab; NOT NULL, default 'detail')
+	Seq       int64  `json:"seq"`        // lowest = cover; app assigns max(seq)+1 per owner at insert
+	Ext       string `json:"ext"`        // jpg|jpeg|png|webp (sniffed server-side, never user text)
+	Caption   string `json:"caption,omitempty"`
+	Created   string `json:"created,omitempty"`
+	// Inactive is the soft-delete flag (migration 0013, om-6hlp f/N3): a trashed photo
+	// the file for which STAYS on disk. The gallery hides it; export still carries it.
+	Inactive bool `json:"inactive,omitempty"`
+}
+
+func (p Photo) EntityID() int64 { return p.ID }
+
 // Dataset is the full resolved in-memory store the calc engine operates on.
 type Dataset struct {
 	Lots     []Lot
@@ -292,6 +322,11 @@ type Settings struct {
 	SilverBuyback40pct float64            `json:"silver_buyback_factor_40pct"`
 	SilverBuyback90pct float64            `json:"silver_buyback_factor_90pct"`
 	BoxFaceUSD         map[string]float64 `json:"box_face_usd"`
+	// StripEXIFOnImport controls whether a newly imported photo original has its EXIF
+	// metadata stripped at ingest (om-6hlp, N4). DEFAULT false (KEEP): the archive stays
+	// complete and camera data is never destroyed without the user asking. Applies to
+	// FUTURE imports only — already-imported originals are never rewritten by a toggle.
+	StripEXIFOnImport bool `json:"strip_exif_on_import"`
 }
 
 // DefaultSettings returns the prototype's defaults (used when a field is absent).

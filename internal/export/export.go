@@ -160,7 +160,7 @@ var tables = []table{
 	// costs nothing (ADR-009 (d)). No filter of any kind — a photo the user moved to
 	// the trash is still the user's photo.
 	{name: "photos", orderBy: "t.owner_uid, t.seq, t.uid",
-		cols:    []string{"uid", "id", "owner_kind", "owner_uid", "role", "seq", "ext", "caption", "created"},
+		cols:    []string{"uid", "id", "owner_kind", "owner_uid", "role", "seq", "ext", "caption", "created", "inactive"},
 		derived: []derived{photoPath}},
 }
 
@@ -588,6 +588,7 @@ var knownSettingKeys = map[string]bool{
 	"silver_buyback_factor_40pct":   true,
 	"silver_buyback_factor_90pct":   true,
 	"box_face_usd":                  true,
+	"strip_exif_on_import":          true,
 }
 
 // unexpectedSettingKeys returns any settings key that is not one of the known tunables,

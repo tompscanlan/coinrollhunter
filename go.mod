@@ -6,6 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/mattn/go-isatty v0.0.20
+	golang.org/x/image v0.44.0
 	modernc.org/sqlite v1.53.0
 )
 

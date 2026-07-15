@@ -68,15 +68,17 @@ func TestMigration0012AdditiveTouchesNoKeeper(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// (a) THE DB OPENS — no brick. Migration 0012 applies here (a plain additive ALTER).
+	// (a) THE DB OPENS — no brick. Open applies every migration past the seeded v11: 0012
+	// (this bead's additive kept ALTER) AND 0013 (om-6hlp's additive photo inactive flag),
+	// both plain additive ALTERs, so the head is now 13.
 	s, err := Open(path)
 	if err != nil {
-		t.Fatalf("open through 0012: %v", err)
+		t.Fatalf("open through 0013: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
 
-	if v, _ := s.Version(); v != 12 {
-		t.Errorf("user_version = %d, want 12 after 0012", v)
+	if v, _ := s.Version(); v != 13 {
+		t.Errorf("user_version = %d, want 13 (head after 0012 kept + 0013 photo flag)", v)
 	}
 
 	// (b) THE KEEPERS TABLE IS BYTE-FOR-BYTE UNCHANGED — not one row deleted, not one
