@@ -103,13 +103,14 @@ func TestWithTxCommits(t *testing.T) {
 			t.Errorf("%s = %d rows, want %d", table, n, want)
 		}
 	}
-	// The typed bank resolved to a real branch, and the txn points at it.
-	var bid int64
-	if err := s.db.QueryRow(`SELECT branch_id FROM roll_txns`).Scan(&bid); err != nil {
+	// The typed bank resolved to a real branch, and the txn points at it — by its stable
+	// branch_uid now (om-c8ei), not the recyclable branch_id (dropped in 0011).
+	var buid string
+	if err := s.db.QueryRow(`SELECT branch_uid FROM roll_txns`).Scan(&buid); err != nil {
 		t.Fatal(err)
 	}
-	if bid == 0 {
-		t.Error("roll_txn has no branch_id — resolveBranchID did not fork the branch inside the tx")
+	if buid == "" {
+		t.Error("roll_txn has no branch_uid — resolveBranchUID did not fork the branch inside the tx")
 	}
 }
 
