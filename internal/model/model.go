@@ -60,6 +60,11 @@ type Holding struct {
 	Category    string  `json:"category,omitempty"`    // e.g. "Silver" | "PMD" | "Error" | "2009"
 	Subcategory string  `json:"subcategory,omitempty"` // e.g. "Mercury" | "parking lot" | "major"
 	Trophy      bool    `json:"trophy,omitempty"`
+	// Kept marks a CRH find the hunter is keeping (ADR-008, om-5psc): a find you keep
+	// is this ONE flagged row, not a find PLUS a duplicate keeper batch. Records
+	// DATA-ENTRY INTENT only — a find's face is on the kept side of the float either
+	// way (calc counts it once via basis), so this is MATH-NEUTRAL (calc is unchanged).
+	Kept        bool    `json:"kept,omitempty"`
 	Disposed    string  `json:"disposed,omitempty"` // ISO date if sold
 	DisposedUSD float64 `json:"disposed_usd,omitempty"`
 }
@@ -101,6 +106,7 @@ type Lot struct {
 	Category     string  `json:"category,omitempty"`    // CRH find taxonomy (ADR-006)
 	Subcategory  string  `json:"subcategory,omitempty"` // CRH find taxonomy (ADR-006)
 	Trophy       bool    `json:"trophy,omitempty"`
+	Kept         bool    `json:"kept,omitempty"` // "keeping this" find intent (ADR-008, om-5psc); math-neutral
 }
 
 // IsFind reports whether the lot is a coin-roll-hunting find (vs. bullion).
@@ -132,6 +138,7 @@ func Resolve(h Holding, t ItemType) Lot {
 		Category:     h.Category,
 		Subcategory:  h.Subcategory,
 		Trophy:       h.Trophy,
+		Kept:         h.Kept,
 	}
 }
 
