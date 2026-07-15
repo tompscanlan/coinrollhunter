@@ -32,10 +32,14 @@ import (
 //     BEFORE the transaction, so the final path is known up front; the original is written
 //     straight to that path with O_EXCL, then the row is INSERTed in one WithTx carrying that
 //     same pre-minted uid, and on ANY tx failure the file is removed. Because there is no
-//     post-commit rename, a committed row ALWAYS has its original at its final path — even
-//     across a hard crash, which used to strand the bytes under a .upload-*.part temp name in
-//     the millisecond between commit and rename. The only tolerable residue of a FAILED upload
-//     is an orphan FILE with no row (invisible, reapable later), never a row with no original.
+//     post-commit rename, a committed row has its original at its final path across a PROCESS
+//     crash (SIGKILL at any instruction) — the write precedes the commit — which the old
+//     commit→rename window did not survive (it stranded the bytes under a .upload-*.part temp
+//     name). One residual remains, narrower and honestly stated: the file is not fsync'd before
+//     the tx commits, so a POWER LOSS inside the OS writeback window can leave a durable row
+//     whose not-yet-flushed original is missing — closing that needs an fsync of the file+dir
+//     before commit (om-0j33). The only tolerable residue of a FAILED upload is an orphan FILE
+//     with no row (invisible, reapable later), never a row with no original.
 //     Derivatives (thumb/display) are a best-effort, regenerable cache.
 //
 // photosDir is where originals live (photos/<owner_uid>/<uid>.<ext>); cacheDir is the
@@ -185,10 +189,12 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 // collision fails the create rather than overwriting an existing original — then INSERTs the
 // row carrying that same uid inside one WithTx (with the in-tx owner re-check). On ANY tx
 // failure OR a vanished owner it removes the file it wrote, so the only residue of a failed
-// upload is nothing at all (the tolerable orphan-file case is a HARD crash, not a clean
-// failure). There is deliberately no post-commit rename anywhere: because the original is
-// already at its final path before the row commits, a committed row always has its original.
-// Returns the stored photo; ownerGone signals the owner disappeared mid-upload (mapped to 404).
+// upload is nothing at all (the tolerable orphan-file case is a hard crash between the write
+// and the commit, not a clean failure). There is deliberately no post-commit rename anywhere:
+// because the original is at its final path before the row commits, a committed row has its
+// original across a process crash — power-loss durability additionally needs an fsync before
+// commit (om-0j33). Returns the stored photo; ownerGone signals the owner disappeared
+// mid-upload (mapped to 404).
 func (h *photoHandler) writeOriginalAndInsert(uid, ownerKind, ownerUID, role, ext, caption string, data []byte) (model.Photo, bool, error) {
 	ownerDir := filepath.Join(h.photosDir, ownerUID)
 	if err := os.MkdirAll(ownerDir, 0o755); err != nil {
