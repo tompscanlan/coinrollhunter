@@ -39,6 +39,12 @@ const apiPost = async (p, body) => {
   if (!r.ok) throw new Error(`POST ${p} → ${r.status}`)
   return r.json()
 }
+// Removes a row directly — used to keep a self-contained assertion (om-5psc AC2) from
+// leaving a lot behind that would perturb a later positional selection in this script.
+const apiDelete = async (p) => {
+  const r = await fetch(BASE + '/api' + p, { method: 'DELETE' })
+  if (!r.ok) throw new Error(`DELETE ${p} → ${r.status}`)
+}
 
 const browser = await chromium.launch()
 const page = await browser.newPage()
@@ -142,6 +148,44 @@ try {
   await page.getByRole('button', { name: 'Done' }).click()
   const sum2 = await api('/summary')
   ok('box yield computed', (sum2.box_yields || []).some((b) => b.find_count > 0))
+
+  // === 2b. A kept notable find writes ZERO keepers (om-5psc, AC2) ===
+  // The double-count seam this bead closes: a find you keep is ONE flagged find row,
+  // never a find PLUS a keeper for the same coin. Log one kept find with NO keeper and
+  // prove the submission created no keeper, stored the flag, moved kept_face by exactly
+  // the find's face, and left clad_face untouched.
+  await goDo()
+  await tile('Logged finds').click()
+  await page.getByRole('heading', { name: 'Logged finds' }).waitFor()
+  const keepersBefore2b = (await api('/keepers')).length
+  const sumB4 = await api('/summary')
+  const prodK = page.getByPlaceholder('90% half (1964 & earlier)')
+  await prodK.fill('1943-S Merc (kept)')
+  await prodK.dispatchEvent('input')
+  await sb().nth(0).fill('1') // find qty
+  await sb().nth(0).dispatchEvent('input')
+  await sb().nth(1).fill('2') // find face $ (manual)
+  await sb().nth(1).dispatchEvent('input')
+  // "Keep" is checked by default for a logged find — the whole point of this section.
+  const keepBox = page.getByRole('checkbox').first()
+  ok('AC2 — "Keep" defaults on for a logged find', await keepBox.isChecked())
+  // Deliberately add NO keeper row: the old path (a keeper alongside the find) is gone.
+  await page.getByRole('button', { name: 'Save finds' }).click()
+  await page.getByText('in find face', { exact: false }).waitFor({ timeout: 5000 })
+  const keepersAfter2b = (await api('/keepers')).length
+  ok('AC2 — a kept find created ZERO keeper rows', keepersAfter2b === keepersBefore2b,
+     `${keepersBefore2b} -> ${keepersAfter2b}`)
+  const keptFind = (await api('/lots')).find((l) => Math.abs((l.face_value_usd ?? 0) - 2) < 0.01 && l.activity === 'crh')
+  ok('AC2 — the find is stored WITH the kept flag', keptFind?.kept === true, `kept ${JSON.stringify(keptFind?.kept)}`)
+  const sum2b = await api('/summary')
+  ok('AC2 — kept_face rose by EXACTLY the find face ($2)',
+     Math.abs((sum2b.kept_face - sumB4.kept_face) - 2) < 0.01, `d kept_face ${(sum2b.kept_face - sumB4.kept_face).toFixed(2)}`)
+  ok('AC2 — clad_face did NOT move (no keeper written)',
+     Math.abs(sum2b.clad_face - sumB4.clad_face) < 0.01, `d clad_face ${(sum2b.clad_face - sumB4.clad_face).toFixed(2)}`)
+  // Isolate: remove this assertion's find so the linear script's later positional lot
+  // selection (the Sell step) sees exactly the lots it did before this block.
+  if (keptFind?.id) await apiDelete('/lots/' + keptFind.id)
+  await page.getByRole('button', { name: 'Done' }).click()
 
   // === 3. New coin / bullion ===  (1 oz gold eagle, basis $3950)
   await goDo()
@@ -264,7 +308,9 @@ try {
   await newRow.getByPlaceholder('1 oz Gold Eagle').fill('Mercury dime (trophy)')
   await newRow.getByPlaceholder('Silver').fill('Silver')
   await newRow.getByPlaceholder('Mercury').fill('Mercury')
-  await newRow.locator('input[type=checkbox]').check()
+  // Two checkbox columns now (Trophy, then Keep — om-5psc); Trophy is first. This block
+  // pins the trophy flag, so target it explicitly rather than the ambiguous "the checkbox".
+  await newRow.locator('input[type=checkbox]').first().check()
   await newRow.locator('button[title="Add row"]').click()
   const isTaxLot = (l) => l.category === 'Silver' && l.subcategory === 'Mercury' && l.trophy === true
   await awaitApi('/lots', (ls) => ls.some(isTaxLot)) // wait for create+reload, not a fixed guess
