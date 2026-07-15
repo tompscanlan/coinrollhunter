@@ -116,3 +116,36 @@ collapses to `CladFace + FindCost` when nothing is disposed).
   rule + the box/date audit dimension + the Reconcile warning address the double-count
   at the workflow level without a schema-level join a local single-writer store
   doesn't need.
+
+## Update 2026-07-14 (om-5psc): a structural `kept` flag, and the dedupe stays rejected
+
+The double-count seam this ADR mitigated with copy + a **non-blocking** Reconcile
+warning is now closed **structurally**. Migration **0012** adds `lots.kept` (additive,
+`DEFAULT 0`, the trophy pattern); a find you keep is **one flagged find row**, and
+LoggedFinds no longer writes a keeper for a coin it just recorded as a find. One coin,
+one row — the duplicate is **prevented at entry**, not detected after the fact. The
+keeper table is now **clad-only by convention** (bulk/uncategorized clad); it is not
+dropped, and a genuinely clad-only keeper — including a legacy NULL-date/NULL-box one —
+round-trips untouched.
+
+The flag is **math-neutral**: `internal/calc` is unchanged (zero diff). A CRH find's
+face is on the kept side of the float via `fCost` whether or not it is flagged — the bug
+was the second **row**, not the formula — so `kept` records **data-entry intent**, not
+accounting. The identities above (`KeptFace == CladFace + FindCost + DisposedFindFace`;
+`crh_net_*` / `total_basis` live-only) hold unchanged, and om-nass's verdicts are
+provably unmoved (`TestKeptFindNoDoubleCount`: the double-count was float-only,
+buggy-vs-correct delta 0).
+
+**The §Alternatives rejection of a "hard FK / dedupe between keepers and lots" is
+VINDICATED, not overturned.** This change deduplicates **nothing**: the migration is
+additive and touches **zero** existing keeper rows. Automatic collapse of *existing*
+duplicates was proven unsafe — a keeper is a **batch, not a coin** (its face is inside a
+larger total, with no row-to-row pair to collapse); for the populations that matter (the
+legacy import, the demo seeder, every pre-0007 row) the match key is **empty** (no date,
+no box); and box+date co-location is the **signature of a correct entry**, so a detector
+false-positives on good data. A false positive here is **silent, unrecoverable** money
+loss (no undo — om-lv4q), against a false negative that is merely today's benign status
+quo. So repairing pre-existing duplicates is a **user-adjudicated** step in the app (a
+separate tandem bead, om-cqmp), never a migration or a boot-time action. The workflow
+change stops every **future** duplicate; that is the whole forward value and it needs no
+dedupe.
