@@ -155,6 +155,21 @@
       </section>
 
       <section class="space-y-2">
+        <h4 class="text-sm font-medium text-foreground">Photos</h4>
+        <label class="flex items-start gap-2 text-sm text-foreground">
+          <input type="checkbox" class="mt-0.5 size-4 rounded border-input" bind:checked={cfg.strip_exif_on_import} />
+          <span>
+            Strip camera metadata (EXIF) when I add a photo
+            <span class="block text-xs text-muted-foreground">
+              Off by default, so your originals stay complete. On, newly added photos have their
+              embedded camera data — including GPS location — removed. Only affects photos you add
+              from now on; ones already saved keep whatever they had.
+            </span>
+          </span>
+        </label>
+      </section>
+
+      <section class="space-y-2">
         <h4 class="text-sm font-medium text-foreground">Face $ per bank box</h4>
         <p class="text-xs text-muted-foreground">
           Box throughput is derived from face ÷ these. Change only if your bank's boxes differ.

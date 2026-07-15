@@ -51,7 +51,7 @@
   import { cn } from '$lib/utils'
   import Button from '$lib/components/ui/Button.svelte'
   import ConfirmDialog from '$lib/components/ui/ConfirmDialog.svelte'
-  import { Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown, DollarSign } from 'lucide-svelte'
+  import { Plus, Trash2, ArrowUpDown, ArrowUp, ArrowDown, DollarSign, Camera } from 'lucide-svelte'
 
   type Draft = Omit<T, 'id'>
 
@@ -67,6 +67,8 @@
     onChanged,
     rowAction,
     rowActionTitle,
+    rowAction2,
+    rowActionTitle2,
     rowClass,
     rowLabel,
     reloadSignal,
@@ -83,6 +85,10 @@
     /** Optional extra per-row button (e.g. Sell). */
     rowAction?: (row: T) => void
     rowActionTitle?: string
+    /** A SECOND optional per-row button, rendered as a camera (e.g. open a lot's photos).
+        Only the grids that opt in get it — keepers, deliberately, do not (om-6hlp). */
+    rowAction2?: (row: T) => void
+    rowActionTitle2?: string
     /** Row-conditional styling — classes applied to the <tr> (e.g. dim a lot you
         have already sold, so you cannot edit a completed sale without noticing). */
     rowClass?: (row: T) => string | undefined
@@ -240,7 +246,8 @@
   // an explicit width fall back to a sensible default (e.g. free-text Source,
   // Notes, Bank), and the table's min-width is the sum so nothing collapses.
   const DEFAULT_COL_PX = 170
-  const ACTIONS_COL_PX = 84
+  // Wide enough for up to three per-row buttons (sell + camera + delete on Holdings).
+  const ACTIONS_COL_PX = 120
   function widthPx(m: EditMeta<T>): number {
     const w = m.width
     if (w && w.endsWith('px')) {
@@ -546,6 +553,16 @@
                     onclick={() => rowAction?.(row.original)}
                   >
                     <DollarSign class="size-4 text-muted-foreground hover:text-primary" />
+                  </Button>
+                {/if}
+                {#if rowAction2}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    title={rowActionTitle2 ?? 'Photos'}
+                    onclick={() => rowAction2?.(row.original)}
+                  >
+                    <Camera class="size-4 text-muted-foreground hover:text-primary" />
                   </Button>
                 {/if}
                 <!-- Arms the delete; confirmDelete() is what actually removes the row.

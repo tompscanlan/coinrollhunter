@@ -322,6 +322,58 @@ try {
     Array.isArray(sumZeroBasis.lots) && sumZeroBasis.lots.length >= 1,
     `lots ${sumZeroBasis.lots?.length}`)
 
+  // === Photos (om-6hlp): a lot carries N photos; the grid opens a detail drawer ===
+  // A tiny valid PNG, uploaded through the LIVE server against the trophy lot's stable uid.
+  const TEST_PNG_B64 =
+    'iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAUklEQVR4nOzOoQ3AMAADQYN0745edYKnAXeyjP9s77Pds/PfTQQVQUVQEVQEFUFFUBFUBBVBRVARVAQVQUVQEVQEFUFFUBFUBBVBRVD5AgAA//9IYgMXBWAfpAAAAABJRU5ErkJggg=='
+  const photoLot = (await api('/lots')).find(isTaxLot)
+  ok('a fresh lot carries a stable uid for photos to key off', /^[0-9a-f-]{36}$/.test(photoLot?.uid || ''), photoLot?.uid)
+  {
+    const fd = new FormData()
+    fd.append('owner_kind', 'lot')
+    fd.append('owner_uid', photoLot.uid)
+    fd.append('role', 'obverse')
+    fd.append('file', new Blob([Buffer.from(TEST_PNG_B64, 'base64')], { type: 'image/png' }), 'coin.png')
+    const upResp = await fetch(BASE + '/api/photos', { method: 'POST', body: fd })
+    const photo = await upResp.json()
+    ok('photo upload: a lot photo lands at seq 1 with a fresh uid',
+      upResp.status === 201 && photo.seq === 1 && /^[0-9a-f-]{36}$/.test(photo.uid || ''),
+      `status ${upResp.status} seq ${photo.seq}`)
+    ok('the gallery lists the uploaded photo',
+      (await api(`/photos?owner_kind=lot&owner_uid=${photoLot.uid}`)).length === 1)
+
+    const fileResp = await fetch(`${BASE}/api/photos/${photo.uid}/file?variant=display`)
+    ok('the photo file serves an image (not the SPA index.html)',
+      fileResp.ok && /image\//.test(fileResp.headers.get('content-type') || ''),
+      fileResp.headers.get('content-type'))
+    const missResp = await fetch(`${BASE}/api/photos/not-a-uid/file`)
+    ok('a bad photo uid 404s, never an HTML 200 (spaHandler trap)',
+      missResp.status === 404 && !/html/i.test(missResp.headers.get('content-type') || ''),
+      `status ${missResp.status}`)
+
+    // The Holdings grid offers a camera cell that opens the coin detail drawer.
+    ok('Holdings rows offer a Photos (camera) button', (await page.locator('button[title="Photos"]').count()) > 0)
+    await page.locator('button[title="Photos"]').first().click()
+    const drawer = page.locator('[aria-label="Coin photos"]')
+    await drawer.waitFor({ timeout: 5000 })
+    ok('the coin detail drawer opens with an add-photo affordance',
+      await drawer.getByRole('button', { name: 'Add a photo' }).isVisible())
+    await drawer.locator('button[title="Close"]').click()
+    await drawer.waitFor({ state: 'detached', timeout: 5000 })
+
+    // Soft delete: the photo leaves the gallery (its file survives — pinned in the Go suite).
+    await apiDelete(`/photos/${photo.id}`)
+    ok('a soft-deleted photo leaves the gallery',
+      (await api(`/photos?owner_kind=lot&owner_uid=${photoLot.uid}`)).length === 0)
+
+    // AC13: keepers carry NO photo affordance (a batch, not a specimen).
+    await page.getByRole('button', { name: 'Keepers', exact: true }).click()
+    await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+    ok('keepers have NO photo affordance', (await page.locator('button[title="Photos"]').count()) === 0)
+    await page.getByRole('button', { name: 'Holdings', exact: true }).click() // back to where we were
+    await page.locator('section table thead th').first().waitFor({ timeout: 5000 })
+  }
+
   // trophy feed surfaces it back on the Insights tab (analysis lives in Insights
   // since the ADR-012 IA refactor — not the read-only Overview).
   await page.getByRole('button', { name: 'Insights', exact: true }).click()
@@ -337,6 +389,9 @@ try {
   ok('settings offers a data export', (await dialog.getByRole('heading', { name: 'Your data' }).count()) > 0)
   ok('export warns that photo originals carry location data',
     await dialog.getByText('where the photo was taken', { exact: false }).isVisible())
+  // om-6hlp N4: the EXIF strip toggle is present (default off/KEEP).
+  ok('settings offers the EXIF strip toggle',
+    await dialog.getByText('Strip camera metadata', { exact: false }).isVisible())
   const [download] = await Promise.all([
     page.waitForEvent('download', { timeout: 15000 }),
     dialog.getByRole('link', { name: 'Export my data' }).click(),

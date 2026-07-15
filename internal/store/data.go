@@ -543,6 +543,7 @@ func putSettings(x execer, cfg model.Settings) error {
 		"silver_buyback_factor_40pct":   strconv.FormatFloat(cfg.SilverBuyback40pct, 'g', -1, 64),
 		"silver_buyback_factor_90pct":   strconv.FormatFloat(cfg.SilverBuyback90pct, 'g', -1, 64),
 		"box_face_usd":                  string(box),
+		"strip_exif_on_import":          strconv.FormatBool(cfg.StripEXIFOnImport),
 	}
 	for k, v := range kv {
 		if _, err := x.Exec(
@@ -584,6 +585,8 @@ func (s *Store) GetSettings() (model.Settings, error) {
 			if json.Unmarshal([]byte(v), &m) == nil && len(m) > 0 {
 				cfg.BoxFaceUSD = m
 			}
+		case "strip_exif_on_import":
+			cfg.StripEXIFOnImport, _ = strconv.ParseBool(v)
 		}
 	}
 	return cfg, rows.Err()
@@ -635,8 +638,11 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	// LEFT JOIN resolves it back to the box's CURRENT id, so calc keeps seeing the
 	// integer RollTxnID it always did — now always the right box, never a recycled
 	// rowid. A deleted box leaves rt.id NULL -> RollTxnID 0 (blank, not wrong).
+	// l.uid rides along so the resolved Lot carries it (T3, om-6hlp): report.lots is the
+	// only place the front end sees a lot's uid, and the trophy feed keys its photos by it.
+	// NullString because lots.uid has no schema NOT NULL (ADR-009 (c)).
 	rows, err = s.db.Query(
-		`SELECT l.id, l.item_type_id, rt.id, l.activity, l.qty, l.gross_weight, l.purity, l.weight_unit, l.basis_usd,
+		`SELECT l.id, l.uid, l.item_type_id, rt.id, l.activity, l.qty, l.gross_weight, l.purity, l.weight_unit, l.basis_usd,
 		   l.premium_usd, l.face_value_usd, l.acquired, l.source, l.category, l.subcategory, l.trophy, l.kept
 		 FROM lots l LEFT JOIN roll_txns rt ON rt.uid = l.roll_txn_uid
 		 WHERE l.disposed IS NULL OR l.disposed = '' ORDER BY l.id`)
@@ -646,13 +652,14 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	for rows.Next() {
 		var h model.Holding
 		var rtid sql.NullInt64
-		var source, cat, subcat, wu sql.NullString
+		var uid, source, cat, subcat, wu sql.NullString
 		var trophy, kept int64
-		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight,
+		if err := rows.Scan(&h.ID, &uid, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight,
 			&h.Purity, &wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy, &kept); err != nil {
 			rows.Close()
 			return d, err
 		}
+		h.UID = uid.String
 		h.RollTxnID = rtid.Int64
 		h.WeightUnit = wu.String
 		h.Source = source.String

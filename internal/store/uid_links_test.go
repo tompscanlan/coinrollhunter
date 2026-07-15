@@ -218,13 +218,14 @@ func TestMergeRepointsBranchUidOntoSurvivor(t *testing.T) {
 
 // AC8/AC9 — the resulting schema shape. The recyclable integer links are gone, the
 // stable uid links took their place, branch_aliases keeps its integer (the one deliberate
-// exception), no new foreign key was added, and user_version is the current head (12 after
-// om-5psc's additive 0012_kept_flag; 0011 is the cutover this test still pins below).
+// exception), no new foreign key was added, and user_version is the current head (13 after
+// om-5psc's additive 0012_kept_flag and om-6hlp's additive 0013_photo_inactive_flag; 0011
+// is the cutover this test still pins below).
 func TestUidCutoverSchemaShape(t *testing.T) {
 	s := openTestStore(t)
 
-	if v, err := s.Version(); err != nil || v != 12 {
-		t.Errorf("user_version = %d (err %v), want 12", v, err)
+	if v, err := s.Version(); err != nil || v != 13 {
+		t.Errorf("user_version = %d (err %v), want 13", v, err)
 	}
 	for _, tc := range []struct{ table, col string }{
 		{"lots", "roll_txn_id"}, {"keepers", "roll_txn_id"}, {"roll_txns", "branch_id"}, {"trips", "branch_id"},

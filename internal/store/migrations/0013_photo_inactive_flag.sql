@@ -1,0 +1,16 @@
+-- 0013_photo_inactive_flag: soft-delete for photos (om-6hlp, f/N3).
+--
+-- A deleted photo is TRASHED, not destroyed: the row survives with inactive=1 and
+-- the file STAYS on disk. This is the never-lose-bytes choice — a photo is the
+-- least reproducible data in the app, and a file delete has no undo and (until the
+-- backup bundle) no safety net. The gallery hides inactive rows; export still
+-- carries them (row + file) with the flag as a column, so a trashed photo leaves
+-- with the user (om-9cua's exporter filters nothing).
+--
+-- ADDITIVE ONLY — the trophy/kept pattern (0006/0012): a plain ALTER ADD COLUMN
+-- with a DEFAULT touches zero existing rows and cannot brick a live user DB (cf.
+-- om-1czp's proven CHECK-constraint brick). The photos table (0009) had no column
+-- that could hold the trashed flag; this adds exactly one.
+--
+-- user_version -> 13.
+ALTER TABLE photos ADD COLUMN inactive INTEGER NOT NULL DEFAULT 0;

@@ -277,6 +277,30 @@ func (s Settings) Validate() error {
 	return nil
 }
 
+// Validate checks a photo row (om-6hlp). Scope is the two fields that become PATH
+// SEGMENTS — owner_kind and ext — plus the link and the order, because a bad value
+// there is not a wrong number, it is a file written to the wrong place or a photo
+// that cannot be found. owner_kind and ext are CLOSED (they name a directory and a
+// file suffix); role stays OPEN (ADR-006/ADR-009 — documented vocab, not enforced; a
+// blank role is defaulted to 'detail' at insert, never rejected, so the NULL-role
+// trap 0009 called out cannot recur). uid/owner_uid/seq/ext are server-assigned or
+// validated here so nothing user-controlled reaches the filesystem.
+func (p Photo) Validate() error {
+	if err := exact("owner_kind", p.OwnerKind, `"lot" or "roll_txn"`, "lot", "roll_txn"); err != nil {
+		return err
+	}
+	if strings.TrimSpace(p.OwnerUID) == "" {
+		return invalid("owner_uid", "is required")
+	}
+	// ext is a path segment, sniffed from the bytes server-side — never the client's
+	// filename. Compared lowercase because that is the form it is stored and pathed in.
+	if err := exact("ext", strings.ToLower(strings.TrimSpace(p.Ext)), "jpg, jpeg, png, or webp",
+		"jpg", "jpeg", "png", "webp"); err != nil {
+		return err
+	}
+	return nonNegInt("seq", p.Seq)
+}
+
 // ValidateSale checks a holding sale (POST /api/lots/{id}/sell). It has no model
 // struct of its own — the sold quantity, proceeds and date come straight off the
 // request — so the store's SellHolding chokepoint calls this. qty must be strictly

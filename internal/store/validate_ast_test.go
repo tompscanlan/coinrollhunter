@@ -56,6 +56,11 @@ var expectedMutations = []string{
 	"Tx.InsertItemType", "Tx.InsertHolding", "Tx.InsertRollTxn", "Tx.InsertTrip",
 	"Tx.InsertBranch", "Tx.InsertSupply", "Tx.InsertLoss", "Tx.InsertKeeper",
 	"Tx.PutSpot", "Tx.PutSettings", "Tx.UpdateItemType", "Tx.UpdateHolding",
+
+	// Photos (om-6hlp): the insert, the role/seq/caption update, and the soft-delete,
+	// each with a *Tx twin — every one validates in its own body (photos.go).
+	"Store.InsertPhoto", "Store.UpdatePhoto", "Store.UpdatePhotoInactive",
+	"Tx.InsertPhoto", "Tx.UpdatePhoto", "Tx.UpdatePhotoInactive",
 }
 
 func TestEveryStoreMutationValidates(t *testing.T) {

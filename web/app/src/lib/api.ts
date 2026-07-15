@@ -13,6 +13,7 @@ import type {
   Supply,
   Keeper,
   Loss,
+  Photo,
 } from './types'
 
 const BASE = '/api'
@@ -153,6 +154,51 @@ export const api = {
     update: (id: number, catalog: HoldingCatalog, holding: WorkflowHolding) =>
       req<{ id: number }>('PUT', `/workflows/holdings-with-type/${id}`, { catalog, holding }).then(() => {}),
   },
+  // --- Photos (om-6hlp) --------------------------------------------------------
+  // A lot carries N photos. Upload is multipart (cannot reuse req()'s JSON path); the
+  // originals are the source of truth and thumb/display are a regenerable cache fetched by
+  // variant. Soft delete only — a "deleted" photo is trashed (inactive), its file kept.
+  photos: {
+    list: (ownerKind: 'lot' | 'roll_txn', ownerUid: string) =>
+      req<Photo[]>('GET', `/photos?owner_kind=${ownerKind}&owner_uid=${encodeURIComponent(ownerUid)}`),
+    // Multipart POST: FormData, no JSON body, so req()'s Content-Type dance is bypassed and
+    // the browser sets the multipart boundary itself.
+    upload: async (
+      ownerKind: 'lot' | 'roll_txn',
+      ownerUid: string,
+      file: File,
+      role = '',
+      caption = '',
+    ): Promise<Photo> => {
+      const fd = new FormData()
+      fd.append('owner_kind', ownerKind)
+      fd.append('owner_uid', ownerUid)
+      if (role) fd.append('role', role)
+      if (caption) fd.append('caption', caption)
+      fd.append('file', file)
+      const res = await fetch(`${BASE}/photos`, { method: 'POST', body: fd })
+      if (!res.ok) {
+        let msg = `upload → ${res.status}`
+        try {
+          const j = await res.json()
+          if (j?.error) msg = j.error
+        } catch {
+          /* non-JSON error body */
+        }
+        throw new Error(msg)
+      }
+      return res.json() as Promise<Photo>
+    },
+    // role / seq / caption only — the server never lets a PUT move the file.
+    update: (id: number, patch: Partial<Pick<Photo, 'role' | 'seq' | 'caption'>>) =>
+      req<{ id: number }>('PUT', `/photos/${id}`, patch).then(() => {}),
+    // Soft delete: flags inactive, keeps the file.
+    remove: (id: number) => req<void>('DELETE', `/photos/${id}`),
+    // A plain URL an <img> can load — original, or the thumb/display derivative.
+    fileUrl: (uid: string, variant: 'original' | 'thumb' | 'display' = 'display') =>
+      `${BASE}/photos/${uid}/file?variant=${variant}`,
+  },
+
   // Stop the local server. The double-clicked app has no console, so this is the
   // only way to quit it short of Task Manager (om-9p0l).
   quit: () => req<void>('POST', '/quit'),

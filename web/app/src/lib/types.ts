@@ -25,6 +25,9 @@ export interface ItemType {
 
 export interface Holding {
   id: number
+  // Stable identity (ADR-009) — read-only on the wire; the store never lets a PUT change
+  // it. Photos key off this (owner_uid), so the Holdings grid carries it to open the drawer.
+  uid?: string
   item_type_id: number
   roll_txn_id?: number // box this find came from (0/absent = none)
   activity: 'bullion' | 'crh'
@@ -136,10 +139,30 @@ export interface Settings {
   silver_buyback_factor_40pct: number
   silver_buyback_factor_90pct: number
   box_face_usd: Record<string, number>
+  // Strip EXIF from a newly imported photo original (om-6hlp, N4). Default false (KEEP):
+  // the archive stays complete. Future imports only — never rewrites existing originals.
+  strip_exif_on_import: boolean
+}
+
+/** A photo attached to a lot (arbitrary N, ADR-009/om-6hlp). The row is the immutable
+    ORIGINAL; thumb/display are a regenerable cache the client fetches by variant. The
+    file path is derived server-side — the client only ever needs the uid. */
+export interface Photo {
+  id: number
+  uid: string
+  owner_kind: 'lot' | 'roll_txn'
+  owner_uid: string
+  role: string // obverse|reverse|detail|edge|slab-label|… (open vocab; default 'detail')
+  seq: number // lowest = cover
+  ext: string // jpg|jpeg|png|webp
+  caption?: string
+  created?: string
+  inactive?: boolean
 }
 
 export interface EnrichedLot {
   id: number
+  uid: string // stable lot identity (model.Lot, om-6hlp T3) — the trophy feed keys photos off it
   roll_txn_id?: number // box this find came from (0/absent = none) — used to flag keeper double-counts
   activity: 'bullion' | 'crh'
   product: string

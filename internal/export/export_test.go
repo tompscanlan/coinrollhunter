@@ -501,10 +501,8 @@ func TestEmptyPhotosTableStillReservesTheTree(t *testing.T) {
 //     not something that quietly does not happen.
 func TestASoftDeletedPhotoCannotSlipOutOfTheBundle(t *testing.T) {
 	s := newStore(t)
-	// Exactly the ALTER om-6hlp's soft delete needs.
-	if _, err := s.DB().Exec(`ALTER TABLE photos ADD COLUMN inactive INTEGER NOT NULL DEFAULT 0`); err != nil {
-		t.Fatal(err)
-	}
+	// The inactive column now ships in migration 0013 (om-6hlp landed) — newStore's Open
+	// applies it, so the tripwire's own ALTER is gone. writePhoto below sets inactive to 0.
 	writePhoto(t, s, "22222222-2222-4222-8222-222222222222", "lot", "owner-uid", "detail", "jpg", []byte("trashed but mine"))
 	if _, err := s.DB().Exec(`UPDATE photos SET inactive = 1`); err != nil {
 		t.Fatal(err)
@@ -524,16 +522,34 @@ func TestASoftDeletedPhotoCannotSlipOutOfTheBundle(t *testing.T) {
 		t.Error("trashed photo bytes changed")
 	}
 
-	// (2) and the flag itself cannot go missing quietly: with the column in the schema
-	// and not in the bundle, the column-coverage guard fails. That is what forces
-	// om-6hlp to carry it, and it is why photos.csv declares its columns instead of
-	// discovering them — a SELECT * exporter would pass every check while shipping
-	// whatever it happened to find.
+	// (2) and the flag itself is CARRIED, not dropped in silence. The column-coverage guard
+	// (which om-6hlp landed against) forced the exporter to add "inactive" the moment the
+	// schema gained it — photos.csv declares its columns, so a SELECT * exporter that
+	// quietly shipped whatever it found could not have satisfied it. Assert the header
+	// carries exactly schema+derived, and that the trashed row's inactive cell reads 1.
 	want := append(schemaColumns(t, s, "photos"), derivedColumns["photos"]...)
-	if len(header(t, dir, "photos.csv")) == len(want) {
-		t.Error("a new photos column reached the bundle without anyone adding it — " +
-			"the column-coverage guard cannot fire, so om-6hlp could drop the inactive flag silently")
+	hdr := header(t, dir, "photos.csv")
+	sort.Strings(want)
+	sortedHdr := append([]string(nil), hdr...)
+	sort.Strings(sortedHdr)
+	if strings.Join(want, ",") != strings.Join(sortedHdr, ",") {
+		t.Errorf("photos.csv header %v does not carry schema+derived %v — the inactive flag could be dropped silently", hdr, want)
 	}
+	if idx := indexOf(hdr, "inactive"); idx < 0 {
+		t.Error("photos.csv is missing the inactive column — a trashed photo would export with no trace of being trashed")
+	} else if cell := rows(t, dir, "photos.csv")[0][idx]; cell != "1" {
+		t.Errorf("the trashed photo exported with inactive=%q, want 1 — its trashed state was lost", cell)
+	}
+}
+
+// indexOf returns the position of s in xs, or -1.
+func indexOf(xs []string, s string) int {
+	for i, x := range xs {
+		if x == s {
+			return i
+		}
+	}
+	return -1
 }
 
 // A photos row whose file is gone is a corrupt state — but ONE such row must not
@@ -726,6 +742,7 @@ var knownSettingKeysSorted = []string{
 	"irs_mileage_rate_usd_per_mile",
 	"silver_buyback_factor_40pct",
 	"silver_buyback_factor_90pct",
+	"strip_exif_on_import",
 	"value_time",
 }
 

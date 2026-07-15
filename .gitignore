@@ -5,6 +5,12 @@ crh_ledger.json
 *.sqlite
 *.sqlite3
 data/
+# Photos live on disk beside the database (om-6hlp). photos/ holds the ORIGINALS (the
+# user's data); photos-cache/ holds the regenerable thumb/display derivatives. A dev who
+# runs `./coinrollhunter serve` from the repo root would otherwise leave a tree of personal
+# images next to a repo whose first rule is "never commit personal data".
+photos/
+photos-cache/
 
 # Secrets
 .env
