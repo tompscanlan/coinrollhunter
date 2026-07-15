@@ -29,10 +29,14 @@ import (
 //     traversal ('..', an absolute path, a non-v4 uid) is structurally impossible and a
 //     miss 404s in JSON, never falling through to the SPA's index.html-200 (AC8).
 //   - The upload is FILE-FIRST with a temp+rename: the temp original is written, the row
-//     is INSERTed in one WithTx, and only then is the temp renamed into place — so a
-//     committed row ALWAYS has its original on disk. The one tolerable residue of a failed
-//     upload is an orphan FILE with no row (invisible, reapable later); never a row with
-//     no original. Derivatives (thumb/display) are a best-effort, regenerable cache.
+//     is INSERTed in one WithTx, and only then is the temp renamed into place — so once the
+//     rename lands a committed row has its original on disk, and the tolerable residue of a
+//     FAILED upload is an orphan FILE with no row (invisible, reapable later), never a row
+//     with no original. The one remaining gap is a hard crash BETWEEN the commit and the
+//     rename: the bytes survive under the .upload-*.part temp name but not yet at the final
+//     path (the uid, hence the final name, is assigned inside the tx, so the rename must
+//     follow the commit). Recorded honestly; closing it — mint the uid before the insert, or
+//     a reaper — is om-9occ. Derivatives (thumb/display) are a best-effort, regenerable cache.
 //
 // photosDir is where originals live (photos/<owner_uid>/<uid>.<ext>); cacheDir is the
 // separate, gitignored, backup/export-excluded derivative tree. Both may be "" (a store
@@ -100,19 +104,29 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The owner must exist, so an upload can never create an orphan photo pointing at no
-	// coin. (An unknown owner_kind falls through here and is rejected by InsertPhoto's
-	// Validate as a 400.)
-	if ownerKind == "lot" || ownerKind == "roll_txn" {
-		ok, err := h.ownerExists(ownerKind, ownerUID)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		if !ok {
-			writeJSON(w, http.StatusNotFound, errBody(fmt.Errorf("no %s with uid %q", ownerKind, ownerUID)))
-			return
-		}
+	// Validate the owner FULLY before any filesystem path is built from owner_uid, so the
+	// write path keeps the SAME structural guarantee as the serve route: a path segment is
+	// only ever a value the DB vouches for. owner_kind must be one we support; owner_uid must
+	// be a well-formed v4 (it names a directory, so '..' / '/' can never reach filepath.Join —
+	// a whitelist, not a sanitizer); and the owner must exist (no orphan photo). An unknown
+	// kind or a malformed/absent owner is refused HERE — never after MkdirAll has already
+	// created a directory outside photosDir from a traversal owner_uid.
+	if ownerKind != "lot" && ownerKind != "roll_txn" {
+		writeJSON(w, http.StatusBadRequest, errBody(fmt.Errorf("owner_kind %q is not valid (accepted: lot, roll_txn)", ownerKind)))
+		return
+	}
+	if !uidV4RE.MatchString(ownerUID) {
+		writeJSON(w, http.StatusBadRequest, errBody(errors.New("owner_uid must be a valid uid")))
+		return
+	}
+	ok, err := h.ownerExists(ownerKind, ownerUID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errBody(fmt.Errorf("no %s with uid %q", ownerKind, ownerUID)))
+		return
 	}
 
 	// Sniff the type from the MAGIC BYTES (never the filename) and refuse anything but

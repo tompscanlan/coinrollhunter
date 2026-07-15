@@ -187,6 +187,55 @@ func TestUploadRejectsUnknownOwner(t *testing.T) {
 	assertNoResidue(t, e)
 }
 
+// AC8 (write-path twin of the serve whitelist): an upload whose owner_kind is not one we
+// support must be refused BEFORE any filesystem path is built from owner_uid — otherwise a
+// traversal owner_uid escapes photosDir. The pre-fix hole: ownerExists ran only for
+// owner_kind in {lot,roll_txn}, so an unknown kind fell through to MkdirAll(photosDir/<uid>)
+// and InsertPhoto's Validate rejected it only AFTER a directory was created outside photosDir.
+// assertNoResidue can't see that (it only inspects photosDir/<owner>), so check the escaped
+// sibling explicitly.
+func TestUploadRejectsOwnerKindEscapeBeforeTouchingDisk(t *testing.T) {
+	e := newPhotoEnv(t)
+	// The path the handler would build from an unvalidated owner_uid, cleaned exactly as
+	// filepath.Join(photosDir, ownerUID) would clean it — one level OUTSIDE photosDir.
+	escaped := filepath.Join(e.photosDir, "../../ESCAPED")
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("owner_kind", "notavalidkind")
+	_ = mw.WriteField("owner_uid", "../../ESCAPED")
+	fw, err := mw.CreateFormFile("file", "x.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(smallPNG(t, 4, 4)); err != nil {
+		t.Fatal(err)
+	}
+	mw.Close()
+	req, err := http.NewRequest("POST", e.srv.URL+"/api/photos", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// (a) an unknown owner_kind is a 400 — not a 404/500/201, and not after a side effect.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("escape upload status %d, want 400", resp.StatusCode)
+	}
+	// (b) the real point: NOTHING was created outside photosDir.
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Errorf("an upload with a traversal owner_uid created %s OUTSIDE photosDir (stat err=%v) — "+
+			"owner_uid reached the filesystem before it was validated", escaped, err)
+	}
+	// And no residue inside photosDir either.
+	assertNoResidue(t, e)
+}
+
 // AC8: the serve route rejects a traversal / a non-v4 / an unknown v4 with 404 — and NEVER
 // falls through to the SPA's index.html-with-200. (webFS is nil here, but the point is the
 // status + non-HTML body.)

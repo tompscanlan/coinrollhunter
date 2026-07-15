@@ -473,8 +473,13 @@ filename, picks the `ext`) using `internal/imaging` — pure Go (`image/jpeg`+`i
 validates the uid against the DB **before** building any path (whitelist → traversal impossible,
 404 on a miss, never spaHandler's HTML-200). Ingest is **file-first**: write the temp original →
 INSERT the row in a `WithTx` → rename temp→final → generate derivatives (best-effort). Invariant:
-**a committed row always has its original on disk**; the only tolerable residue of a failed upload
-is an orphan FILE with no row. Delete is **SOFT** (`photos.inactive`, migration **0013**,
+once the rename lands **a committed row has its original on disk**, and the tolerable residue of a
+failed upload is an orphan FILE with no row (never a row with no original). The one gap — a hard
+crash *between* the commit and the rename leaves the bytes under the `.upload-*.part` temp name
+(the uid, hence the final name, is minted inside the tx) — is tracked in **om-9occ** (mint the uid
+before the insert, or a reaper). And the write path validates owner_kind/owner_uid (a well-formed
+v4) **before** it builds any path, so a traversal `owner_uid` can never escape `photosDir` — the
+same whitelist-before-filesystem discipline as the serve route. Delete is **SOFT** (`photos.inactive`, migration **0013**,
 user_version→13): the row is flagged, the file stays; deleting a **lot** soft-flags its photos
 (no FK to `lots`). `coinrollhunter backup` is now a **restorable DIRECTORY bundle** (db +
 originals); `backup DEST.db` is a **hard error**. EXIF: one Settings key `strip_exif_on_import`,

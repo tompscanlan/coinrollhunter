@@ -40,9 +40,14 @@ const (
 
 	// The decompression-bomb ceiling. DecodeConfig reads these from the header BEFORE any
 	// pixel buffer is allocated, so an image claiming absurd dimensions is refused for a few
-	// bytes of work instead of gigabytes of RAM (N2 REQUIRED GUARD, AC4).
-	maxPixels    = 100_000_000 // 100 megapixels
-	maxDimension = 30000       // and no single edge past this
+	// bytes of work instead of gigabytes of RAM (N2 REQUIRED GUARD, AC4). The cap bounds the
+	// DECODE ALLOCATION, not just the header: image.Decode allocates ~4 bytes/pixel (RGBA),
+	// so 50 MP holds a single decode near ~200 MB — and that decode recurs on every lazy
+	// regen cache miss, so a too-generous ceiling is a standing cost, not a one-off. 50 MP
+	// still comfortably covers a 48/50 MP phone photo; a small compressed file whose header
+	// claims more is refused before a byte of pixel buffer is touched.
+	maxPixels    = 50_000_000 // 50 megapixels (~200 MB RGBA decode ceiling)
+	maxDimension = 20000      // and no single edge past this
 )
 
 // ErrTooLarge is returned by CheckConfig when a decoded image would exceed the bomb
