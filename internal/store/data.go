@@ -26,7 +26,7 @@ func newUID() string {
 // resolveBranchID maps a typed bank name to a branch id, creating the branch (and
 // recording the name as its first alias) when no branch name or alias matches.
 // Mirrors the Holdings grid's find-or-create of an item_type (ADR-003). An empty
-// name resolves to 0 (a NULL branch_id). A newly-typed variant still forks a fresh
+// name resolves to 0 (no branch). A newly-typed variant still forks a fresh
 // branch by design; the address-book merge (ADR-010 (b)) is how forks get repointed.
 //
 // It is the store's hidden writer: called by InsertRollTxn, InsertTrip and their
@@ -58,6 +58,56 @@ func resolveBranchID(x execer, name string) (int64, error) {
 	default:
 		return 0, fmt.Errorf("resolve branch %q: %w", n, err)
 	}
+}
+
+// resolveBranchUID find-or-creates the branch for a typed bank name (via
+// resolveBranchID) and returns its STABLE uid — the value roll_txns.branch_uid /
+// trips.branch_uid now store instead of the recyclable integer id (om-c8ei, ADR-009).
+// An empty name resolves to "" (a NULL branch_uid). The branch demonstrably exists in
+// the same statement it is resolved, so this is the id->uid half of the store's Shape-A
+// contract: the integer keeps travelling on the wire, only the STORED link is the uid.
+func resolveBranchUID(x execer, name string) (string, error) {
+	id, err := resolveBranchID(x, name)
+	if err != nil {
+		return "", err
+	}
+	if id == 0 {
+		return "", nil
+	}
+	var uid sql.NullString
+	if err := x.QueryRow(`SELECT uid FROM branches WHERE id = ?`, id).Scan(&uid); err != nil {
+		return "", fmt.Errorf("resolve branch uid for %q: %w", name, err)
+	}
+	// branches.uid is NOT NULL at the schema level (0008), so this is defensive only:
+	// a null there would blank the link (blank beats wrong), never error the write.
+	return uid.String, nil
+}
+
+// rollTxnUID maps a caller-supplied box (roll_txn) id to that box's stable uid — the
+// value lots.roll_txn_uid / keepers.roll_txn_uid now store (om-c8ei, ADR-009). It is
+// the id->uid half of Shape A: on WRITE the box's current id is resolved to its uid, so
+// a later delete+insert that recycles the integer can no longer re-adopt this child.
+//   - id 0 (no link)        -> nil (SQL NULL).
+//   - id names no box (D3)  -> nil (SQL NULL). blank beats wrong; do NOT reject the
+//     write, or legacy import would gain a new failure mode on the new-user on-ramp.
+//   - id names a live box   -> its uid.
+// Returns `any` so the nil case binds as SQL NULL directly.
+func rollTxnUID(x execer, id int64) (any, error) {
+	if id == 0 {
+		return nil, nil
+	}
+	var uid sql.NullString
+	err := x.QueryRow(`SELECT uid FROM roll_txns WHERE id = ?`, id).Scan(&uid)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve roll_txn uid for %d: %w", id, err)
+	}
+	if !uid.Valid {
+		return nil, nil
+	}
+	return uid.String, nil
 }
 
 // --- inserts -----------------------------------------------------------------
@@ -124,12 +174,16 @@ func (tx *Tx) InsertHolding(h model.Holding) (int64, error) {
 }
 
 func insertHolding(x execer, h model.Holding) (int64, error) {
+	ruid, err := rollTxnUID(x, h.RollTxnID) // id->uid: store the box's stable uid, not its rowid
+	if err != nil {
+		return 0, err
+	}
 	res, err := x.Exec(
-		`INSERT INTO lots (uid, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
+		`INSERT INTO lots (uid, item_type_id, roll_txn_uid, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		newUID(), h.ItemTypeID, nullID(h.RollTxnID), h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
+		newUID(), h.ItemTypeID, ruid, h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location, h.InsuredValue,
 		h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), h.Disposed, h.DisposedUSD)
 	if err != nil {
@@ -139,7 +193,8 @@ func insertHolding(x execer, h model.Holding) (int64, error) {
 }
 
 // InsertRollTxn inserts a roll transaction and returns its new id. The typed bank
-// name find-or-creates a branch (ADR-010); only the resolved branch_id is stored.
+// name find-or-creates a branch (ADR-010); only the resolved branch's stable uid is
+// stored (om-c8ei).
 func (s *Store) InsertRollTxn(t model.RollTxn) (int64, error) {
 	// Validate before resolveBranchID: a bad txn must not fork a branch as a side effect.
 	if err := t.Validate(); err != nil {
@@ -159,14 +214,14 @@ func (tx *Tx) InsertRollTxn(t model.RollTxn) (int64, error) {
 }
 
 func insertRollTxn(x execer, t model.RollTxn) (int64, error) {
-	bid, err := resolveBranchID(x, t.Bank)
+	buid, err := resolveBranchUID(x, t.Bank)
 	if err != nil {
 		return 0, err
 	}
 	res, err := x.Exec(
-		`INSERT INTO roll_txns (uid, date, branch_id, action, denom, unit, amount, face_usd, source_type, notes)
+		`INSERT INTO roll_txns (uid, date, branch_uid, action, denom, unit, amount, face_usd, source_type, notes)
 		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		newUID(), t.Date, nullID(bid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
+		newUID(), t.Date, nullStr(buid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes)
 	if err != nil {
 		return 0, fmt.Errorf("insert roll_txn: %w", err)
 	}
@@ -193,12 +248,12 @@ func (tx *Tx) InsertTrip(t model.Trip) (int64, error) {
 }
 
 func insertTrip(x execer, t model.Trip) (int64, error) {
-	bid, err := resolveBranchID(x, t.Bank)
+	buid, err := resolveBranchUID(x, t.Bank)
 	if err != nil {
 		return 0, err
 	}
-	res, err := x.Exec(`INSERT INTO trips (date, branch_id, miles, hours) VALUES (?,?,?,?)`,
-		t.Date, nullID(bid), t.Miles, t.Hours)
+	res, err := x.Exec(`INSERT INTO trips (date, branch_uid, miles, hours) VALUES (?,?,?,?)`,
+		t.Date, nullStr(buid), t.Miles, t.Hours)
 	if err != nil {
 		return 0, fmt.Errorf("insert trip: %w", err)
 	}
@@ -299,8 +354,9 @@ func insertLoss(x execer, l model.Loss) (int64, error) {
 	return res.LastInsertId()
 }
 
-// InsertKeeper inserts a keeper and returns its new id. date/roll_txn_id (ADR-008)
-// are nullable: an empty date and a zero roll_txn_id are stored as SQL NULL.
+// InsertKeeper inserts a keeper and returns its new id. date + the box link (ADR-008)
+// are nullable: an empty date stores SQL NULL, and the box id is resolved to the box's
+// stable uid (om-c8ei) — id 0 or an unknown box stores a NULL roll_txn_uid.
 func (s *Store) InsertKeeper(k model.Keeper) (int64, error) {
 	if err := k.Validate(); err != nil {
 		return 0, err
@@ -317,8 +373,12 @@ func (tx *Tx) InsertKeeper(k model.Keeper) (int64, error) {
 }
 
 func insertKeeper(x execer, k model.Keeper) (int64, error) {
-	res, err := x.Exec(`INSERT INTO keepers (denom, count, face_usd, date, roll_txn_id) VALUES (?,?,?,?,?)`,
-		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), nullID(k.RollTxnID))
+	ruid, err := rollTxnUID(x, k.RollTxnID) // id->uid: the box link is a stable uid now
+	if err != nil {
+		return 0, err
+	}
+	res, err := x.Exec(`INSERT INTO keepers (denom, count, face_usd, date, roll_txn_uid) VALUES (?,?,?,?,?)`,
+		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), ruid)
 	if err != nil {
 		return 0, fmt.Errorf("insert keeper: %w", err)
 	}
@@ -351,15 +411,14 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	defer tx.Rollback()
 
 	var h model.Holding
-	var rtid sql.NullInt64
-	var wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
+	var rtuid, wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
 	var trophy int64
 	err = tx.QueryRow(
-		`SELECT item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
+		`SELECT item_type_id, roll_txn_uid, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd
 		 FROM lots WHERE id=?`, id).Scan(
-		&h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity, &wu,
+		&h.ItemTypeID, &rtuid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity, &wu,
 		&h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc, &h.InsuredValue,
 		&attr, &notes, &cat, &subcat, &trophy, &disp, &h.DisposedUSD)
 	if err == sql.ErrNoRows {
@@ -388,13 +447,17 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	// A partial sale carves out a NEW lot row, so it needs its own uid — it is a
 	// distinct specimen from the remainder, and it is the row a receipt or a
 	// slab-label photo would hang off. Easy to miss: nothing here says "insert" in
-	// the caller's vocabulary; the user sold half a lot.
+	// the caller's vocabulary; the user sold half a lot. The box link (roll_txn_uid)
+	// must ride onto the carve-out too, or every partially-sold find loses its box
+	// (om-c8ei): rtuid is the ORIGINAL lot's stored uid, copied through verbatim —
+	// already a stable uid, so no id->uid resolution here — and binds as SQL NULL when
+	// the source lot had no box.
 	if _, err := tx.Exec(
-		`INSERT INTO lots (uid, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit,
+		`INSERT INTO lots (uid, item_type_id, roll_txn_uid, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
 		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		newUID(), h.ItemTypeID, nullID(rtid.Int64), h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
+		newUID(), h.ItemTypeID, rtuid, h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
 		soldBasis, soldPremium, soldFace, h.Acquired, src.String, loc.String, 0,
 		attr.String, notes.String, cat.String, subcat.String, trophy, date, proceeds); err != nil {
 		return err
@@ -559,11 +622,15 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 		return d, err
 	}
 
-	// holdings -> resolved lots
+	// holdings -> resolved lots. The box link is stored as roll_txn_uid (om-c8ei); a
+	// LEFT JOIN resolves it back to the box's CURRENT id, so calc keeps seeing the
+	// integer RollTxnID it always did — now always the right box, never a recycled
+	// rowid. A deleted box leaves rt.id NULL -> RollTxnID 0 (blank, not wrong).
 	rows, err = s.db.Query(
-		`SELECT id, item_type_id, roll_txn_id, activity, qty, gross_weight, purity, weight_unit, basis_usd,
-		   premium_usd, face_value_usd, acquired, source, category, subcategory, trophy
-		 FROM lots WHERE disposed IS NULL OR disposed = '' ORDER BY id`)
+		`SELECT l.id, l.item_type_id, rt.id, l.activity, l.qty, l.gross_weight, l.purity, l.weight_unit, l.basis_usd,
+		   l.premium_usd, l.face_value_usd, l.acquired, l.source, l.category, l.subcategory, l.trophy
+		 FROM lots l LEFT JOIN roll_txns rt ON rt.uid = l.roll_txn_uid
+		 WHERE l.disposed IS NULL OR l.disposed = '' ORDER BY l.id`)
 	if err != nil {
 		return d, fmt.Errorf("load lots: %w", err)
 	}
@@ -588,11 +655,13 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 		return d, err
 	}
 
-	// disposed holdings -> realized P&L (resolved name/metal via the catalog)
+	// disposed holdings -> realized P&L (resolved name/metal via the catalog). Same
+	// box-link resolution as the live lots above: roll_txn_uid -> the box's current id.
 	drows, err := s.db.Query(
-		`SELECT id, item_type_id, roll_txn_id, activity, qty, basis_usd, disposed_usd, disposed,
-		   category, subcategory
-		 FROM lots WHERE disposed IS NOT NULL AND disposed != '' ORDER BY disposed, id`)
+		`SELECT l.id, l.item_type_id, rt.id, l.activity, l.qty, l.basis_usd, l.disposed_usd, l.disposed,
+		   l.category, l.subcategory
+		 FROM lots l LEFT JOIN roll_txns rt ON rt.uid = l.roll_txn_uid
+		 WHERE l.disposed IS NOT NULL AND l.disposed != '' ORDER BY l.disposed, l.id`)
 	if err != nil {
 		return d, fmt.Errorf("load disposed lots: %w", err)
 	}
@@ -642,11 +711,13 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 }
 
 func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
-	// Resolve the branch's canonical name through the logical branch_id link, so
-	// grouping/display sees one identity per branch even after a rename or merge.
-	rows, err := s.db.Query(`SELECT r.id, r.uid, r.date, r.branch_id, b.name, r.action, r.denom, r.unit,
+	// Resolve the branch through the stable branch_uid link (om-c8ei), reading back the
+	// branch's CURRENT id (b.id) so BranchID keeps grouping by one identity per branch
+	// after a rename or merge — and a deleted/merged-away branch resolves to blank
+	// (b.id NULL -> BranchID 0, name ""), never onto a recycled rowid's replacement.
+	rows, err := s.db.Query(`SELECT r.id, r.uid, r.date, b.id, b.name, r.action, r.denom, r.unit,
 	  r.amount, r.face_usd, r.source_type, r.notes
-	  FROM roll_txns r LEFT JOIN branches b ON b.id = r.branch_id ORDER BY r.id`)
+	  FROM roll_txns r LEFT JOIN branches b ON b.uid = r.branch_uid ORDER BY r.id`)
 	if err != nil {
 		return nil, fmt.Errorf("load roll_txns: %w", err)
 	}
@@ -669,8 +740,8 @@ func (s *Store) loadRollTxns() ([]model.RollTxn, error) {
 }
 
 func (s *Store) loadTrips() ([]model.Trip, error) {
-	rows, err := s.db.Query(`SELECT t.id, t.date, t.branch_id, b.name, t.miles, t.hours
-	  FROM trips t LEFT JOIN branches b ON b.id = t.branch_id ORDER BY t.id`)
+	rows, err := s.db.Query(`SELECT t.id, t.date, b.id, b.name, t.miles, t.hours
+	  FROM trips t LEFT JOIN branches b ON b.uid = t.branch_uid ORDER BY t.id`)
 	if err != nil {
 		return nil, fmt.Errorf("load trips: %w", err)
 	}
@@ -756,7 +827,10 @@ func (s *Store) loadLosses() ([]model.Loss, error) {
 }
 
 func (s *Store) loadKeepers() ([]model.Keeper, error) {
-	rows, err := s.db.Query(`SELECT id, denom, count, face_usd, date, roll_txn_id FROM keepers ORDER BY id`)
+	// The box link is stored as roll_txn_uid (om-c8ei); resolve it back to the box's
+	// current id (rt.id) so RollTxnID keeps carrying the integer the model always did.
+	rows, err := s.db.Query(`SELECT k.id, k.denom, k.count, k.face_usd, k.date, rt.id
+	  FROM keepers k LEFT JOIN roll_txns rt ON rt.uid = k.roll_txn_uid ORDER BY k.id`)
 	if err != nil {
 		return nil, fmt.Errorf("load keepers: %w", err)
 	}
@@ -766,8 +840,8 @@ func (s *Store) loadKeepers() ([]model.Keeper, error) {
 		var k model.Keeper
 		var denom, date sql.NullString
 		var rtid sql.NullInt64
-		// date/roll_txn_id (ADR-008) are nullable; legacy rows scan back as
-		// empty/zero and leave cladFace unchanged.
+		// date/roll_txn link (ADR-008) are nullable; legacy rows and a deleted box scan
+		// back as empty/zero and leave cladFace unchanged.
 		if err := rows.Scan(&k.ID, &denom, &k.Count, &k.FaceUSD, &date, &rtid); err != nil {
 			return nil, err
 		}

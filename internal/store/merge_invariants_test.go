@@ -93,11 +93,21 @@ func TestHoldingModelsEveryLotsColumn(t *testing.T) {
 			modeled[name] = true
 		}
 	}
+	// storeInternal: a column the store persists but deliberately does NOT surface as its
+	// own model field (om-c8ei, Shape A). roll_txn_uid is the STABLE box link; on read the
+	// store resolves it to the integer model.Holding.RollTxnID the app already carries, and
+	// on write it resolves RollTxnID back to the uid. The merge invariant still holds — the
+	// box link round-trips through RollTxnID, its integer proxy — so this column is covered,
+	// just not by a field of its own. The recyclable roll_txn_id column it replaced is gone.
+	storeInternal := map[string]bool{"roll_txn_uid": true}
 
 	for rows.Next() {
 		var col string
 		if err := rows.Scan(&col); err != nil {
 			t.Fatal(err)
+		}
+		if storeInternal[col] {
+			continue
 		}
 		if !modeled[col] {
 			t.Errorf("lots.%s has no field on model.Holding — the app cannot see it, and a "+

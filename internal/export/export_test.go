@@ -210,11 +210,16 @@ func TestBundleCoversEveryTable(t *testing.T) {
 // schema: uids resolved through a foreign key, plus the photo's path. Declared here,
 // in the test, on purpose — so that adding a derived column to the exporter also
 // breaks this test and has to be a deliberate act.
+// om-c8ei inverted the box/branch links: the uid is now the REAL stored column and the
+// integer is the DERIVED one (resolved back from the uid), so the recyclable rowid no
+// longer survives as the durable link. The CSV still carries both; only which side is
+// derived flipped. branch_aliases is the exception — its branch_id stays an integer (it
+// cannot orphan), so there the uid is still the derived column.
 var derivedColumns = map[string][]string{
-	"lots":           {"item_type_uid", "roll_txn_uid"},
-	"roll_txns":      {"branch_uid"},
-	"keepers":        {"roll_txn_uid"},
-	"trips":          {"branch_uid"},
+	"lots":           {"item_type_uid", "roll_txn_id"},
+	"roll_txns":      {"branch_id"},
+	"keepers":        {"roll_txn_id"},
+	"trips":          {"branch_id"},
 	"branch_aliases": {"branch_uid"},
 	"photos":         {"path"},
 }
@@ -243,6 +248,26 @@ func TestBundleCoversEveryColumn(t *testing.T) {
 
 func TestUIDLeadsAndForeignKeysResolveToUIDs(t *testing.T) {
 	s := seeded(t)
+
+	// Seed a TRUE ORPHAN so its export shape is a pinned, exercised case (om-c8ei/F3): a
+	// find linked to a box, then the box deleted. Its stored roll_txn_uid survives — the
+	// forensic trace export preserves (F1) — while the derived roll_txn_id resolves to
+	// blank. This is the desirable orphan-export shape, not an error.
+	orphanType, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Orphaned Find Type", Metal: "silver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanBox, err := s.InsertRollTxn(model.RollTxn{Date: "2026-07-01", Bank: "Closed Branch", Action: "buy", Denom: "dimes", Unit: "box", Amount: 1, FaceUSD: 250})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertHolding(model.Holding{ItemTypeID: orphanType, RollTxnID: orphanBox, Activity: "crh", Category: "Silver", Subcategory: "Roosevelt 90%", Qty: 1, BasisUSD: 0.1, Acquired: "2026-07-01"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRollTxn(orphanBox); err != nil {
+		t.Fatal(err)
+	}
+
 	dir := bundleDir(t, s)
 
 	// Every table that HAS a uid leads with it: the row key is the first thing you
@@ -276,22 +301,37 @@ func TestUIDLeadsAndForeignKeysResolveToUIDs(t *testing.T) {
 		t.Fatal("no lots in the fixture — this test proved nothing")
 	}
 
-	// A NULL foreign key is an EMPTY cell, never "0". "0" is a row id, and a
-	// spreadsheet that joins on it lands on whatever row 0 becomes.
-	nulls := 0
+	// A NULL foreign key is an EMPTY cell, never "0". "0" is a row id, and a spreadsheet
+	// that joins on it lands on whatever row 0 becomes.
+	//
+	// After the om-c8ei inversion the STORED column is roll_txn_uid and the integer
+	// roll_txn_id is DERIVED from it, which flips the invariant this used to pin. A present
+	// integer implies a present uid (it was resolved from one); the REVERSE does not hold —
+	// a TRUE ORPHAN (box deleted) keeps its uid as the forensic trace while the derived
+	// integer resolves to blank. "uid present, id blank" is the correct, desirable orphan
+	// shape (the one F1 preserves), NOT an error — so we assert it happens, we don't flag it.
+	orphans, attributed := 0, 0
 	for _, r := range rows(t, dir, "lots.csv") {
-		if r[col(lh, "roll_txn_id")] == "0" || r[col(lh, "roll_txn_uid")] == "0" {
-			t.Fatal("a NULL roll_txn_id exported as \"0\" — that is a join key pointing at nothing")
+		id, uid := r[col(lh, "roll_txn_id")], r[col(lh, "roll_txn_uid")]
+		if id == "0" || uid == "0" {
+			t.Fatal("a NULL link exported as \"0\" — that is a join key pointing at nothing")
 		}
-		if r[col(lh, "roll_txn_id")] == "" {
-			if r[col(lh, "roll_txn_uid")] != "" {
-				t.Error("lots row has no roll_txn_id but carries a roll_txn_uid")
-			}
-			nulls++
+		if id != "" && uid == "" {
+			t.Errorf("lots row carries a derived roll_txn_id %q with no stored roll_txn_uid — "+
+				"the integer cannot exist without the uid it is resolved from", id)
+		}
+		switch {
+		case uid != "" && id == "":
+			orphans++ // box deleted: uid preserved as the trace, integer resolves to blank
+		case uid != "" && id != "":
+			attributed++
 		}
 	}
-	if nulls == 0 {
-		t.Log("note: the fixture had no unattributed lot, so the empty-cell case rests on the \"0\" assertion above")
+	if attributed == 0 {
+		t.Error("no attributed lot exported both its box id and uid — the resolved-link case is not pinned")
+	}
+	if orphans == 0 {
+		t.Error("no orphaned lot exported uid-present/integer-blank — the orphan-export shape is not pinned")
 	}
 }
 

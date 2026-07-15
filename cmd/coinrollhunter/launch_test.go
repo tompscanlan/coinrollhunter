@@ -203,6 +203,24 @@ func TestExportDoesNotUpgradeAnOldSourceDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, stmt := range []string{
+		// Undo 0011 (om-c8ei uid links) first: drop the uid columns + their indexes and
+		// restore the integer links, so the fixture genuinely has a pre-0010 schema for
+		// export's throwaway copy to migrate forward, rather than a v11 schema stamped 9
+		// (which would make 0011 re-add a column it already has). Indexes go before the
+		// columns they cover — SQLite's DROP COLUMN refuses an indexed column.
+		`DROP INDEX idx_lots_roll_txn_uid`,
+		`DROP INDEX idx_keepers_roll_txn_uid`,
+		`DROP INDEX idx_roll_txns_branch_uid`,
+		`DROP INDEX idx_trips_branch_uid`,
+		`ALTER TABLE lots DROP COLUMN roll_txn_uid`,
+		`ALTER TABLE keepers DROP COLUMN roll_txn_uid`,
+		`ALTER TABLE roll_txns DROP COLUMN branch_uid`,
+		`ALTER TABLE trips DROP COLUMN branch_uid`,
+		`ALTER TABLE lots ADD COLUMN roll_txn_id INTEGER`,
+		`ALTER TABLE keepers ADD COLUMN roll_txn_id INTEGER`,
+		`ALTER TABLE roll_txns ADD COLUMN branch_id INTEGER`,
+		`ALTER TABLE trips ADD COLUMN branch_id INTEGER`,
+		// Then undo 0010 (item_type.uid), as before.
 		`DROP INDEX idx_item_type_uid`,
 		`ALTER TABLE item_type DROP COLUMN uid`,
 		`PRAGMA user_version = 9`,
