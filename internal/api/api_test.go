@@ -36,7 +36,7 @@ func newServer(t *testing.T) *httptest.Server {
 	if err := legacy.Import(s, holdings, crh); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(api.Handler(s, nil))
+	srv := httptest.NewServer(api.Handler(s, nil, "", ""))
 	t.Cleanup(func() { srv.Close(); s.Close() })
 	return srv
 }
@@ -208,7 +208,7 @@ func TestExportEndpointCarriesPhotosAndDoesNotMutateTheDB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(api.Handler(s, nil))
+	srv := httptest.NewServer(api.Handler(s, nil, "", ""))
 	t.Cleanup(func() { srv.Close(); s.Close() })
 
 	before := dbSHA(t, dbPath)

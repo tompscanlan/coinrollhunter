@@ -12,11 +12,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,10 +104,13 @@ usage:
       Seed a separate database with ~15 months of fictional data and serve it —
       a full dashboard to explore before entering your own. Your real data is
       untouched; --reset regenerates the demo from scratch.
-  coinrollhunter backup [--db crh.db] DEST.db
-      Write a consistent snapshot of your data to a single file — safe to run
-      while the app is open, and safe to copy anywhere. Copying crh.db by hand
-      is not: recent changes may still live in its -wal sidecar.
+  coinrollhunter backup [--db crh.db] DEST/
+      Write a complete, restorable backup into the directory DEST: the database
+      plus your photo originals — everything needed to start a fresh instance.
+      Safe to run while the app is open (a hand copy of crh.db can miss recent
+      changes still in its -wal sidecar). Copy the whole folder to keep it all.
+      DEST must be empty or new. (A DEST ending in .db is the OLD single-file
+      form and is refused — it would silently omit your photos.)
   coinrollhunter export [--db crh.db] DIR
       Write everything you own into DIR as spreadsheets you can open anywhere:
       a CSV per table, a data.json that keeps the types, and your photos in a
@@ -283,10 +288,16 @@ func runServe(args []string) error {
 	})
 }
 
-// runBackup writes a consistent snapshot of the database to a single file, while
-// the app is running. The point is that the result is safe to copy anywhere — onto
-// a USB stick, into a sync folder, across to another machine — which a live crh.db
-// is not: its recent commits may still be sitting in a -wal sidecar.
+// runBackup writes a COMPLETE, RESTORABLE bundle into a directory: the database plus
+// the photo originals, everything needed to start a fresh CoinRollHunter instance
+// (om-6hlp, g/N1). The moment photos became files on disk, a bare-.db backup started
+// silently omitting every image while telling the user it was "complete" — so the shape
+// changed on purpose, and the old `backup DEST.db` form is now a HARD ERROR rather than a
+// backup that quietly loses pictures.
+//
+// Distinct from `export`: backup is the machine-readable, restore-my-app artifact
+// (db + originals); export is the human-readable, leave-with-my-data one (CSV/JSON +
+// photos). Both carry the originals; the derivative cache is regenerable and in NEITHER.
 func runBackup(args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ExitOnError)
 	dbPath := fs.String("db", "", "path to the SQLite database (default: the same one the app uses)")
@@ -294,9 +305,19 @@ func runBackup(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: coinrollhunter backup [--db crh.db] DEST.db")
+		return fmt.Errorf("usage: coinrollhunter backup [--db crh.db] DEST/  (a directory — db + your photos)")
 	}
 	dest := fs.Arg(0)
+
+	// The breaking change, made loud: a `.db` argument is the OLD single-file form, which
+	// would omit the user's photos. Refuse it with a message that says what to do instead,
+	// rather than writing a backup that silently loses images.
+	if strings.EqualFold(filepath.Ext(dest), ".db") {
+		return fmt.Errorf("backup now writes a DIRECTORY (the database AND your photos), not a single .db file.\n"+
+			"Give a directory path, e.g.  coinrollhunter backup %s\n"+
+			"That folder holds crh.db plus a photos/ tree — copy the whole folder to keep everything.",
+			strings.TrimSuffix(dest, filepath.Ext(dest)))
+	}
 
 	// Default to whatever the app itself would open, so `backup` finds the user's
 	// real data without them having to know where it lives.
@@ -311,19 +332,120 @@ func runBackup(args []string) error {
 		return fmt.Errorf("no database at %s", src)
 	}
 
+	// Refuse a non-empty destination — the rule `export` keeps, for the reason it keeps
+	// it: a backup command that can silently clobber the previous backup is a footgun in
+	// the one place you least want one.
+	if entries, err := os.ReadDir(dest); err == nil && len(entries) > 0 {
+		return fmt.Errorf("backup: %s is not empty (refusing to overwrite what is already there)", dest)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("backup: %s: %w", dest, err)
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return fmt.Errorf("backup: %s: %w", dest, err)
+	}
+
 	// BackupFile, not Open+Backup: Open applies pending migrations, so backing up
 	// through it would upgrade the database you were trying to snapshot *before*
 	// upgrading it — exactly the backup you'd want if an upgrade went wrong.
-	if err := store.BackupFile(src, dest); err != nil {
+	dbDest := filepath.Join(dest, "crh.db")
+	if err := store.BackupFile(src, dbDest); err != nil {
 		return err
 	}
-	fi, err := os.Stat(dest)
+
+	// Copy the ORIGINALS tree (not the derivative cache — regenerable, and a separate
+	// sibling dir, so copying photos/ excludes it by construction). Resolve symlinks so
+	// the photos beside the REAL database are found (REUSE the export helpers).
+	photoRoot := export.PhotoRoot(export.ResolveDBPath(src))
+	photos, err := copyTree(photoRoot, filepath.Join(dest, "photos"))
+	if err != nil {
+		return fmt.Errorf("backup photos: %w", err)
+	}
+
+	fi, err := os.Stat(dbDest)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Backed up %s -> %s (%.1f MB)\n", src, dest, float64(fi.Size())/(1<<20))
-	fmt.Println("This is a complete, self-contained database — copy it anywhere.")
+	fmt.Printf("Backed up %s -> %s/  (crh.db %.1f MB + %d photo file(s))\n",
+		src, dest, float64(fi.Size())/(1<<20), photos)
+	fmt.Printf("The whole folder is the backup. Restore by pointing CoinRollHunter at %s.\n", dbDest)
 	return nil
+}
+
+// photoCacheRoot is where a database's regenerable derivative cache lives: a sibling of
+// the originals tree, NOT inside it (so a backup/export that copies photos/ never picks it
+// up), gitignored, and rebuildable from the originals at any time (om-6hlp, R2). An
+// in-memory/absent dbPath has no cache, so its root is "".
+func photoCacheRoot(dbPath string) string {
+	if dbPath == "" || dbPath == ":memory:" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(dbPath), "photos-cache")
+}
+
+// copyTree copies every file under src into dst, recreating the directory structure. It
+// is the backup's photo copier: originals only (src is the originals tree). A src that
+// does not exist (no photos yet) is not an error — nothing to copy. Returns how many
+// files were written.
+func copyTree(src, dst string) (int, error) {
+	if src == "" {
+		return 0, nil
+	}
+	info, err := os.Stat(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil // no photos yet
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("%s is not a directory", src)
+	}
+	n := 0
+	err = filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return nil // skip symlinks/devices — a backup copies real files only
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := copyFile(p, target); err != nil {
+			return err
+		}
+		n++
+		return nil
+	})
+	return n, err
+}
+
+// copyFile copies one regular file's bytes to dst, refusing to overwrite (O_EXCL) — the
+// destination was verified empty, so a collision means a concurrent writer, which is a
+// loud error, not a silent clobber.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 // runDemo seeds a separate demo database with the fictional dataset (only when
@@ -496,7 +618,15 @@ func serveStore(s *store.Store, o serveOpts) error {
 // the handler that ships.
 func appHandler(s *store.Store, onQuit func(), o serveOpts) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/", api.Handler(s, web.FS()))
+	// Photos live beside the database: originals under photos/, the regenerable
+	// derivative cache under the sibling photos-cache/ (om-6hlp). Resolve symlinks first
+	// (REUSE export.PhotoRoot/ResolveDBPath — the same helpers export uses, so the two
+	// never disagree about where a photo is). An in-memory/absent dbPath yields "" and the
+	// photo routes degrade to 404/500 rather than touching the filesystem.
+	resolvedDB := export.ResolveDBPath(o.dbPath)
+	photosDir := export.PhotoRoot(resolvedDB)
+	cacheDir := photoCacheRoot(resolvedDB)
+	mux.Handle("/", api.Handler(s, web.FS(), photosDir, cacheDir))
 	mux.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		onQuit()

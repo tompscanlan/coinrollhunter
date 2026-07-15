@@ -23,7 +23,12 @@ import (
 
 // Handler builds the HTTP handler. webFS is the embedded static UI (may be nil
 // in tests); it is served at the root with the API mounted under /api/.
-func Handler(s *store.Store, webFS fs.FS) http.Handler {
+//
+// photosDir is where photo ORIGINALS live (photos/<owner_uid>/<uid>.<ext>, beside the
+// database); cacheDir is the separate, regenerable derivative tree (om-6hlp). Both may be
+// "" — an in-memory or test store has no on-disk home, and the photo routes then 404/500
+// rather than touch the filesystem.
+func Handler(s *store.Store, webFS fs.FS, photosDir, cacheDir string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +216,11 @@ func Handler(s *store.Store, webFS fs.FS) http.Handler {
 	// They coexist with the generic register()'d routes above (distinct path prefix) and
 	// with the two other hand-written handlers (lots/{id}/sell, branches/{id}/merge).
 	registerWorkflows(mux, s)
+
+	// Photos (om-6hlp): multipart upload, a DB-lookup file-serve route, and the
+	// gallery list/update/soft-delete. Hand-written (register() assumes an argument-less
+	// list; photos are owner-filtered and the upload bypasses the JSON decode path).
+	registerPhotos(mux, s, photosDir, cacheDir)
 
 	// Static UI at the root (when embedded), with an SPA fallback to index.html.
 	if webFS != nil {
