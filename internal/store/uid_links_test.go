@@ -427,3 +427,168 @@ func TestOrphanedLinkDBStillOpensThrough0011(t *testing.T) {
 		t.Fatalf("ResolveDataset over an orphaned-link db failed: %v", err)
 	}
 }
+
+// --- F1: an update preserves an already-orphaned row's stored uid ---------------------
+
+// storedUID reads a row's stored *_uid column directly (bypassing the read-path resolve),
+// so a test can prove what is actually persisted, not just what reads back.
+func storedUID(t *testing.T, s *Store, q string, args ...any) sql.NullString {
+	t.Helper()
+	var v sql.NullString
+	if err := s.db.QueryRow(q, args...).Scan(&v); err != nil {
+		t.Fatalf("%s: %v", q, err)
+	}
+	return v
+}
+
+// F1 — editing an UNRELATED cell on an already-orphaned find/keeper must PRESERVE the
+// dead box's stored uid, not overwrite it to NULL. The blank box link on the wire
+// (RollTxnID 0, how an orphan reads back) means "no change to the box link" now, mirroring
+// SellHolding — so the forensic orphan-uid trace that export preserves survives an edit.
+// Fails before the F1 fix (the update re-resolved 0 -> NULL); passes after.
+func TestUpdatePreservesOrphanedBoxUid(t *testing.T) {
+	s := openTestStore(t)
+	typeID, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Kennedy Half", Metal: "silver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, err := s.InsertRollTxn(model.RollTxn{Date: "2026-07-01", Bank: "Chase Main St", Action: "buy", Denom: "halves", FaceUSD: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadUID := storedUID(t, s, `SELECT uid FROM roll_txns WHERE id=?`, box)
+	findID, err := s.InsertHolding(model.Holding{ItemTypeID: typeID, RollTxnID: box, Activity: "crh", Qty: 1, BasisUSD: 0.5, Acquired: "2026-07-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keepID, err := s.InsertKeeper(model.Keeper{Denom: "halves", Count: 2, FaceUSD: 1.0, Date: "2026-07-01", RollTxnID: box})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete the box: the find + keeper now read back blank (RollTxnID 0), but their
+	// stored uid still names the dead box.
+	if err := s.DeleteRollTxn(box); err != nil {
+		t.Fatal(err)
+	}
+	find := holdingByID(t, s, findID)
+	if find.RollTxnID != 0 {
+		t.Fatalf("precondition: orphaned find should read RollTxnID 0, got %d", find.RollTxnID)
+	}
+
+	// Edit an unrelated cell and write back — the PUT-as-merge shape (RollTxnID stays 0).
+	find.Notes = "edited after the box was deleted"
+	if err := s.UpdateHolding(findID, find); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedUID(t, s, `SELECT roll_txn_uid FROM lots WHERE id=?`, findID); !got.Valid || got.String != deadUID.String {
+		t.Errorf("orphaned find's stored roll_txn_uid = %v after an unrelated edit, want the dead box's uid %q preserved", got, deadUID.String)
+	}
+
+	keeper := keeperByID(t, s, keepID)
+	if keeper.RollTxnID != 0 {
+		t.Fatalf("precondition: orphaned keeper should read RollTxnID 0, got %d", keeper.RollTxnID)
+	}
+	keeper.Count = 3
+	if err := s.UpdateKeeper(keepID, keeper); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedUID(t, s, `SELECT roll_txn_uid FROM keepers WHERE id=?`, keepID); !got.Valid || got.String != deadUID.String {
+		t.Errorf("orphaned keeper's stored roll_txn_uid = %v after an unrelated edit, want %q preserved", got, deadUID.String)
+	}
+}
+
+// F1 — the same preservation for the branch link on roll_txns/trips: a branch that was
+// deleted reads back Bank "" on the wire, and an unrelated edit must not erase the stored
+// branch_uid.
+func TestUpdatePreservesOrphanedBranchUid(t *testing.T) {
+	s := openTestStore(t)
+	boxID, err := s.InsertRollTxn(model.RollTxn{Date: "2026-01-01", Bank: "Chase Main St", Action: "buy", Denom: "halves", FaceUSD: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tripID, err := s.InsertTrip(model.Trip{Date: "2026-01-01", Bank: "Chase Main St", Miles: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branches, err := s.ListBranches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branches) != 1 {
+		t.Fatalf("want 1 branch, got %d", len(branches))
+	}
+	deadUID := branches[0].UID
+
+	if err := s.DeleteBranch(branches[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the roll_txn back (Bank now ""), edit an unrelated cell, write back.
+	txns, err := s.ListRollTxns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(txns) != 1 || txns[0].Bank != "" {
+		t.Fatalf("precondition: orphaned roll_txn should read blank bank, got %+v", txns)
+	}
+	rt := txns[0]
+	rt.Notes = "edited after the branch was deleted"
+	if err := s.UpdateRollTxn(boxID, rt); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedUID(t, s, `SELECT branch_uid FROM roll_txns WHERE id=?`, boxID); !got.Valid || got.String != deadUID {
+		t.Errorf("orphaned roll_txn's stored branch_uid = %v after an unrelated edit, want %q preserved", got, deadUID)
+	}
+
+	// Same for the trip.
+	trips, err := s.ListTrips()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := trips[0]
+	tr.Miles = 7
+	if err := s.UpdateTrip(tripID, tr); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedUID(t, s, `SELECT branch_uid FROM trips WHERE id=?`, tripID); !got.Valid || got.String != deadUID {
+		t.Errorf("orphaned trip's stored branch_uid = %v after an unrelated edit, want %q preserved", got, deadUID)
+	}
+}
+
+// --- F2: D3 pinned on the post-cutover write path -------------------------------------
+
+// F2 — writing a NONZERO phantom box id (no such box) stores NULL, never errors and never
+// 400s (the frozen D3 decision). Guards against a future "reject unknown id" regression.
+// The old phantom-id assertions (RollTxnID 42/43) were correctly rewritten to real boxes
+// when the cutover landed, leaving D3 unpinned on the write path until now.
+func TestWriteWithUnknownBoxIsStoredAsNull(t *testing.T) {
+	s := openTestStore(t)
+	typeID, err := s.InsertItemType(model.ItemType{Kind: "coin", Name: "Mercury Dime", Metal: "silver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const phantom = 999999 // no such roll_txn
+
+	findID, err := s.InsertHolding(model.Holding{ItemTypeID: typeID, RollTxnID: phantom, Activity: "crh", Qty: 1, BasisUSD: 0.5, Acquired: "2026-07-01"})
+	if err != nil {
+		t.Fatalf("InsertHolding with an unknown box id must NOT error (D3 stores NULL), got %v", err)
+	}
+	if got := storedUID(t, s, `SELECT roll_txn_uid FROM lots WHERE id=?`, findID); got.Valid {
+		t.Errorf("unknown box id -> stored roll_txn_uid should be NULL, got %q", got.String)
+	}
+	if find := holdingByID(t, s, findID); find.RollTxnID != 0 {
+		t.Errorf("unknown box id -> read-back RollTxnID should be 0 (blank), got %d", find.RollTxnID)
+	}
+
+	keepID, err := s.InsertKeeper(model.Keeper{Denom: "dimes", Count: 5, FaceUSD: 0.5, RollTxnID: phantom})
+	if err != nil {
+		t.Fatalf("InsertKeeper with an unknown box id must NOT error (D3 stores NULL), got %v", err)
+	}
+	if got := storedUID(t, s, `SELECT roll_txn_uid FROM keepers WHERE id=?`, keepID); got.Valid {
+		t.Errorf("unknown box id -> stored keeper roll_txn_uid should be NULL, got %q", got.String)
+	}
+	if k := keeperByID(t, s, keepID); k.RollTxnID != 0 {
+		t.Errorf("unknown box id -> read-back keeper RollTxnID should be 0, got %d", k.RollTxnID)
+	}
+}

@@ -109,15 +109,22 @@ func (s *Store) UpdateHolding(id int64, h model.Holding) error {
 	if err := h.Validate(); err != nil {
 		return err
 	}
-	ruid, err := rollTxnUID(s.db, h.RollTxnID) // id->uid: persist the box's stable uid
+	// F1 (om-c8ei): a blank box link on the wire (RollTxnID 0) PRESERVES the stored
+	// roll_txn_uid rather than re-resolving 0 -> NULL. This is the orphan case — a find
+	// whose box was deleted reads back RollTxnID 0, and an unrelated edit must not erase
+	// the dead box's uid (the forensic trace export keeps). Mirrors SellHolding. A
+	// NONZERO id still resolves (D3: unknown -> NULL). See the CLAUDE.md F1 note: a true
+	// "clear the box link" also arrives as 0, so it is no longer expressible — out of scope.
+	keep := h.RollTxnID == 0
+	ruid, err := rollTxnUID(s.db, h.RollTxnID) // id->uid; nil when keep (unused by the CASE)
 	if err != nil {
 		return err
 	}
 	res, err := s.db.Exec(
-		`UPDATE lots SET item_type_id=?, roll_txn_uid=?, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
+		`UPDATE lots SET item_type_id=?, roll_txn_uid = CASE WHEN ?=1 THEN roll_txn_uid ELSE ? END, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
 		   basis_usd=?, premium_usd=?, face_value_usd=?, acquired=?, source=?, location=?,
 		   insured_value=?, attributes=?, notes=?, category=?, subcategory=?, trophy=?, disposed=?, disposed_usd=? WHERE id=?`,
-		h.ItemTypeID, ruid, h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
+		h.ItemTypeID, b2i(keep), ruid, h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location,
 		h.InsuredValue, h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), h.Disposed, h.DisposedUSD, id)
 	return affected(res, err, "update holding")
@@ -152,13 +159,18 @@ func (s *Store) UpdateRollTxn(id int64, t model.RollTxn) error {
 	if err := t.Validate(); err != nil {
 		return err
 	}
-	buid, err := resolveBranchUID(s.db, t.Bank)
+	// F1 (om-c8ei): a blank bank on the wire PRESERVES the stored branch_uid. A branch
+	// that was deleted/merged-away reads back Bank "" (the LEFT JOIN resolves to nothing),
+	// and an unrelated edit must not erase that dangling uid — the orphan trace. A
+	// nonblank bank resolves (find-or-create) as before. See the CLAUDE.md F1 note.
+	keep := strings.TrimSpace(t.Bank) == ""
+	buid, err := resolveBranchUID(s.db, t.Bank) // "" when keep (unused by the CASE)
 	if err != nil {
 		return err
 	}
 	res, err := s.db.Exec(
-		`UPDATE roll_txns SET date=?, branch_uid=?, action=?, denom=?, unit=?, amount=?, face_usd=?, source_type=?, notes=? WHERE id=?`,
-		t.Date, nullStr(buid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes, id)
+		`UPDATE roll_txns SET date=?, branch_uid = CASE WHEN ?=1 THEN branch_uid ELSE ? END, action=?, denom=?, unit=?, amount=?, face_usd=?, source_type=?, notes=? WHERE id=?`,
+		t.Date, b2i(keep), nullStr(buid), t.Action, t.Denom, t.Unit, t.Amount, t.FaceUSD, t.SourceType, t.Notes, id)
 	return affected(res, err, "update roll_txn")
 }
 
@@ -173,12 +185,15 @@ func (s *Store) UpdateTrip(id int64, t model.Trip) error {
 	if err := t.Validate(); err != nil {
 		return err
 	}
-	buid, err := resolveBranchUID(s.db, t.Bank)
+	// F1 (om-c8ei): a blank bank on the wire preserves the stored branch_uid (orphan
+	// trace); a nonblank bank resolves as before. See UpdateRollTxn and the CLAUDE.md note.
+	keep := strings.TrimSpace(t.Bank) == ""
+	buid, err := resolveBranchUID(s.db, t.Bank) // "" when keep (unused by the CASE)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`UPDATE trips SET date=?, branch_uid=?, miles=?, hours=? WHERE id=?`,
-		t.Date, nullStr(buid), t.Miles, t.Hours, id)
+	res, err := s.db.Exec(`UPDATE trips SET date=?, branch_uid = CASE WHEN ?=1 THEN branch_uid ELSE ? END, miles=?, hours=? WHERE id=?`,
+		t.Date, b2i(keep), nullStr(buid), t.Miles, t.Hours, id)
 	return affected(res, err, "update trip")
 }
 
@@ -305,12 +320,16 @@ func (s *Store) UpdateKeeper(id int64, k model.Keeper) error {
 	if err := k.Validate(); err != nil {
 		return err
 	}
-	ruid, err := rollTxnUID(s.db, k.RollTxnID) // id->uid: the box link is a stable uid now
+	// F1 (om-c8ei): a blank box link on the wire (RollTxnID 0) preserves the stored
+	// roll_txn_uid (orphan trace); a nonzero id resolves (D3: unknown -> NULL). See
+	// UpdateHolding and the CLAUDE.md F1 note.
+	keep := k.RollTxnID == 0
+	ruid, err := rollTxnUID(s.db, k.RollTxnID) // nil when keep (unused by the CASE)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`UPDATE keepers SET denom=?, count=?, face_usd=?, date=?, roll_txn_uid=? WHERE id=?`,
-		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), ruid, id)
+	res, err := s.db.Exec(`UPDATE keepers SET denom=?, count=?, face_usd=?, date=?, roll_txn_uid = CASE WHEN ?=1 THEN roll_txn_uid ELSE ? END WHERE id=?`,
+		k.Denom, k.Count, k.FaceUSD, nullStr(k.Date), b2i(keep), ruid, id)
 	return affected(res, err, "update keeper")
 }
 
