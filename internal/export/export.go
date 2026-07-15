@@ -90,8 +90,17 @@ type table struct {
 
 var (
 	itemTypeUID = derived{"item_type_uid", "it.uid", "LEFT JOIN item_type it ON it.id = t.item_type_id"}
-	rollTxnUID  = derived{"roll_txn_uid", "rt.uid", "LEFT JOIN roll_txns rt ON rt.id = t.roll_txn_id"}
-	branchUID   = derived{"branch_uid", "b.uid", "LEFT JOIN branches b ON b.id = t.branch_id"}
+	// om-c8ei INVERTED the box/branch links: the uid is now the REAL stored column and
+	// the integer is DERIVED by resolving it back, so a recycled rowid can never freeze a
+	// wrong link. The CSV keeps BOTH columns (id + uid); only which one is stored vs
+	// computed flipped, so the user's bundle shape is unchanged. These derive the INTEGER
+	// from the stored uid.
+	rollTxnID = derived{"roll_txn_id", "rt.id", "LEFT JOIN roll_txns rt ON rt.uid = t.roll_txn_uid"}
+	branchID  = derived{"branch_id", "b.id", "LEFT JOIN branches b ON b.uid = t.branch_uid"}
+	// branch_aliases is the ONE exception: its branch_id STAYS an integer (it cannot
+	// orphan — see the store's DeleteBranch/MergeBranches), so there it is still the real
+	// column and the uid is derived FROM it, the old direction.
+	branchUID = derived{"branch_uid", "b.uid", "LEFT JOIN branches b ON b.id = t.branch_id"}
 	// The one column a user can actually follow: photos.csv -> the file on disk, in
 	// one step, with no filename convention to reconstruct.
 	photoPath = derived{"path", `'photos/' || t.owner_uid || '/' || t.uid || '.' || t.ext`, ""}
@@ -106,22 +115,22 @@ var tables = []table{
 		cols: []string{"uid", "id", "kind", "name", "metal", "fine_oz_each", "fineness", "year", "mint", "mintmark", "refs"}},
 
 	{name: "lots", orderBy: "t.id",
-		cols: []string{"uid", "id", "item_type_id", "roll_txn_id", "activity", "qty", "gross_weight", "purity",
+		cols: []string{"uid", "id", "item_type_id", "roll_txn_uid", "activity", "qty", "gross_weight", "purity",
 			"weight_unit", "basis_usd", "premium_usd", "face_value_usd", "acquired", "source", "location",
 			"insured_value", "attributes", "notes", "category", "subcategory", "trophy", "disposed", "disposed_usd"},
-		derived: []derived{itemTypeUID, rollTxnUID}},
+		derived: []derived{itemTypeUID, rollTxnID}},
 
 	{name: "roll_txns", orderBy: "t.id",
-		cols:    []string{"uid", "id", "date", "branch_id", "action", "denom", "unit", "amount", "face_usd", "source_type", "notes"},
-		derived: []derived{branchUID}},
+		cols:    []string{"uid", "id", "date", "branch_uid", "action", "denom", "unit", "amount", "face_usd", "source_type", "notes"},
+		derived: []derived{branchID}},
 
 	{name: "keepers", orderBy: "t.id",
-		cols:    []string{"id", "denom", "count", "face_usd", "date", "roll_txn_id"},
-		derived: []derived{rollTxnUID}},
+		cols:    []string{"id", "denom", "count", "face_usd", "date", "roll_txn_uid"},
+		derived: []derived{rollTxnID}},
 
 	{name: "trips", orderBy: "t.id",
-		cols:    []string{"id", "date", "branch_id", "miles", "hours"},
-		derived: []derived{branchUID}},
+		cols:    []string{"id", "date", "branch_uid", "miles", "hours"},
+		derived: []derived{branchID}},
 
 	{name: "supplies", orderBy: "t.id",
 		cols: []string{"id", "date", "item", "cost_usd"}},

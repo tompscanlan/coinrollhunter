@@ -210,11 +210,16 @@ func TestBundleCoversEveryTable(t *testing.T) {
 // schema: uids resolved through a foreign key, plus the photo's path. Declared here,
 // in the test, on purpose — so that adding a derived column to the exporter also
 // breaks this test and has to be a deliberate act.
+// om-c8ei inverted the box/branch links: the uid is now the REAL stored column and the
+// integer is the DERIVED one (resolved back from the uid), so the recyclable rowid no
+// longer survives as the durable link. The CSV still carries both; only which side is
+// derived flipped. branch_aliases is the exception — its branch_id stays an integer (it
+// cannot orphan), so there the uid is still the derived column.
 var derivedColumns = map[string][]string{
-	"lots":           {"item_type_uid", "roll_txn_uid"},
-	"roll_txns":      {"branch_uid"},
-	"keepers":        {"roll_txn_uid"},
-	"trips":          {"branch_uid"},
+	"lots":           {"item_type_uid", "roll_txn_id"},
+	"roll_txns":      {"branch_id"},
+	"keepers":        {"roll_txn_id"},
+	"trips":          {"branch_id"},
 	"branch_aliases": {"branch_uid"},
 	"photos":         {"path"},
 }
