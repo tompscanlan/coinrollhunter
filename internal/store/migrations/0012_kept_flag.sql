@@ -1,0 +1,40 @@
+-- 0012_kept_flag: a "keeping this" flag on a CRH find (om-5psc, ADR-008 note).
+--
+-- THE MODEL. A find you keep is ONE find row (a lot, activity='crh') carrying a
+-- kept flag -- not a find PLUS a duplicate clad batch for the same coin. The keeper
+-- table stays, scoped by convention to bulk/uncategorized CLAD only, so a physical
+-- coin is one row and its face counts once (ADR-008, superseding the rejected
+-- keeper<->lot dedupe in its Alternatives).
+--
+-- ADDITIVE ONLY -- IT TOUCHES ZERO EXISTING ROWS. This is deliberately a plain
+-- `ALTER TABLE lots ADD COLUMN ... DEFAULT 0`, the trophy pattern (0006). It does
+-- NOT dedupe, backfill, collapse, or repair a single clad batch or lot:
+--
+--   * A clad batch is a BATCH, not a coin ({halves, count 12, face 6.00} is twelve
+--     coins). A find's $0.50 is INCLUDED SOMEWHERE in a $6.00 batch -- there is no
+--     row-to-row pair to collapse, and removing the batch would destroy eleven
+--     other coins' face.
+--   * For the populations that matter the match key is EMPTY: the legacy import
+--     (internal/legacy) and the demo seeder fan clad into one row per denom with
+--     NO date and NO box, and every pre-0007 clad row is NULL by definition.
+--   * The box+date co-location a match would key on is the SIGNATURE OF A CORRECT
+--     ENTRY (a silver find and a bulk clad batch from the same box on the same
+--     day), so an automatic collapse would fire on correct data en masse.
+--
+-- The risk asymmetry is total: a false positive silently merges two real coins,
+-- RAISES to_redeposit, and tells the user to redeposit coin sitting in their album
+-- -- unrecoverable, no undo (om-lv4q). A false negative is just today's bug: benign,
+-- status quo, still fixable by hand. So repairing existing duplicates is a
+-- USER-ADJUDICATED step in the app (a separate tandem bead, om-cqmp), never a
+-- migration action. This file adds a column and nothing else; it cannot brick an
+-- existing DB (a plain additive ALTER with a DEFAULT is the one safe shape on live
+-- user data -- cf. om-1czp's proven CHECK-constraint brick).
+--
+-- The workflow change (LoggedFinds records a kept find as one flagged lot, never a
+-- second clad batch) is what PREVENTS every FUTURE duplicate; that is the whole
+-- forward value and it needs no reconcile.
+--
+-- MATH-NEUTRAL. calc reads a find's face onto the kept side exactly once already
+-- (via fCost); the double-count was the second ROW, not the formula. So kept records
+-- DATA-ENTRY INTENT, not accounting -- internal/calc is unchanged (om-5psc D1).
+ALTER TABLE lots ADD COLUMN kept INTEGER NOT NULL DEFAULT 0;

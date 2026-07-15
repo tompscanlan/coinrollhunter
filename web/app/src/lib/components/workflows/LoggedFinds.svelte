@@ -28,6 +28,7 @@
     qty: number
     face: number
     faceManual: boolean
+    kept: boolean
   }
   type KeeperRow = { denom: string; count: number; face: number; faceManual: boolean }
 
@@ -40,6 +41,10 @@
     qty: 1,
     face: 0,
     faceManual: false,
+    // These are coins you PULLED and are keeping, so "Keep" defaults on. Records intent
+    // only (ADR-008, om-5psc): the face is on the kept side of the float either way, and
+    // a kept find is this ONE flagged row — never a duplicate keeper batch below.
+    kept: true,
   })
   const blankKeeper = (): KeeperRow => ({ denom: 'halves', count: 0, face: 0, faceManual: false })
 
@@ -165,11 +170,14 @@
           acquired: chosenDate || today(),
           source: chosenBank.trim(),
           from_box: boxId ? String(boxId) : '',
+          kept: f.kept, // "keeping this" intent (ADR-008, om-5psc) — one flagged row, no keeper
         })
       }
 
-      // 3) bulk clad keepers — attributed to the same box/date as the finds so a
-      //    later Reconcile can tell whether a batch was already counted (ADR-008).
+      // 3) bulk clad keepers — CLAD ONLY (ADR-008, om-5psc). A find you're keeping is
+      //    ONE flagged find row above (the "Keep" box), never a keeper here, so this
+      //    submission can no longer write a keeper for a coin it just logged as a find:
+      //    one coin, one row, its face counted once. These are the leftover bulk clad.
       for (const k of realKeepers) {
         await api.keepers.create({
           denom: k.denom,
@@ -330,10 +338,11 @@
       </div>
       <p class="text-xs text-muted-foreground">
         Any individually-notable coin — silver <em>or</em> clad (proof, error, key date, PMD…). Logged as a
-        taxonomy find in Holdings, not a keeper (ADR-008).
+        taxonomy find in Holdings, not a keeper (ADR-008). Check <b>Keep</b> for one you're keeping — that's the
+        record; don't also add it as a keeper below.
       </p>
       {#each finds as f, i (i)}
-        <div class="grid grid-cols-[1fr_auto_auto_auto] items-end gap-2">
+        <div class="grid grid-cols-[1fr_auto_auto_auto_auto] items-end gap-2">
           <label class="flex flex-col gap-1 text-xs text-muted-foreground">
             {i === 0 ? 'Product' : ''}
             <input
@@ -365,6 +374,14 @@
               bind:value={f.face}
               oninput={() => (f.faceManual = true)}
               class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
+            />
+          </label>
+          <label class="flex w-12 flex-col items-center gap-1 text-xs text-muted-foreground" title="Keeping this find (ADR-008)">
+            {i === 0 ? 'Keep' : ''}
+            <input
+              type="checkbox"
+              bind:checked={f.kept}
+              class="mb-2 size-4 rounded border-input text-primary focus:ring-ring"
             />
           </label>
           <button

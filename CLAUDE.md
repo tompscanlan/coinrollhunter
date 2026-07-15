@@ -376,4 +376,40 @@ already invites (row 1 is the header, and the whole point of the uid columns is 
 joins). The set-based coverage guard (`TestBundleCoversEveryColumn`) and the orphan-export
 shape (`TestUIDLeadsAndForeignKeysResolveToUIDs`, which now seeds a real orphan) pin this.
 
+Added 2026-07-14 (a `kept` flag on the find, om-5psc): the **keeper/find double-count**
+this app self-flagged is now closed **structurally**. One physical coin could be entered as
+BOTH a CRH find (a `lots` row, `activity='crh'`) AND a keeper batch — the same LoggedFinds
+submission accepted both — and `kept_face` then counted its face **twice** (bought $500,
+returned $499.50, one $0.50 half entered twice → `kept_face` $1.00, `to_redeposit` −$0.50
+instead of $0.50/$0.00). The fix is **model (a): a `kept` flag on the find.** A find you keep
+is **one flagged find row**, never a find plus a duplicate keeper; the keeper table is now
+**clad-only by convention**. **Migration 0012** (`0012_kept_flag.sql`) is the trophy pattern
+exactly: `ALTER TABLE lots ADD COLUMN kept INTEGER NOT NULL DEFAULT 0`, stored via `b2i()`,
+scanned via `kept != 0`, `Kept bool` on `model.Holding`/`model.Lot` (`Resolve` copies it),
+plumbed through `InsertHolding`/`UpdateHolding`/`ListHoldings`/`ResolveDataset` and the export
+lots columns. **Three things this bead deliberately did NOT do, each load-bearing:**
+**(1) `internal/calc` is a ZERO diff.** The bug was the second **row**, not the formula:
+`keptFace` already counts a find's face **exactly once** via `fCost`, kept or not — a find is
+coin pulled off the search table, its face belongs on the kept side **regardless of intent**.
+Gating `keptFace`'s find term on the flag would drop an *unflagged* find out of `kept_face`,
+**inflating** `to_redeposit` (telling the user to redeposit coin in their pocket) — a worse bug,
+and it would force weakening the ADR-008 identities. So `kept` records **data-entry intent, not
+accounting**; it is **math-neutral**, and the headline verdicts (`crh_net_*`, `total_basis`) are
+**bit-identical** buggy-vs-correct (delta 0, so om-nass is untouched — `TestKeptFindNoDoubleCount`).
+**(2) The migration is ADDITIVE-ONLY and repairs NOTHING** — zero existing keeper rows touched.
+Automatic collapse of *existing* duplicates is unsafe and stays out: a keeper is a **batch, not
+a coin** (its $0.50 is inside a larger total, no pair to collapse); the match key is **empty** for
+the populations that matter (the legacy import + demo seeder fan clad into one row per denom with
+NO date, NO box; every pre-0007 row is NULL); and box+date co-location is the **signature of a
+correct entry**, so a detector false-positives on good data — and a false positive is **silent,
+unrecoverable** money loss (no undo, om-lv4q). Repairing pre-existing duplicates is a
+**user-adjudicated** in-app step (a separate tandem bead, om-cqmp), never a migration/boot action.
+**(3) The partial-sale carve-out** (`SellHolding`, `internal/store/data.go`) hand-enumerates every
+`lots` column into the new disposed row — `kept` rides across it exactly like `trophy`, or a
+partially-sold kept find would silently **un-keep** the carve-out (the om-hdk5 trap, no guard).
+LoggedFinds gained a **"Keep"** checkbox on the find row (defaults on) and its keeper section is
+clad-only; a kept notable find is one flagged find, and the submission can no longer write a keeper
+for a coin it just logged as a find (pinned in `qa/do-tab.e2e.mjs`, AC2). ADR-008's §Alternatives
+rejection of a keeper↔lot dedupe is **vindicated, not overturned** — we do not dedupe.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.

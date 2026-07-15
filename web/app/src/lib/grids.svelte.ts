@@ -148,6 +148,7 @@ export interface FlatHolding {
   category?: string // CRH find taxonomy (ADR-006) — only meaningful for activity='crh'
   subcategory?: string
   trophy?: boolean
+  kept?: boolean // "keeping this" — a CRH find you're keeping (ADR-008, om-5psc)
   // The sale, surfaced read-only (om-5k35). A sold lot used to look exactly like
   // one you still own, so you could edit a completed sale without knowing — and
   // silently move the cost basis under a realized gain you had already booked.
@@ -212,6 +213,7 @@ type GridHolding = Pick<
   | 'category'
   | 'subcategory'
   | 'trophy'
+  | 'kept'
 >
 
 function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): GridHolding {
@@ -232,6 +234,7 @@ function toHolding(row: Omit<FlatHolding, 'id'>, item_type_id: number): GridHold
     category: row.category ?? '',
     subcategory: row.subcategory ?? '',
     trophy: Boolean(row.trophy),
+    kept: Boolean(row.kept),
   }
 }
 
@@ -310,6 +313,9 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     { accessorKey: 'category', header: 'Category (CRH)', meta: { editor: 'autocomplete', width: '150px', placeholder: 'Silver', suggestions: () => findCategories } },
     { accessorKey: 'subcategory', header: 'Subcat (CRH)', meta: { editor: 'autocomplete', width: '150px', placeholder: 'Mercury', suggestions: () => findSubcategories } },
     { accessorKey: 'trophy', header: 'Trophy', meta: { editor: 'checkbox', width: '90px' } },
+    // "Keeping this" — a CRH find you're keeping (ADR-008, om-5psc). Records intent
+    // only; the find's face is on the kept side of the float either way (math-neutral).
+    { accessorKey: 'kept', header: 'Keep', meta: { editor: 'checkbox', width: '80px' } },
   ],
   load: async () => {
     const [types, holdings, rolls] = await Promise.all([
@@ -352,6 +358,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
         category: h.category ?? '',
         subcategory: h.subcategory ?? '',
         trophy: Boolean(h.trophy),
+        kept: Boolean(h.kept),
         disposed: h.disposed ?? '',
         disposed_usd: h.disposed_usd ?? 0,
       } satisfies FlatHolding
@@ -388,6 +395,7 @@ export const holdingsGrid: GridConfig<FlatHolding> = {
     category: '',
     subcategory: '',
     trophy: false,
+    kept: false,
   }),
 }
 
@@ -512,9 +520,9 @@ export const suppliesGrid: GridConfig<Supply> = {
 }
 
 export const keepersGrid: GridConfig<Keeper> = {
-  title: 'Keepers',
+  title: 'Keepers (clad only)',
   description:
-    'Bulk / uncategorized clad pulled at face. Recoverable, not a loss — kept out of the redeposit float. Individually-notable coins (silver OR clad) belong in Holdings as a taxonomy find, not here (ADR-008). Date/box are optional audit context.',
+    'Bulk / uncategorized CLAD pulled at face. Recoverable, not a loss — kept out of the redeposit float. A find you are keeping (silver OR notable clad) is a taxonomy find in Holdings with the "Keep" box checked, NOT a keeper here — one coin is one row, so its face counts once (ADR-008, om-5psc). Date/box are optional audit context.',
   columns: [
     { accessorKey: 'denom', header: 'Denom', meta: { editor: 'select', options: DENOMS, width: '120px' } },
     { accessorKey: 'count', header: 'Count', meta: { editor: 'number', step: 1, align: 'right', width: '110px' } },

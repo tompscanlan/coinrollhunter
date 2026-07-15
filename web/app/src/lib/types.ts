@@ -45,6 +45,10 @@ export interface Holding {
   category?: string // e.g. "Silver" | "PMD" | "Error" | "Key Date"
   subcategory?: string // e.g. "Mercury" | "parking lot" | "major"
   trophy?: boolean // flags a notable find for the highlights feed
+  // "keeping this" find intent (ADR-008, om-5psc): a find you keep is this ONE flagged
+  // row, not a find plus a duplicate keeper batch. Math-neutral — a find's face is on
+  // the kept side of the float either way; this only records the hunter's intent.
+  kept?: boolean
   disposed?: string
   disposed_usd?: number
 }
@@ -152,6 +156,7 @@ export interface EnrichedLot {
   category?: string
   subcategory?: string
   trophy?: boolean
+  kept?: boolean // "keeping this" find intent (ADR-008, om-5psc); omitted when false
   fine_oz: number
   market_usd: number
   unreal_usd: number

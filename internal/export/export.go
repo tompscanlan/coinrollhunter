@@ -117,7 +117,7 @@ var tables = []table{
 	{name: "lots", orderBy: "t.id",
 		cols: []string{"uid", "id", "item_type_id", "roll_txn_uid", "activity", "qty", "gross_weight", "purity",
 			"weight_unit", "basis_usd", "premium_usd", "face_value_usd", "acquired", "source", "location",
-			"insured_value", "attributes", "notes", "category", "subcategory", "trophy", "disposed", "disposed_usd"},
+			"insured_value", "attributes", "notes", "category", "subcategory", "trophy", "kept", "disposed", "disposed_usd"},
 		derived: []derived{itemTypeUID, rollTxnID}},
 
 	{name: "roll_txns", orderBy: "t.id",

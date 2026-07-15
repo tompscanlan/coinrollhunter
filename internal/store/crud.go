@@ -75,7 +75,7 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 	rows, err := s.db.Query(
 		`SELECT l.id, l.uid, l.item_type_id, rt.id, l.activity, l.qty, l.gross_weight, l.purity, l.weight_unit, l.basis_usd,
 		   l.premium_usd, l.face_value_usd, l.acquired, l.source, l.location, l.insured_value, l.attributes,
-		   l.notes, l.category, l.subcategory, l.trophy, l.disposed, l.disposed_usd
+		   l.notes, l.category, l.subcategory, l.trophy, l.kept, l.disposed, l.disposed_usd
 		 FROM lots l LEFT JOIN roll_txns rt ON rt.uid = l.roll_txn_uid ORDER BY l.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list lots: %w", err)
@@ -86,10 +86,10 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 		var h model.Holding
 		var rtid sql.NullInt64
 		var uid, wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
-		var trophy int64
+		var trophy, kept int64
 		if err := rows.Scan(&h.ID, &uid, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity,
 			&wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc,
-			&h.InsuredValue, &attr, &notes, &cat, &subcat, &trophy, &disp, &h.DisposedUSD); err != nil {
+			&h.InsuredValue, &attr, &notes, &cat, &subcat, &trophy, &kept, &disp, &h.DisposedUSD); err != nil {
 			return nil, err
 		}
 		// NullString, not string: lots.uid has no schema-level NOT NULL (ADR-009 (c)),
@@ -99,7 +99,7 @@ func (s *Store) ListHoldings() ([]model.Holding, error) {
 		h.RollTxnID = rtid.Int64
 		h.WeightUnit, h.Source, h.Location = wu.String, src.String, loc.String
 		h.Attributes, h.Notes, h.Disposed = attr.String, notes.String, disp.String
-		h.Category, h.Subcategory, h.Trophy = cat.String, subcat.String, trophy != 0
+		h.Category, h.Subcategory, h.Trophy, h.Kept = cat.String, subcat.String, trophy != 0, kept != 0
 		out = append(out, h)
 	}
 	return out, rows.Err()
@@ -123,10 +123,10 @@ func (s *Store) UpdateHolding(id int64, h model.Holding) error {
 	res, err := s.db.Exec(
 		`UPDATE lots SET item_type_id=?, roll_txn_uid = CASE WHEN ?=1 THEN roll_txn_uid ELSE ? END, activity=?, qty=?, gross_weight=?, purity=?, weight_unit=?,
 		   basis_usd=?, premium_usd=?, face_value_usd=?, acquired=?, source=?, location=?,
-		   insured_value=?, attributes=?, notes=?, category=?, subcategory=?, trophy=?, disposed=?, disposed_usd=? WHERE id=?`,
+		   insured_value=?, attributes=?, notes=?, category=?, subcategory=?, trophy=?, kept=?, disposed=?, disposed_usd=? WHERE id=?`,
 		h.ItemTypeID, b2i(keep), ruid, h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location,
-		h.InsuredValue, h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), h.Disposed, h.DisposedUSD, id)
+		h.InsuredValue, h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), b2i(h.Kept), h.Disposed, h.DisposedUSD, id)
 	return affected(res, err, "update holding")
 }
 

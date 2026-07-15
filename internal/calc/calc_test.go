@@ -716,3 +716,74 @@ func TestMarkedFinenessAnnotationStillParses(t *testing.T) {
 		})
 	}
 }
+
+// TestKeptFindNoDoubleCount is om-5psc's worked example and the pin that the
+// structural fix is MATH-NEUTRAL. The bead's scenario: buy $500 in halves, return
+// $499.50, keep ONE $0.50 90% half. The app NOW records that as ONE crh find lot
+// (basis 0.50, kept=true) and ZERO keeper rows — the kept flag lives on the find,
+// not a duplicate keeper batch. calc is UNCHANGED (D1): a find's face is on the kept
+// side of the float via fCost whether or not it is flagged, so the correct answer
+// falls straight out of today's formula once the duplicate row is gone.
+func TestKeptFindNoDoubleCount(t *testing.T) {
+	base := func(lots []model.Lot, keepers []model.Keeper) model.Dataset {
+		return model.Dataset{
+			Spot:     model.Spot{SilverUSD: 60},
+			Settings: model.DefaultSettings(),
+			RollTxns: []model.RollTxn{
+				{ID: 1, Date: "2026-06-01", Bank: "Sample Bank", BranchID: 1, Action: "buy", Denom: "halves", FaceUSD: 500.00},
+				{ID: 2, Date: "2026-06-02", Bank: "Sample Bank", BranchID: 1, Action: "return", FaceUSD: 499.50},
+			},
+			Lots:    lots,
+			Keepers: keepers,
+		}
+	}
+
+	// CORRECT — the app's new behaviour: one kept find row, no keeper.
+	keptFind := model.Lot{ID: 1, Activity: "crh", Metal: "silver", Fineness: "90%", Qty: 1, FineOzEach: 0.18084, BasisUSD: 0.50, FaceValueUSD: 0.50, Acquired: "2026-06-01", Kept: true}
+	correct := Compute(base([]model.Lot{keptFind}, nil))
+
+	// AC1 — exact figures. Today's unchanged formula on a one-row dataset.
+	approx(t, "clad_face", correct.CladFace, 0.00)
+	approx(t, "kept_face", correct.KeptFace, 0.50)
+	approx(t, "to_redeposit", correct.ToRedeposit, 0.00)
+	if !correct.Reconciled {
+		t.Errorf("reconciled = false, want true (to_redeposit %.4f should be ~0)", correct.ToRedeposit)
+	}
+
+	// AC7 — the kept flag did not move a thing vs the SAME find left unflagged: the
+	// flag is intent, not accounting. A find's face is kept whether or not it is
+	// flagged (D1/D2).
+	unflagged := keptFind
+	unflagged.Kept = false
+	unflaggedR := Compute(base([]model.Lot{unflagged}, nil))
+	approx(t, "kept flag is math-neutral: kept_face", unflaggedR.KeptFace, correct.KeptFace)
+	approx(t, "kept flag is math-neutral: to_redeposit", unflaggedR.ToRedeposit, correct.ToRedeposit)
+	approx(t, "kept flag is math-neutral: crh_net_real", unflaggedR.CRHNetReal, correct.CRHNetReal)
+
+	// BUGGY — the OLD double-entry: the same coin as a find AND a keeper batch. This
+	// is the bug this bead removes at data entry; reproduced here to prove the fix.
+	buggy := Compute(base([]model.Lot{keptFind}, []model.Keeper{{ID: 1, Denom: "halves", Count: 1, FaceUSD: 0.50}}))
+
+	// The double-count symptom, reproduced to the cent.
+	approx(t, "buggy clad_face (the duplicate)", buggy.CladFace, 0.50)
+	approx(t, "buggy kept_face (counted twice)", buggy.KeptFace, 1.00)
+	approx(t, "buggy to_redeposit (negative — phantom money)", buggy.ToRedeposit, -0.50)
+	if buggy.Reconciled {
+		t.Error("buggy dataset reconciled=true, want false (the double-count unbalances the float)")
+	}
+
+	// AC6 — THE HEADLINE VERDICT NEVER MOVED. The double-count was float-only:
+	// crh_net_real and total_basis are BIT-IDENTICAL buggy vs correct (delta 0), and
+	// the realized-CRH gain is identical too — so om-nass's lifetime figure (defined
+	// crh_net_real + realized_gain_crh) is likewise unmoved, without this test having
+	// to touch the calc internals. om-nass is safe from both the bug and the fix.
+	if buggy.CRHNetReal != correct.CRHNetReal {
+		t.Errorf("crh_net_real moved: buggy %v != correct %v (delta %v)", buggy.CRHNetReal, correct.CRHNetReal, buggy.CRHNetReal-correct.CRHNetReal)
+	}
+	if buggy.RealizedGainCRH != correct.RealizedGainCRH {
+		t.Errorf("realized_gain_crh moved: buggy %v != correct %v — the lifetime figure would shift", buggy.RealizedGainCRH, correct.RealizedGainCRH)
+	}
+	if buggy.TotalBasis != correct.TotalBasis {
+		t.Errorf("total_basis moved: buggy %v != correct %v", buggy.TotalBasis, correct.TotalBasis)
+	}
+}

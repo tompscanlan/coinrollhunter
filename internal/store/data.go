@@ -181,11 +181,11 @@ func insertHolding(x execer, h model.Holding) (int64, error) {
 	res, err := x.Exec(
 		`INSERT INTO lots (uid, item_type_id, roll_txn_uid, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
-		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   attributes, notes, category, subcategory, trophy, kept, disposed, disposed_usd)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		newUID(), h.ItemTypeID, ruid, h.Activity, h.Qty, h.GrossWeight, h.Purity, h.WeightUnit,
 		h.BasisUSD, h.PremiumUSD, h.FaceValueUSD, h.Acquired, h.Source, h.Location, h.InsuredValue,
-		h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), h.Disposed, h.DisposedUSD)
+		h.Attributes, h.Notes, h.Category, h.Subcategory, b2i(h.Trophy), b2i(h.Kept), h.Disposed, h.DisposedUSD)
 	if err != nil {
 		return 0, fmt.Errorf("insert holding: %w", err)
 	}
@@ -412,15 +412,15 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 
 	var h model.Holding
 	var rtuid, wu, src, loc, attr, notes, cat, subcat, disp sql.NullString
-	var trophy int64
+	var trophy, kept int64
 	err = tx.QueryRow(
 		`SELECT item_type_id, roll_txn_uid, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
-		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd
+		   attributes, notes, category, subcategory, trophy, kept, disposed, disposed_usd
 		 FROM lots WHERE id=?`, id).Scan(
 		&h.ItemTypeID, &rtuid, &h.Activity, &h.Qty, &h.GrossWeight, &h.Purity, &wu,
 		&h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &src, &loc, &h.InsuredValue,
-		&attr, &notes, &cat, &subcat, &trophy, &disp, &h.DisposedUSD)
+		&attr, &notes, &cat, &subcat, &trophy, &kept, &disp, &h.DisposedUSD)
 	if err == sql.ErrNoRows {
 		return ErrNotFound
 	}
@@ -451,15 +451,17 @@ func (s *Store) SellHolding(id int64, qty, proceeds float64, date string) error 
 	// must ride onto the carve-out too, or every partially-sold find loses its box
 	// (om-c8ei): rtuid is the ORIGINAL lot's stored uid, copied through verbatim —
 	// already a stable uid, so no id->uid resolution here — and binds as SQL NULL when
-	// the source lot had no box.
+	// the source lot had no box. trophy AND kept ride across the same way (om-5psc): a
+	// partial sale of a KEPT find must not silently un-keep the carved-out portion —
+	// the om-hdk5 hand-enumerated-column trap CLAUDE.md names, which no guard catches.
 	if _, err := tx.Exec(
 		`INSERT INTO lots (uid, item_type_id, roll_txn_uid, activity, qty, gross_weight, purity, weight_unit,
 		   basis_usd, premium_usd, face_value_usd, acquired, source, location, insured_value,
-		   attributes, notes, category, subcategory, trophy, disposed, disposed_usd)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   attributes, notes, category, subcategory, trophy, kept, disposed, disposed_usd)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		newUID(), h.ItemTypeID, rtuid, h.Activity, qty, h.GrossWeight, h.Purity, wu.String,
 		soldBasis, soldPremium, soldFace, h.Acquired, src.String, loc.String, 0,
-		attr.String, notes.String, cat.String, subcat.String, trophy, date, proceeds); err != nil {
+		attr.String, notes.String, cat.String, subcat.String, trophy, kept, date, proceeds); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
@@ -628,7 +630,7 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 	// rowid. A deleted box leaves rt.id NULL -> RollTxnID 0 (blank, not wrong).
 	rows, err = s.db.Query(
 		`SELECT l.id, l.item_type_id, rt.id, l.activity, l.qty, l.gross_weight, l.purity, l.weight_unit, l.basis_usd,
-		   l.premium_usd, l.face_value_usd, l.acquired, l.source, l.category, l.subcategory, l.trophy
+		   l.premium_usd, l.face_value_usd, l.acquired, l.source, l.category, l.subcategory, l.trophy, l.kept
 		 FROM lots l LEFT JOIN roll_txns rt ON rt.uid = l.roll_txn_uid
 		 WHERE l.disposed IS NULL OR l.disposed = '' ORDER BY l.id`)
 	if err != nil {
@@ -638,16 +640,16 @@ func (s *Store) ResolveDataset() (model.Dataset, error) {
 		var h model.Holding
 		var rtid sql.NullInt64
 		var source, cat, subcat, wu sql.NullString
-		var trophy int64
+		var trophy, kept int64
 		if err := rows.Scan(&h.ID, &h.ItemTypeID, &rtid, &h.Activity, &h.Qty, &h.GrossWeight,
-			&h.Purity, &wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy); err != nil {
+			&h.Purity, &wu, &h.BasisUSD, &h.PremiumUSD, &h.FaceValueUSD, &h.Acquired, &source, &cat, &subcat, &trophy, &kept); err != nil {
 			rows.Close()
 			return d, err
 		}
 		h.RollTxnID = rtid.Int64
 		h.WeightUnit = wu.String
 		h.Source = source.String
-		h.Category, h.Subcategory, h.Trophy = cat.String, subcat.String, trophy != 0
+		h.Category, h.Subcategory, h.Trophy, h.Kept = cat.String, subcat.String, trophy != 0, kept != 0
 		d.Lots = append(d.Lots, model.Resolve(h, types[h.ItemTypeID]))
 	}
 	rows.Close()

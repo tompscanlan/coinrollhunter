@@ -203,7 +203,11 @@ func TestExportDoesNotUpgradeAnOldSourceDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, stmt := range []string{
-		// Undo 0011 (om-c8ei uid links) first: drop the uid columns + their indexes and
+		// Undo 0012 (om-5psc kept flag) first — newest migration, newest column. Same
+		// reason the 0011 undo below exists: a fixture stamped 9 that still carries a
+		// post-9 column makes that migration re-add a column it already has on the copy.
+		`ALTER TABLE lots DROP COLUMN kept`,
+		// Undo 0011 (om-c8ei uid links) next: drop the uid columns + their indexes and
 		// restore the integer links, so the fixture genuinely has a pre-0010 schema for
 		// export's throwaway copy to migrate forward, rather than a v11 schema stamped 9
 		// (which would make 0011 re-add a column it already has). Indexes go before the
