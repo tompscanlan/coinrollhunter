@@ -73,3 +73,28 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// copyTree must follow a symlinked ROOT (Codex review, om-usga): os.Stat follows the symlink
+// so the IsDir check passes, but filepath.WalkDir does NOT — so a symlinked photos/ root (the
+// originals moved to another drive and symlinked back) would be visited as one non-regular
+// entry and skipped, and the backup would silently copy ZERO files: a backup that lies.
+func TestCopyTreeFollowsASymlinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real-photos")
+	writeFile(t, filepath.Join(real, "owner", "pic.jpg"), "the original bytes")
+	link := filepath.Join(base, "photos")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	dst := filepath.Join(base, "bundle-photos")
+	n, err := copyTree(link, dst)
+	if err != nil {
+		t.Fatalf("copyTree through a symlinked root: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("copied %d files through a symlinked photos/ root, want 1 — a symlinked root must not silently back up nothing", n)
+	}
+	if got := readFile(t, filepath.Join(dst, "owner", "pic.jpg")); got != "the original bytes" {
+		t.Errorf("copied content = %q, want the original bytes", got)
+	}
+}

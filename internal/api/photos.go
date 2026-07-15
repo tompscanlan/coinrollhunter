@@ -53,6 +53,11 @@ type photoHandler struct {
 // so a request path can never climb out of photosDir.
 var uidV4RE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
+// errOwnerDeletedDuringUpload aborts (and rolls back) an upload whose owner was deleted
+// between the handler's early existence check and the in-tx re-check. Never surfaced to the
+// client directly — the handler maps it to the same 404 the early check would have returned.
+var errOwnerDeletedDuringUpload = errors.New("owner deleted during upload")
+
 func registerPhotos(mux *http.ServeMux, s *store.Store, photosDir, cacheDir string) {
 	h := &photoHandler{s: s, photosDir: photosDir, cacheDir: cacheDir}
 	mux.HandleFunc("POST /api/photos", h.upload)
@@ -177,7 +182,20 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var photo model.Photo
+	var ownerGone bool
 	err = h.s.WithTx(func(tx *store.Tx) error {
+		// Re-check the owner INSIDE the tx. The early ownerExists above races a concurrent
+		// DeleteHolding (there is no FK from photos to the owner), so an upload that began
+		// before a delete committed would otherwise land an ACTIVE photo on a nonexistent
+		// lot — the exact orphan the early check exists to prevent. This re-check sees the
+		// deletion (same connection, serialized by the write lock) and rolls back instead.
+		switch ok, err := tx.OwnerExists(ownerKind, ownerUID); {
+		case err != nil:
+			return err
+		case !ok:
+			ownerGone = true
+			return errOwnerDeletedDuringUpload
+		}
 		p, err := tx.InsertPhoto(model.Photo{
 			OwnerKind: ownerKind, OwnerUID: ownerUID, Role: role, Ext: ext, Caption: caption,
 		})
@@ -187,6 +205,13 @@ func (h *photoHandler) upload(w http.ResponseWriter, r *http.Request) {
 		photo = p
 		return nil
 	})
+	if ownerGone {
+		// The owner was deleted between the early check and the insert — nothing committed,
+		// remove the temp, and report the same 404 the early check would have.
+		os.Remove(tmpName)
+		writeJSON(w, http.StatusNotFound, errBody(fmt.Errorf("no %s with uid %q", ownerKind, ownerUID)))
+		return
+	}
 	if err != nil {
 		// Nothing committed → the only residue is the temp file, which we remove: a failed
 		// upload leaves neither a row nor a stray final original.

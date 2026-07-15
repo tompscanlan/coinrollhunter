@@ -211,6 +211,68 @@ func TestInsertPhotoRejectsBadOwnerKindAndExt(t *testing.T) {
 	}
 }
 
+// The upload path re-checks the owner INSIDE its WithTx via tx.OwnerExists, because the
+// handler's early ownerExists races a concurrent DeleteHolding (there is no FK from photos to
+// the owner). This pins the mechanism: after the owner is deleted the in-tx check sees it
+// gone — and without that check InsertPhoto would land an ACTIVE orphan, so the guard is
+// load-bearing. (Codex review finding, om-usga.)
+func TestOwnerExistsGuardsUploadAgainstOrphan(t *testing.T) {
+	s := openTestStore(t)
+	owner := mkLot(t, s)
+	var lotID int64
+	if err := s.db.QueryRow(`SELECT id FROM lots WHERE uid=?`, owner).Scan(&lotID); err != nil {
+		t.Fatal(err)
+	}
+
+	// present before the delete
+	if err := s.WithTx(func(tx *Tx) error {
+		ok, err := tx.OwnerExists("lot", owner)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			t.Error("owner should exist before delete")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// a concurrent DeleteHolding commits
+	if err := s.DeleteHolding(lotID); err != nil {
+		t.Fatal(err)
+	}
+
+	// the in-tx re-check the upload now performs sees the deletion
+	if err := s.WithTx(func(tx *Tx) error {
+		ok, err := tx.OwnerExists("lot", owner)
+		if err != nil {
+			return err
+		}
+		if ok {
+			t.Error("owner should be gone after delete — the upload's in-tx re-check must catch this")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// ...and it is load-bearing: WITHOUT the guard, InsertPhoto lands an active orphan.
+	if err := s.WithTx(func(tx *Tx) error {
+		_, err := tx.InsertPhoto(model.Photo{OwnerKind: "lot", OwnerUID: owner, Ext: "jpg"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var orphans int
+	if err := s.db.QueryRow(`SELECT count(*) FROM photos WHERE owner_uid=? AND inactive=0`, owner).Scan(&orphans); err != nil {
+		t.Fatal(err)
+	}
+	if orphans != 1 {
+		t.Fatalf("unguarded InsertPhoto orphaned %d photos (want 1) — this is why the upload re-checks OwnerExists in-tx", orphans)
+	}
+}
+
 func equalStrs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

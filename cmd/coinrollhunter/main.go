@@ -400,6 +400,15 @@ func copyTree(src, dst string) (int, error) {
 	if !info.IsDir() {
 		return 0, fmt.Errorf("%s is not a directory", src)
 	}
+	// os.Stat FOLLOWED a symlinked root (so IsDir passed), but filepath.WalkDir does NOT
+	// follow symlinks — a symlinked photos/ root (the originals moved to another drive and
+	// symlinked back) would be visited as one non-regular entry and skipped, and the backup
+	// would silently copy ZERO files: a backup that lies. Resolve the root to its real
+	// directory before walking. Symlinks WITHIN the tree stay skipped (below) — intended.
+	src, err = filepath.EvalSymlinks(src)
+	if err != nil {
+		return 0, err
+	}
 	n := 0
 	err = filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
 		if err != nil {

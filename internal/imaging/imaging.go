@@ -97,6 +97,15 @@ func CheckConfig(data []byte) (w, h int, err error) {
 // renderable. Best-effort by contract: the caller treats a failure as non-fatal and
 // falls back to the original, because derivatives are regenerable (N2).
 func Derive(data []byte, maxEdge int) ([]byte, error) {
+	// Re-run the bomb guard on EVERY decode, not just at ingest. This is also the lazy
+	// regen path (serveDerivative reads an original off disk on a cache miss), and an
+	// original that arrived by backup-restore, hand-copy, or corruption never passed
+	// through ingest's CheckConfig — so a small compressed file claiming huge dimensions
+	// would otherwise force a full-size RGBA allocation here on every cache miss. The check
+	// is header-only and cheap; making Derive self-guard means no decode path can forget it.
+	if _, _, err := CheckConfig(data); err != nil {
+		return nil, err
+	}
 	src, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("decode image: %w", err)
