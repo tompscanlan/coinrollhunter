@@ -490,4 +490,51 @@ its own body + declared in `expectedMutations`). UI: a camera cell on the Holdin
 `PhotoGallery.svelte`, plus an image rotation in `TrophyFeed.svelte` (Insights, keyed off the
 existing `lots.trophy` — nothing added to Dashboard, ADR-012 §2). Full rationale: **ADR-009 (f)**.
 
+Added 2026-07-15 (Sol red-team review — three hardening fixes). An external, different-lineage
+reviewer (Sol) red-teamed the intentional-looking-wrong decisions; 6 BREAKS verified, 3 fixed now,
+the rest tracked. Each fix was implemented on Opus, then independently re-run + adversarially
+reviewed on Fable before merge.
+
+**om-bz89 (branch write-lock, Sol #7):** `UpdateBranch` was TWO auto-commit statements — the
+`UPDATE branches` then a separate `INSERT branch_aliases` — so a concurrent `DeleteBranch` could
+commit between them and leave an **orphan alias** on a recyclable rowid, reopening the om-c8ei
+wrong-parent adoption through `branch_aliases` (the one link that stayed integer-keyed). Fix:
+`UpdateBranch` wraps both statements in ONE tx — with `SetMaxOpenConns(1)` the tx pins the pool's
+sole connection Begin→Commit, so nothing interleaves; `DeleteBranch`/`MergeBranches` take `s.wmu`.
+`UpdateBranch` deliberately does **NOT** self-lock: its only caller is `api.register`'s generic PUT
+handler, which already holds the **non-reentrant** `s.wmu` via `WithWrite`, so self-locking would
+**deadlock** every `PUT /api/branches/{id}`. The **transaction** closes the orphan race
+caller-independently; the caller's lock provides RMW serialization. Lock order is wmu→connection at
+every site, so no cycle. Pinned by a real concurrency test (fails pre-fix by round 4, passes under
+`-race`), which also folds om-h9bn (MergeBranches errors on a nonexistent survivor and mutates
+nothing — already true via its uid-resolve first statement, now pinned). **Follow-up om-61d5:**
+`insertBranch` on the AUTO-COMMIT path (`POST /api/branches` + `resolveBranchID`'s find-or-create
+inside `InsertRollTxn`/`InsertTrip`) has the SAME two-statement hazard on CREATE — not naively
+wrappable because `resolveBranchID` also runs inside compound `WithTx` (seam-f).
+
+**om-9occ + om-hs1v-A (photos hardening, Sol #9/#8):** the upload's **commit→rename crash window**
+is gone. The uid is now minted with `store.NewUID()` **BEFORE** the tx, the original is written
+straight to its final path with `O_EXCL`, the row is INSERTed carrying that same uid, and the file
+is removed on ANY tx failure — **no `os.Rename` anywhere**, so a committed row has its original
+across a **process** crash. (Power-loss durability still needs an fsync of file+dir before commit —
+tracked in **om-0j33**; the code is honest about this now.) `insertPhoto` honors a well-formed
+caller-supplied v4 uid (mints when blank, **rejects** a non-blank malformed uid with `ErrInvalid`)
+so a row's uid always matches the file naming it. And the serve route now **404s a soft-deleted
+photo** for every variant (om-hs1v Half A — deleted means deleted to a viewer); `PhotoByUID` still
+resolves inactive rows on purpose (export/restore rely on it), so the guard lives in `serve()`, not
+the lookup. **om-hs1v Half B** (hard-delete/purge, whether export excludes inactive, storage GC)
+stays **tandem** — the real deletion story is a design sitting.
+
+**om-65nv (EXIF strip-all, Sol #11):** `StripJPEGMetadata` (name kept for the call site) now strips
+embedded metadata from **all three** accepted formats — JPEG APP1, PNG `eXIf`/`tEXt`/`zTXt`/`iTXt`,
+WebP RIFF `EXIF`/`XMP ` (recomputing the RIFF size) — dispatching on magic bytes. Non-image or
+desynced input is returned **unchanged**, and a metadata-free file is returned **byte-identical**
+(normal uploads are never rewritten). This closes the false promise where the "strip camera
+metadata" Settings toggle **silently no-op'd** on the very WebP/PNG the upload accepts. **Follow-up
+om-tmb0:** JPEG odd-fill-byte desync leaks an APP1, JPEG COM/APP13-IPTC + PNG `tIME`/post-IEND +
+WebP VP8X flag-bits are out-of-scope channels, and the WebP pad-byte + clean-file fast-path lack
+tests. **om-4h6m** (a read-only `doctor` report — Sol #1/#2/#5, Compute silently sums raw-invalid
+basis; deferred by om-1czp/om-c8ei) and **om-cqmp** (now spans keeper clad-only *prevention* per
+Sol #4, not only repair) are **tandem**.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
