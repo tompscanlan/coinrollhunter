@@ -11,6 +11,7 @@ package imaging
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -143,17 +144,39 @@ func fit(w, h, maxEdge int) (int, int) {
 	return nw, maxEdge
 }
 
-// StripJPEGMetadata removes the APP1 (EXIF / XMP) segments from a JPEG byte stream,
-// leaving the image data byte-identical — the "keep the raw original, minus the camera
-// metadata" strip the EXIF setting asks for (N4). It walks the marker structure and
-// drops only APP1; everything else (JFIF/APP0, quantization tables, the entropy-coded
-// scan) is copied through untouched. Non-JPEG input (PNG/WebP, where embedded EXIF is
-// rare) is returned unchanged — the magic check below simply falls through — so the
-// caller can apply it unconditionally when the setting is on.
+// StripJPEGMetadata removes embedded camera metadata (EXIF / GPS / XMP) from an
+// uploaded image, leaving the actual image data intact — the "keep the raw original,
+// minus the camera metadata" strip the EXIF setting asks for (N4). Despite the name
+// (kept for the api/photos.go call site, om-65nv), it now covers ALL THREE accepted
+// formats: it dispatches on the magic bytes and drops each container's metadata
+// segments —
+//
+//   - JPEG: the APP1 (EXIF/XMP) marker segments.
+//   - PNG:  the eXIf / tEXt / zTXt / iTXt ancillary chunks.
+//   - WebP: the 'EXIF' and 'XMP ' RIFF chunks (recomputing the top-level RIFF size).
+//
+// Everything else is copied through byte-for-byte. Anything that is NOT a recognizable
+// JPEG/PNG/WebP — or that desyncs mid-parse — is returned UNCHANGED (never corrupt bytes
+// we do not understand), so the caller can apply it unconditionally when the setting is
+// on. Only metadata is removed, so every stripped output still decodes at the same
+// dimensions.
 func StripJPEGMetadata(data []byte) []byte {
-	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
-		return data // not a JPEG (SOI missing) — nothing to strip here
+	switch {
+	case len(data) >= 2 && data[0] == 0xFF && data[1] == 0xD8:
+		return stripJPEG(data)
+	case bytes.HasPrefix(data, pngSignature):
+		return stripPNG(data)
+	case len(data) >= 12 && bytes.Equal(data[0:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
+		return stripWebP(data)
+	default:
+		return data // not an accepted image — nothing to strip here
 	}
+}
+
+// stripJPEG walks the JPEG marker structure and drops only APP1 (EXIF/XMP); everything
+// else (JFIF/APP0, quantization tables, the entropy-coded scan) is copied through
+// untouched. A desync copies the remainder verbatim — the pre-om-65nv behavior, kept.
+func stripJPEG(data []byte) []byte {
 	out := make([]byte, 0, len(data))
 	out = append(out, 0xFF, 0xD8) // SOI
 	i := 2
@@ -186,5 +209,88 @@ func StripJPEGMetadata(data []byte) []byte {
 		}
 		i += 2 + segLen
 	}
+	return out
+}
+
+// pngSignature is the 8-byte PNG file magic.
+var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+
+// pngMetaChunks are the ancillary chunk types that carry camera/EXIF/GPS/text
+// metadata. Dropping them removes the data; the remaining chunks are independent and
+// keep their existing CRCs (chunk CRCs cover only that chunk, so no recompute is needed).
+var pngMetaChunks = map[string]bool{"eXIf": true, "tEXt": true, "zTXt": true, "iTXt": true}
+
+// stripPNG walks the PNG chunk stream (8-byte signature, then repeating
+// length(4)+type(4)+data+crc(4)) and drops the metadata chunks, copying every other
+// chunk (IHDR/PLTE/IDAT/IEND/…) byte-identically. Any malformed/oversized chunk length
+// is treated as a desync and the ORIGINAL bytes are returned unchanged.
+func stripPNG(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	out = append(out, data[:8]...) // signature
+	i, dropped := 8, false
+	for i+8 <= len(data) {
+		length := int(binary.BigEndian.Uint32(data[i:]))
+		end := i + 12 + length // len(4) + type(4) + data(length) + crc(4)
+		if length < 0 || end < i || end > len(data) {
+			return data // desync — do not corrupt bytes we cannot parse
+		}
+		ctype := string(data[i+4 : i+8])
+		if pngMetaChunks[ctype] {
+			dropped = true
+		} else {
+			out = append(out, data[i:end]...)
+		}
+		i = end
+		if ctype == "IEND" {
+			break // IEND is the final chunk; stop walking
+		}
+	}
+	if !dropped {
+		return data // no metadata chunk present — leave the file byte-identical
+	}
+	if i < len(data) {
+		out = append(out, data[i:]...) // preserve any trailing bytes verbatim
+	}
+	return out
+}
+
+// webpMetaChunks are the RIFF chunk fourccs that carry metadata. Dropping the chunk is
+// what removes the data (clearing the VP8X flag bits is optional, om-65nv).
+var webpMetaChunks = map[string]bool{"EXIF": true, "XMP ": true}
+
+// stripWebP walks the WebP RIFF container ('RIFF''WEBP' then repeating fourcc(4)+u32-LE
+// size+payload+pad-to-even) and drops the metadata chunks, then RECOMPUTES the top-level
+// RIFF size to reflect the removed bytes. A chunk whose payload overruns the buffer is a
+// desync and the ORIGINAL bytes are returned unchanged.
+func stripWebP(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	out = append(out, data[:12]...) // 'RIFF' + size (fixed up below) + 'WEBP'
+	i, dropped := 12, false
+	for i+8 <= len(data) {
+		size := int(binary.LittleEndian.Uint32(data[i+4 : i+8]))
+		dataEnd := i + 8 + size
+		if size < 0 || dataEnd < i || dataEnd > len(data) {
+			return data // desync — do not corrupt bytes we cannot parse
+		}
+		// RIFF pads odd-sized payloads to even alignment; the final chunk may omit the
+		// pad byte, so only consume it when it is actually present.
+		chunkEnd := dataEnd
+		if size&1 == 1 && dataEnd < len(data) {
+			chunkEnd++
+		}
+		if webpMetaChunks[string(data[i:i+4])] {
+			dropped = true
+		} else {
+			out = append(out, data[i:chunkEnd]...)
+		}
+		i = chunkEnd
+	}
+	if !dropped {
+		return data // no metadata chunk present — leave the file byte-identical
+	}
+	if i < len(data) {
+		out = append(out, data[i:]...) // preserve any trailing bytes verbatim
+	}
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8)) // RIFF size = bytes after it
 	return out
 }
