@@ -44,7 +44,10 @@ func orphanAliases(t *testing.T, s *Store) int {
 // in-memory store per round keeps the rounds independent and re-creates the recyclable
 // rowid each time, mirroring the real hazard.
 func TestUpdateBranchDeleteBranchNoOrphanAlias(t *testing.T) {
-	const rounds = 400
+	// The pre-fix window is wide — the unfixed tree orphans an alias within single-digit
+	// rounds — so 100 keeps ample regression-detection margin without taxing every -race
+	// `make check` run (400 rounds spun up 400 fresh migrated :memory: stores, ~115s).
+	const rounds = 100
 	for i := 0; i < rounds; i++ {
 		s, err := Open(":memory:")
 		if err != nil {
