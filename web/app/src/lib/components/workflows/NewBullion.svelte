@@ -26,13 +26,13 @@
   let fineOz = $state(0)
   let qty = $state(1)
   let basis = $state(0)
-  let premium = $state(0)
-  let premiumOverridden = $state(false)
+  let premiumOverride = $state<number | null>(null)
   let acquired = $state(today())
   let source = $state('')
 
   let catalog = $state<ItemType[]>([])
   let spotHistory = $state<Spot[]>([])
+  let spotLoading = $state(true)
   let busy = $state(false)
   let err = $state('')
   let done = $state<{ qty: number; product: string } | null>(null)
@@ -45,8 +45,9 @@
       api.spotHistory(),
     ])
     if (catalogResult.status === 'fulfilled') catalog = catalogResult.value
-    if (spotResult.status === 'fulfilled') spotHistory = spotResult.value
+    if (spotResult.status === 'fulfilled' && spotResult.value.length > 0) spotHistory = spotResult.value
     else if (report.spot.as_of) spotHistory = [report.spot]
+    spotLoading = false
   })
 
   // When the product matches a known type/preset, fill the metal/fineness/fine-oz.
@@ -72,15 +73,27 @@
   )
   const estMelt = $derived((Number(qty) || 0) * (Number(fineOz) || 0) * spot)
 
-  // Use the most recent recorded spot on or before the purchase date. Premium is
-  // only a suggested memo: once the user edits it, later form changes must not
-  // overwrite their number.
+  // Use the most recent recorded spot on or before the purchase date. A manual
+  // correction wins over a poller observation from the same calendar day; raw
+  // string ordering cannot express that policy because date-only values sort
+  // before RFC3339 timestamps.
   const acquisitionSpot = $derived.by(() => {
     const target = acquired || today()
     let found: Spot | null = null
     for (const row of spotHistory) {
-      if (!row.as_of || row.as_of.slice(0, 10) > target) continue
-      if (!found || row.as_of > found.as_of) found = row
+      const rowDate = row.as_of?.slice(0, 10)
+      if (!rowDate || rowDate > target) continue
+      if (!found) {
+        found = row
+        continue
+      }
+      const foundDate = found.as_of.slice(0, 10)
+      const rowIsManual = row.source.toLowerCase() === 'manual'
+      const foundIsManual = found.source.toLowerCase() === 'manual'
+      const manualWins = rowDate === foundDate && rowIsManual && !foundIsManual
+      const sameKindNewer =
+        rowDate === foundDate && rowIsManual === foundIsManual && row.as_of > found.as_of
+      if (rowDate > foundDate || manualWins || sameKindNewer) found = row
     }
     return found
   })
@@ -98,22 +111,24 @@
             : 0
   }
 
-  const suggestedPremium = $derived.by(() => {
+  const rawPremium = $derived.by(() => {
     const paid = Number(basis) || 0
     const fine = (Number(qty) || 0) * (Number(fineOz) || 0)
     const acquisitionPrice = priceFor(acquisitionSpot)
     if (paid <= 0 || fine <= 0 || acquisitionPrice <= 0) return null
-    return Math.max(0, Math.round((paid - fine * acquisitionPrice) * 100) / 100)
+    return Math.round((paid - fine * acquisitionPrice) * 100) / 100
   })
-
-  $effect(() => {
-    if (!premiumOverridden) premium = suggestedPremium ?? 0
-  })
+  const suggestedPremium = $derived(rawPremium === null ? null : Math.max(0, rawPremium))
+  const premium = $derived(premiumOverride ?? suggestedPremium ?? 0)
+  const premiumOverridden = $derived(premiumOverride !== null)
 
   function useSpotSuggestion() {
     if (suggestedPremium === null) return
-    premiumOverridden = false
-    premium = suggestedPremium
+    premiumOverride = null
+  }
+
+  function overridePremium(input: HTMLInputElement) {
+    premiumOverride = Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : 0
   }
 
   async function submit() {
@@ -158,8 +173,7 @@
     fineOz = 0
     qty = 1
     basis = 0
-    premium = 0
-    premiumOverridden = false
+    premiumOverride = null
     source = ''
   }
 </script>
@@ -275,8 +289,8 @@
             type="number"
             step="0.01"
             min="0"
-            bind:value={premium}
-            oninput={() => (premiumOverridden = true)}
+            value={premium}
+            oninput={(event) => overridePremium(event.currentTarget)}
             class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
           />
         </label>
@@ -307,7 +321,20 @@
         </p>
       {/if}
 
-      {#if suggestedPremium !== null && acquisitionSpot}
+      {#if spotLoading && (Number(basis) || 0) > 0 && (Number(fineOz) || 0) > 0}
+        <p class="text-xs text-muted-foreground">Checking stored spot history…</p>
+      {:else if rawPremium !== null && rawPremium < 0 && acquisitionSpot}
+        <p class="text-xs text-muted-foreground">
+          Purchase price is {money(Math.abs(rawPremium))} below melt at the
+          {acquisitionSpot.as_of.slice(0, 10)} spot record, so suggested premium is {money(0)}.
+          Premium is already part of total paid; it is not added to basis.
+          {#if premiumOverridden}
+            <button type="button" class="text-primary underline-offset-2 hover:underline" onclick={useSpotSuggestion}>
+              Use suggestion
+            </button>
+          {/if}
+        </p>
+      {:else if suggestedPremium !== null && acquisitionSpot}
         <p class="text-xs text-muted-foreground">
           {money(suggestedPremium)} premium suggested from the {acquisitionSpot.as_of.slice(0, 10)} spot record.
           Premium is already part of total paid; it is not added to basis.
@@ -317,13 +344,17 @@
             </button>
           {/if}
         </p>
+      {:else if !spotLoading && (Number(basis) || 0) > 0 && (Number(fineOz) || 0) > 0}
+        <p class="text-xs text-muted-foreground">
+          No stored spot record exists on or before {acquired || today()}; enter premium manually.
+        </p>
       {/if}
 
       {#if err}<p class="text-sm text-destructive">{err}</p>{/if}
 
       <div class="flex justify-end gap-2">
         <Button variant="ghost" onclick={onClose}>Cancel</Button>
-        <Button onclick={submit} disabled={busy}>Add to stack</Button>
+        <Button onclick={submit} disabled={busy || spotLoading}>Add to stack</Button>
       </div>
     </Card>
   {/if}

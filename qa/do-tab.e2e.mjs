@@ -21,14 +21,24 @@ page.on('pageerror', (error) => pageErrors.push(error.message))
 
 const harness = createHarness(page, base)
 
+const modules = [
+  ['workflows', () => runWorkflows(harness)],
+  ['reporting and photos', () => runReportingAndPhotos(harness, screenshotDir)],
+  ['grid persistence', () => runGridPersistence(harness)],
+  ['grid behavior', () => runGridBehavior(harness)],
+]
+
 try {
-  await runWorkflows(harness)
-  await runReportingAndPhotos(harness, screenshotDir)
-  await runGridPersistence(harness)
-  await runGridBehavior(harness)
-} catch (error) {
-  harness.ok('UNCAUGHT', false, error.message)
-  await page.screenshot({ path: `${screenshotDir}/do-error.png`, fullPage: true }).catch(() => {})
+  for (const [name, run] of modules) {
+    try {
+      await run()
+    } catch (error) {
+      harness.ok(`${name}: UNCAUGHT`, false, error.message)
+      await page
+        .screenshot({ path: `${screenshotDir}/do-error-${name.replaceAll(' ', '-')}.png`, fullPage: true })
+        .catch(() => {})
+    }
+  }
 } finally {
   harness.ok('no console errors', consoleErrors.length === 0, consoleErrors.slice(0, 5).join(' | '))
   harness.ok('no page errors', pageErrors.length === 0, pageErrors.slice(0, 5).join(' | '))

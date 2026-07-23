@@ -43,9 +43,15 @@ trap cleanup EXIT
 
 for _ in $(seq 1 40); do curl -sf "$BASE/api/health" >/dev/null 2>&1 && break || sleep 0.25; done
 
-echo "▸ seeding spot price…"
+echo "▸ seeding spot history…"
 curl -sf -X POST "$BASE/api/spot" -H 'Content-Type: application/json' \
-  -d '{"as_of":"2026-01-01","gold_usd":4000,"silver_usd":60,"platinum_usd":1000,"palladium_usd":1100,"source":"qa"}' >/dev/null
+  -d '{"as_of":"2025-12-31T18:00:00Z","gold_usd":3900,"silver_usd":58,"platinum_usd":980,"palladium_usd":1080,"source":"qa-poller"}' >/dev/null
+curl -sf -X POST "$BASE/api/spot" -H 'Content-Type: application/json' \
+  -d '{"as_of":"2026-01-01T02:00:00Z","gold_usd":4000,"silver_usd":60,"platinum_usd":1000,"palladium_usd":1100,"source":"qa-poller"}' >/dev/null
+curl -sf -X POST "$BASE/api/spot" -H 'Content-Type: application/json' \
+  -d '{"as_of":"2026-01-01","gold_usd":3950,"silver_usd":59,"platinum_usd":990,"palladium_usd":1090,"source":"manual"}' >/dev/null
+curl -sf -X POST "$BASE/api/spot" -H 'Content-Type: application/json' \
+  -d '{"as_of":"2026-01-02T02:00:00Z","gold_usd":4000,"silver_usd":60,"platinum_usd":1000,"palladium_usd":1100,"source":"qa-poller"}' >/dev/null
 
 echo "▸ running do-tab.e2e.mjs…"
 BASE_URL="$BASE" node do-tab.e2e.mjs

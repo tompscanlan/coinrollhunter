@@ -599,7 +599,11 @@ func (s *Store) LatestSpot() (model.Spot, error) {
 	var sp model.Spot
 	var src sql.NullString
 	err := s.db.QueryRow(
-		`SELECT as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source FROM spot ORDER BY as_of DESC LIMIT 1`).
+		`SELECT as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source FROM spot
+		 ORDER BY substr(as_of,1,10) DESC,
+		          CASE WHEN lower(source)='manual' THEN 1 ELSE 0 END DESC,
+		          as_of DESC
+		 LIMIT 1`).
 		Scan(&sp.AsOf, &sp.GoldUSD, &sp.SilverUSD, &sp.PlatinumUSD, &sp.PalladiumUSD, &src)
 	if err == sql.ErrNoRows {
 		return model.Spot{}, nil

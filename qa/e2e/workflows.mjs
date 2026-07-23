@@ -17,13 +17,13 @@ export async function runWorkflows(h) {
     ok(`tile present: ${title}`, (await tile(title).count()) > 0)
   }
 
-  await recordBox(h)
-  await recordFinds(h)
-  await verifyKeptFind(h)
-  await recordBullion(h)
-  await recordReturn(h)
-  await reconcile(h)
-  await recordSale(h)
+  await recordBox()
+  await recordFinds()
+  await verifyKeptFind()
+  await recordBullion()
+  await recordReturn()
+  await reconcile()
+  await recordSale()
 
   async function recordBox() {
     await tile('Bought a box').click()
@@ -124,12 +124,34 @@ export async function runWorkflows(h) {
     await page.getByPlaceholder('1 oz American Gold Eagle').fill('1 oz Gold Eagle')
     await page.getByLabel('Fine oz / unit').fill('1')
     await page.getByLabel('Quantity').fill('1')
-    await page.getByLabel('Total paid (basis) $').fill('4150')
-
+    const acquiredInput = page.getByLabel('Acquired')
+    const basisInput = page.getByLabel('Total paid (basis) $')
     const premiumInput = page.getByLabel('Premium paid $')
-    const premiumHandle = await premiumInput.elementHandle()
-    await page.waitForFunction((element) => Number(element.value) === 150, premiumHandle, { timeout: 5000 })
-    ok('premium prefills from acquisition-date spot', Number(await premiumInput.inputValue()) === 150)
+
+    await acquiredInput.fill('2025-12-30')
+    await basisInput.fill('3800')
+    await page.getByText('No stored spot record exists', { exact: false }).waitFor({ timeout: 5000 })
+    ok(
+      'an acquisition before all spot history has no suggestion',
+      Number(await premiumInput.inputValue()) === 0,
+      `premium ${await premiumInput.inputValue()}`,
+    )
+
+    await acquiredInput.fill('2026-01-01')
+    await page.getByText('below melt', { exact: false }).waitFor({ timeout: 5000 })
+    ok(
+      'a below-melt purchase is described instead of called zero premium',
+      Number(await premiumInput.inputValue()) === 0,
+      `premium ${await premiumInput.inputValue()}`,
+    )
+
+    await basisInput.fill('4150')
+    await page.getByText('premium suggested', { exact: false }).waitFor({ timeout: 5000 })
+    ok(
+      'premium uses the acquisition-date manual correction, not latest spot',
+      Number(await premiumInput.inputValue()) === 200,
+      `premium ${await premiumInput.inputValue()}`,
+    )
     await premiumInput.fill('125')
     await page.getByRole('button', { name: 'Add to stack' }).click()
     await page.getByText('Added', { exact: false }).first().waitFor({ timeout: 5000 })
