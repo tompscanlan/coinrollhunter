@@ -7,6 +7,17 @@ import (
 	"strings"
 )
 
+// ClientContractHeader versions the browser-to-server mutation contract. A tab that
+// was already open when the binary was upgraded keeps running its old JavaScript; the
+// Origin check still trusts that tab because it really is same-origin. Requiring this
+// header on browser writes lets a newer server reject that stale client before it can
+// submit an obsolete payload. Non-browser callers (which have no Origin) remain valid.
+const ClientContractHeader = "X-CoinRollHunter-Client-Contract"
+
+// Bump this when an older embedded UI can no longer safely write to the current API.
+// The matching value lives in web/app/src/lib/api.ts.
+const ClientContractVersion = "1"
+
 // The loopback guard (om-6ex5).
 //
 // Binding to 127.0.0.1 is the right default for a single-user local app, but it is not
@@ -73,8 +84,26 @@ func Guard(next http.Handler, o GuardOpts) http.Handler {
 			forbid(w, "This request came from another website's origin.")
 			return
 		}
+		if staleBrowserWrite(r) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			w.Write([]byte(`{"error":"CoinRollHunter was upgraded. Refresh this tab before making changes."}`))
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func staleBrowserWrite(r *http.Request) bool {
+	if r.Header.Get("Origin") == "" {
+		return false
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return r.Header.Get(ClientContractHeader) != ClientContractVersion
+	}
 }
 
 func forbid(w http.ResponseWriter, why string) {

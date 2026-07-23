@@ -17,11 +17,21 @@ import type {
 } from './types'
 
 const BASE = '/api'
+// Must match internal/api.ClientContractVersion. Browser mutations carry this so a
+// newly upgraded server can reject JavaScript left running in an older tab.
+const CLIENT_CONTRACT = '1'
+const CLIENT_CONTRACT_HEADER = 'X-CoinRollHunter-Client-Contract'
+
+function browserWriteHeaders(method: string): Record<string, string> {
+  return method === 'GET' || method === 'HEAD' ? {} : { [CLIENT_CONTRACT_HEADER]: CLIENT_CONTRACT }
+}
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers = browserWriteHeaders(method)
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   const res = await fetch(BASE + path, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
@@ -176,7 +186,11 @@ export const api = {
       if (role) fd.append('role', role)
       if (caption) fd.append('caption', caption)
       fd.append('file', file)
-      const res = await fetch(`${BASE}/photos`, { method: 'POST', body: fd })
+      const res = await fetch(`${BASE}/photos`, {
+        method: 'POST',
+        headers: browserWriteHeaders('POST'),
+        body: fd,
+      })
       if (!res.ok) {
         let msg = `upload → ${res.status}`
         try {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,12 @@ import (
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
 )
+
+// viteHashedAssetName recognizes Vite's default name-[hash].ext shape. This is a
+// conservative cache heuristic, not proof that the suffix is a hash: an explicitly
+// configured English suffix of 8+ URL-safe characters can also match. Public files land
+// at the dist root by default, so that false-positive requires a deliberate output config.
+var viteHashedAssetName = regexp.MustCompile(`^assets/(?:.*/)?[^/]+-[A-Za-z0-9_-]{8,}\.[^/]+$`)
 
 // Handler builds the HTTP handler. webFS is the embedded static UI (may be nil
 // in tests); it is served at the root with the API mounted under /api/.
@@ -237,9 +244,16 @@ func spaHandler(webFS fs.FS) http.Handler {
 	index, _ := fs.ReadFile(webFS, "index.html")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		// The HTML entrypoint (including deep-link fallbacks) must be revalidated
+		// because it selects the current hashed assets. A confirmed Vite asset is
+		// content-hashed and can replace this default with an immutable policy.
+		w.Header().Set("Cache-Control", "no-cache")
 		if p != "" {
 			if f, err := webFS.Open(p); err == nil {
 				f.Close()
+				if viteHashedAssetName.MatchString(p) {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				fileServer.ServeHTTP(w, r)
 				return
 			}
