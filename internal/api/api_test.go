@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/tompscanlan/coinrollhunter/internal/api"
@@ -39,6 +40,55 @@ func newServer(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(api.Handler(s, nil, "", ""))
 	t.Cleanup(func() { srv.Close(); s.Close() })
 	return srv
+}
+
+func TestSPAHTMLRevalidatesAndViteAssetsCacheImmutably(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	webFS := fstest.MapFS{
+		"index.html":             {Data: []byte("<html>current app</html>")},
+		"assets/app-deadbeef.js": {Data: []byte("current javascript")},
+		"assets/manual.js":       {Data: []byte("not content hashed")},
+	}
+	h := api.Handler(s, webFS, "", "")
+
+	for _, target := range []string{"/", "/index.html", "/deep/link"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+		// net/http canonicalizes the explicit /index.html spelling to ./; both the
+		// redirect and the HTML responses must prevent reuse of stale app entrypoints.
+		if rec.Code != http.StatusOK && !(target == "/index.html" && rec.Code == http.StatusMovedPermanently) {
+			t.Errorf("GET %s → %d, want 200", target, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("GET %s Cache-Control = %q, want no-cache", target, got)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/app-deadbeef.js", nil))
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Errorf("hashed asset Cache-Control = %q, want immutable one-year cache", got)
+	}
+
+	// A missing asset falls back to index.html. It must keep the HTML policy rather
+	// than becoming an immutable cached copy merely because its URL starts /assets/.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil))
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("missing-asset HTML fallback Cache-Control = %q, want no-cache", got)
+	}
+
+	// Merely living under assets/ is insufficient: immutable has no recovery path,
+	// so a hand-placed or reconfigured unhashed filename must keep revalidating.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/manual.js", nil))
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("unhashed asset Cache-Control = %q, want no-cache", got)
+	}
 }
 
 func TestSummaryEndpoint(t *testing.T) {

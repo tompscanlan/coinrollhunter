@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/tompscanlan/coinrollhunter/internal/api"
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
 )
@@ -144,10 +145,64 @@ func TestViteDevProxyIsAllowed(t *testing.T) {
 	req.Host = "localhost:5173"
 	req.Header.Set("Origin", "http://localhost:5173")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(api.ClientContractHeader, api.ClientContractVersion)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("the Vite dev proxy's request → %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+// A tab that was already open during an upgrade keeps running the old JavaScript. Its
+// Origin and Host are both honestly same-origin, so the loopback guard must not be
+// mistaken for version protection.
+//
+// The structural defenses do not reach this case, and it is worth being precise about
+// why. Merging a PUT onto the stored row protects a field the client OMITS — but the
+// stale client NAMES it: the old Holdings grid hardcoded an empty notes into every edit,
+// and naming a field is exactly how a legitimate clear is expressed, so the server cannot
+// tell a stale blank from an intentional one. DisallowUnknownFields does not help either,
+// because the field still exists. What is left is a payload that parses, validates, and
+// means something the current client would never send — which is why the version is
+// bumped by human judgement rather than derived from the build.
+func TestStaleSameOriginBrowserCannotWriteAfterUpgrade(t *testing.T) {
+	s, lotID := storeWithALot(t)
+	if _, err := s.DB().Exec(`UPDATE lots SET notes = 'keep me' WHERE id = ?`, lotID); err != nil {
+		t.Fatal(err)
+	}
+	h := appHandler(s, func() {}, serveOpts{})
+
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/lots/%d", lotID), strings.NewReader(`{"notes":""}`))
+	req.Host = "127.0.0.1:8787"
+	req.Header.Set("Origin", "http://127.0.0.1:8787")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale same-origin PUT → %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if got := holding(t, s, lotID).Notes; got != "keep me" {
+		t.Errorf("stale client cleared notes: got %q", got)
+	}
+	if !strings.Contains(strings.ToLower(rec.Body.String()), "refresh") {
+		t.Errorf("409 does not tell the user how to recover: %s", rec.Body)
+	}
+
+	// A current-contract browser can still explicitly clear the field. This is the
+	// server-side contract check, not a claim that today's grid sends this payload.
+	req = httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/lots/%d", lotID), strings.NewReader(`{"notes":""}`))
+	req.Host = "127.0.0.1:8787"
+	req.Header.Set("Origin", "http://127.0.0.1:8787")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(api.ClientContractHeader, api.ClientContractVersion)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("current same-origin PUT → %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if got := holding(t, s, lotID).Notes; got != "" {
+		t.Errorf("current client did not clear notes: got %q", got)
 	}
 }
 
@@ -256,6 +311,7 @@ func attack(h http.Handler, method, path, origin, body string) *httptest.Respons
 	req.Host = "127.0.0.1:8787" // httptest defaults this to example.com
 	if origin != "" {
 		req.Header.Set("Origin", origin)
+		req.Header.Set(api.ClientContractHeader, api.ClientContractVersion)
 	}
 	req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
 	rec := httptest.NewRecorder()

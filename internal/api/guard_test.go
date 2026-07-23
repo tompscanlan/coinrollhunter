@@ -3,9 +3,38 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// The browser and server live in different languages, so the compiler cannot keep
+// their hand-maintained contract values aligned. Pin both literals here: otherwise a
+// Go-only version bump leaves every Go test green while every browser write returns 409.
+func TestBrowserAndServerClientContractsMatch(t *testing.T) {
+	b, err := os.ReadFile("../../web/app/src/lib/api.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		pattern string
+		want    string
+	}{
+		"header":  {`const CLIENT_CONTRACT_HEADER = '([^']+)'`, ClientContractHeader},
+		"version": {`const CLIENT_CONTRACT = '([^']+)'`, ClientContractVersion},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := regexp.MustCompile(tc.pattern).FindSubmatch(b)
+			if len(m) != 2 {
+				t.Fatalf("could not find browser %s constant in api.ts", name)
+			}
+			if got := string(m[1]); got != tc.want {
+				t.Errorf("browser %s = %q, server = %q", name, got, tc.want)
+			}
+		})
+	}
+}
 
 // The guard is the whole of the om-6ex5 fix, so its rules are pinned here one by one.
 //
@@ -147,6 +176,48 @@ func TestGuardRefusalExplainsItself(t *testing.T) {
 	}
 }
 
+// Origin/Host rejection must happen before the client-contract check. Otherwise a
+// hostile page with no contract header gets a 409 from the compatibility layer instead
+// of the guard's 403, weakening the security boundary and exposing a readable response
+// if somebody later adds permissive CORS handling to the 409 path.
+func TestHostileOriginWithoutAClientContractIsStillForbidden(t *testing.T) {
+	h := Guard(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("hostile request reached the wrapped handler")
+	}), GuardOpts{})
+	req := httptest.NewRequest(http.MethodPost, "/api/quit", strings.NewReader("{}"))
+	req.Host = "127.0.0.1:8787"
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("hostile origin without contract → %d, want 403: %s", rec.Code, rec.Body)
+	}
+}
+
+// A stale tab becomes read-only, not dead: reads do not carry a write-contract header
+// and must remain available so the current page can render data and the 409 from a later
+// write can tell the user to refresh. Pin both safe methods explicitly because the
+// table helper attaches a current contract to every Origin-bearing request.
+func TestStaleSameOriginBrowserCanStillRead(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			reached := false
+			h := Guard(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusOK)
+			}), GuardOpts{})
+			req := httptest.NewRequest(method, "/api/summary", nil)
+			req.Host = "127.0.0.1:8787"
+			req.Header.Set("Origin", "http://127.0.0.1:8787")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK || !reached {
+				t.Fatalf("stale same-origin %s without contract → %d, reached=%v; want 200/reached", method, rec.Code, reached)
+			}
+		})
+	}
+}
+
 // serveGuarded runs one request through Guard and reports whether it reached the
 // wrapped handler. host == "" means no Host header (an HTTP/1.0 client); origin == ""
 // means no Origin header at all, which is the case that must keep working.
@@ -164,6 +235,7 @@ func serveGuarded(t *testing.T, o GuardOpts, method, path, host, origin string) 
 	req.Host = host
 	if origin != "" {
 		req.Header.Set("Origin", origin)
+		req.Header.Set(ClientContractHeader, ClientContractVersion)
 	}
 	// The attack shape: a JSON body sent as text/plain, which is CORS-simple and so
 	// never preflights. decode() does not care, which is exactly why the guard must.

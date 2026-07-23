@@ -565,4 +565,23 @@ TrophyFeed as a third `fileUrl` consumer the first cut missed (it would have ren
 `<img>` for a PDF-first trophy). CGO stays off, **no PDF-render dependency** (a generic doc tile, not
 a first-page raster). **Follow-up om-6x06:** the >10 MB→413 upload cap still lacks a test.
 
+Added 2026-07-23 (stale browser writes are rejected after upgrade): cache headers
+alone cannot protect a tab whose old JavaScript is already running when the binary restarts.
+The embedded SPA now serves `index.html` and deep-link fallbacks with `Cache-Control: no-cache`
+while Vite's content-hashed `/assets/` use a one-year immutable cache, and every browser mutation carries
+`X-CoinRollHunter-Client-Contract: 1`. The outer `api.Guard` checks that contract after its
+Origin/Host checks and returns a non-mutating 409 with a refresh instruction when a same-origin
+browser write is missing or stale. The guard deliberately requires it only when `Origin` is
+present, so curl, the Go health probe, and Node QA remain valid; GET/HEAD remain available to a
+stale tab. Bump the matching constants in `internal/api/guard.go` and `web/app/src/lib/api.ts`
+whenever an older embedded UI can no longer safely write to the current API; a Go test reads
+the TypeScript constants so either half changing alone fails the suite. Immutable caching is
+granted only to an existing `/assets/` filename matching Vite's default `name-[hash].ext` shape;
+this is a filename heuristic, not proof of hashing, so a future custom output config that places
+long English dash-suffixes under `/assets/` must revisit it. An ordinary unhashed or missing asset
+keeps `no-cache`. Accepted limitation: Guard rejects before reading a request body,
+so net/http may close the connection rather than deliver the JSON refresh message when a stale
+tab is partway through a large photo upload; the write is still safely rejected, but the browser
+may show a network error and the user must refresh manually.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.
