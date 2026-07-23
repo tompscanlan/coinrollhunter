@@ -4,7 +4,7 @@
   // find-or-create logic, so typing a known product (or a silver preset)
   // auto-fills metal/fineness/fine-oz. The Edit tab's Holdings grid corrects one.
   import { onMount } from 'svelte'
-  import type { Report, ItemType } from '$lib/types'
+  import type { Report, ItemType, Spot } from '$lib/types'
   import { api } from '$lib/api'
   import { holdingsGrid, productAutofillFrom, productSuggestionsFrom } from '$lib/grids.svelte'
   import { money, oz, today } from '$lib/format'
@@ -26,10 +26,13 @@
   let fineOz = $state(0)
   let qty = $state(1)
   let basis = $state(0)
+  let premium = $state(0)
+  let premiumOverridden = $state(false)
   let acquired = $state(today())
   let source = $state('')
 
   let catalog = $state<ItemType[]>([])
+  let spotHistory = $state<Spot[]>([])
   let busy = $state(false)
   let err = $state('')
   let done = $state<{ qty: number; product: string } | null>(null)
@@ -37,11 +40,13 @@
   const suggestions = $derived(productSuggestionsFrom(catalog))
 
   onMount(async () => {
-    try {
-      catalog = await api.itemTypes.list()
-    } catch {
-      /* autofill optional */
-    }
+    const [catalogResult, spotResult] = await Promise.allSettled([
+      api.itemTypes.list(),
+      api.spotHistory(),
+    ])
+    if (catalogResult.status === 'fulfilled') catalog = catalogResult.value
+    if (spotResult.status === 'fulfilled') spotHistory = spotResult.value
+    else if (report.spot.as_of) spotHistory = [report.spot]
   })
 
   // When the product matches a known type/preset, fill the metal/fineness/fine-oz.
@@ -67,6 +72,50 @@
   )
   const estMelt = $derived((Number(qty) || 0) * (Number(fineOz) || 0) * spot)
 
+  // Use the most recent recorded spot on or before the purchase date. Premium is
+  // only a suggested memo: once the user edits it, later form changes must not
+  // overwrite their number.
+  const acquisitionSpot = $derived.by(() => {
+    const target = acquired || today()
+    let found: Spot | null = null
+    for (const row of spotHistory) {
+      if (!row.as_of || row.as_of.slice(0, 10) > target) continue
+      if (!found || row.as_of > found.as_of) found = row
+    }
+    return found
+  })
+
+  function priceFor(row: Spot | null): number {
+    if (!row) return 0
+    return metal === 'gold'
+      ? row.gold_usd
+      : metal === 'silver'
+        ? row.silver_usd
+        : metal === 'platinum'
+          ? row.platinum_usd
+          : metal === 'palladium'
+            ? row.palladium_usd
+            : 0
+  }
+
+  const suggestedPremium = $derived.by(() => {
+    const paid = Number(basis) || 0
+    const fine = (Number(qty) || 0) * (Number(fineOz) || 0)
+    const acquisitionPrice = priceFor(acquisitionSpot)
+    if (paid <= 0 || fine <= 0 || acquisitionPrice <= 0) return null
+    return Math.max(0, Math.round((paid - fine * acquisitionPrice) * 100) / 100)
+  })
+
+  $effect(() => {
+    if (!premiumOverridden) premium = suggestedPremium ?? 0
+  })
+
+  function useSpotSuggestion() {
+    if (suggestedPremium === null) return
+    premiumOverridden = false
+    premium = suggestedPremium
+  }
+
   async function submit() {
     if (!product.trim()) {
       err = 'Name the product.'
@@ -87,7 +136,7 @@
         fine_oz_each: Number(fineOz) || 0,
         qty: Number(qty) || 0,
         basis_usd: Number(basis) || 0,
-        premium_usd: 0, // not collected in the quick-entry form; editable in the Holdings grid
+        premium_usd: Number(premium) || 0,
         face_value_usd: 0,
         acquired: acquired || today(),
         source: source.trim(),
@@ -109,6 +158,8 @@
     fineOz = 0
     qty = 1
     basis = 0
+    premium = 0
+    premiumOverridden = false
     source = ''
   }
 </script>
@@ -219,6 +270,18 @@
         </label>
 
         <label class="flex flex-col gap-1 text-xs text-muted-foreground">
+          Premium paid $
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            bind:value={premium}
+            oninput={() => (premiumOverridden = true)}
+            class="rounded-md border border-input bg-card px-2 py-1.5 text-sm text-foreground tnum focus:border-ring focus:outline-none"
+          />
+        </label>
+
+        <label class="flex flex-col gap-1 text-xs text-muted-foreground">
           Acquired
           <input
             type="date"
@@ -241,6 +304,18 @@
       {#if estMelt > 0}
         <p class="text-xs text-muted-foreground">
           ≈ {oz((Number(qty) || 0) * (Number(fineOz) || 0))} fine oz · {money(estMelt)} melt at current spot.
+        </p>
+      {/if}
+
+      {#if suggestedPremium !== null && acquisitionSpot}
+        <p class="text-xs text-muted-foreground">
+          {money(suggestedPremium)} premium suggested from the {acquisitionSpot.as_of.slice(0, 10)} spot record.
+          Premium is already part of total paid; it is not added to basis.
+          {#if premiumOverridden}
+            <button type="button" class="text-primary underline-offset-2 hover:underline" onclick={useSpotSuggestion}>
+              Use suggestion
+            </button>
+          {/if}
         </p>
       {/if}
 
