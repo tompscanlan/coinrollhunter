@@ -130,26 +130,38 @@ export async function runWorkflows(h) {
 
     await acquiredInput.fill('2025-12-30')
     await basisInput.fill('3800')
-    await page.getByText('No stored spot record exists', { exact: false }).waitFor({ timeout: 5000 })
+    const noHistorySettled = await page
+      .getByText('No stored spot record exists', { exact: false })
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
     ok(
       'an acquisition before all spot history has no suggestion',
-      Number(await premiumInput.inputValue()) === 0,
+      noHistorySettled && Number(await premiumInput.inputValue()) === 0,
       `premium ${await premiumInput.inputValue()}`,
     )
 
     await acquiredInput.fill('2026-01-01')
-    await page.getByText('below melt', { exact: false }).waitFor({ timeout: 5000 })
+    const belowMeltSettled = await page
+      .getByText('below melt', { exact: false })
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
     ok(
       'a below-melt purchase is described instead of called zero premium',
-      Number(await premiumInput.inputValue()) === 0,
+      belowMeltSettled && Number(await premiumInput.inputValue()) === 0,
       `premium ${await premiumInput.inputValue()}`,
     )
 
     await basisInput.fill('4150')
-    await page.getByText('premium suggested', { exact: false }).waitFor({ timeout: 5000 })
+    const suggestionSettled = await page
+      .getByText('premium suggested', { exact: false })
+      .waitFor({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
     ok(
       'premium uses the acquisition-date manual correction, not latest spot',
-      Number(await premiumInput.inputValue()) === 200,
+      suggestionSettled && Number(await premiumInput.inputValue()) === 200,
       `premium ${await premiumInput.inputValue()}`,
     )
     await premiumInput.fill('125')

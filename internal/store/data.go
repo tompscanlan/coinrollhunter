@@ -612,6 +612,24 @@ func (s *Store) LatestSpot() (model.Spot, error) {
 	return sp, err
 }
 
+// LatestSpotObservation returns the chronologically latest stored row for the
+// poller's freshness gate. Unlike LatestSpot, it deliberately does not prefer a
+// same-day manual correction: a fresh poll must reset the polling interval even
+// while the correction remains the valuation-facing price for that day.
+func (s *Store) LatestSpotObservation() (model.Spot, error) {
+	var sp model.Spot
+	var src sql.NullString
+	err := s.db.QueryRow(
+		`SELECT as_of, gold_usd, silver_usd, platinum_usd, palladium_usd, source FROM spot
+		 ORDER BY as_of DESC LIMIT 1`).
+		Scan(&sp.AsOf, &sp.GoldUSD, &sp.SilverUSD, &sp.PlatinumUSD, &sp.PalladiumUSD, &src)
+	if err == sql.ErrNoRows {
+		return model.Spot{}, nil
+	}
+	sp.Source = src.String
+	return sp, err
+}
+
 // ResolveDataset loads the whole store into the flat, resolved Dataset the calc
 // engine consumes: each holding is joined to its item_type and reduced to a Lot.
 func (s *Store) ResolveDataset() (model.Dataset, error) {
