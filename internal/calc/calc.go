@@ -111,25 +111,34 @@ type Report struct {
 	TotalMarket float64 `json:"total_market"`
 	TotalUnreal float64 `json:"total_unreal"`
 
-	// Anomalies lists the lots whose free-text classification did NOT resolve, so
-	// the money math had to fall back (om-t0fs). Purely ADDITIVE: Compute still
-	// returns the same Report, every existing field is untouched, and a consumer
-	// that doesn't know the key ignores it. Non-nil so it serializes as [] not null.
-	// Rendering it is a separate bead (om-ay3b) — this field only records.
+	// Anomalies lists the lots the money math could not take at face value: a
+	// free-text classification that did NOT resolve, or a raw field value that cannot
+	// be true and was summed anyway. Purely ADDITIVE: Compute still returns the same
+	// Report, every existing field is untouched, and a consumer that doesn't know the
+	// key ignores it. Non-nil so it serializes as [] not null. Rendering it to the
+	// user is a separate change — this field only records.
+	//
+	// Lot-scoped by construction — Anomaly names a lots row, and the totals a bad lot
+	// corrupts (bullion_basis, find_cost, total_basis, realized_basis) are the headline
+	// money. A bad row in any OTHER table is reported by the whole-database scan in
+	// internal/doctor, which is not bounded to lots and covers links as well as values.
 	Anomalies []Anomaly `json:"anomalies"`
 }
 
-// Anomaly is one lot whose metal or fineness string could not be classified. Both
-// kinds silently corrupted money before om-t0fs: an unrecognized metal values the
-// whole lot at $0 spot, and an unparseable fineness on silver used to pay FULL
-// melt (no dealer haircut). Each one names the offending row and the offending
-// value so the data can actually be found and fixed.
+// Anomaly is one lot the money math had to compensate for. Three kinds, all of which
+// silently corrupted money before they were surfaced: an unrecognized metal values
+// the whole lot at $0 spot, an unparseable fineness on silver used to pay FULL melt
+// with no dealer haircut, and a raw field value that cannot be true — a negative
+// basis, an unknown activity — flows straight into the totals. Each one names the
+// offending row and the offending value so the data can actually be found and fixed.
 type Anomaly struct {
 	LotID   int64  `json:"lot_id"`
 	Product string `json:"product"` // the row, in human terms
-	Field   string `json:"field"`   // "metal" | "fineness"
-	Value   string `json:"value"`   // the offending free text, verbatim
-	Detail  string `json:"detail"`  // what the math did about it
+	// Field is the column at fault: "metal" | "fineness" (classification), or one of
+	// the raw value fields the value scan checks ("basis_usd", "qty", "activity", …).
+	Field  string `json:"field"`
+	Value  string `json:"value"`  // the offending value, verbatim
+	Detail string `json:"detail"` // what the math did about it
 }
 
 // RealizedLot is a sold holding with its realized gain (proceeds - basis).
@@ -691,10 +700,14 @@ func Compute(d model.Dataset) Report {
 		TotalMarket: tMarket,
 		TotalUnreal: tMarket - tBasis,
 
-		// Additive (om-t0fs): the rows whose classification did not resolve. Live
-		// lots only — a disposed lot's P&L is proceeds − basis, so its metal never
-		// reaches spot and cannot silently misvalue anything.
-		Anomalies: classify(d.Lots),
+		// Additive. classify records the rows whose CLASSIFICATION did not resolve —
+		// live lots only, because a disposed lot's P&L is proceeds − basis, so its
+		// metal never reaches spot and cannot silently misvalue anything. invalidValues
+		// records the rows whose raw VALUES cannot be true and were summed into the
+		// totals above regardless — live AND disposed, because a disposed lot's basis
+		// does reach the money (realized_basis, and the float via disposed_find_face).
+		// Neither one changes a single number: see invalidValues.
+		Anomalies: append(classify(d.Lots), invalidValues(d)...),
 	}
 }
 

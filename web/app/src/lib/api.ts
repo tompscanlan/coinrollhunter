@@ -14,6 +14,7 @@ import type {
   Keeper,
   Loss,
   Photo,
+  DoctorReport,
 } from './types'
 
 const BASE = '/api'
@@ -93,6 +94,9 @@ export const api = {
   // hit-rate report: the "1 per face $" view per denom × category × source (ADR-006)
   findsReport: () => req<FindsReport>('GET', '/finds-report'),
   health: () => req<{ status: string }>('GET', '/health'),
+  // Data health: the read-only scan for bad rows and broken links.
+  // GET because it changes nothing — there is no repair endpoint, deliberately.
+  doctor: () => req<DoctorReport>('GET', '/doctor'),
 
   spotHistory: () => req<Spot[]>('GET', '/spot'),
   spotLatest: () => req<Spot>('GET', '/spot/latest'),
