@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,7 +101,11 @@ func runDoctor(args []string) (healthy bool, err error) {
 // thread. Grouped by class, because the three classes want three different
 // reactions: an invalid row is wrong and should be fixed, an orphan is broken and
 // may not be worth fixing, a suspect is a question.
-func printReport(w *os.File, dbPath string, r *doctor.Report) {
+//
+// io.Writer, not *os.File: this text IS the deliverable of the CLI door — the
+// support paste, and the only output a user gets when the app will not start — so it
+// has to be assertable in a test rather than only reviewable by eye.
+func printReport(w io.Writer, dbPath string, r *doctor.Report) {
 	fmt.Fprintf(w, "CoinRollHunter health check\n%s\n\n", dbPath)
 
 	if len(r.Unreadable) > 0 {
