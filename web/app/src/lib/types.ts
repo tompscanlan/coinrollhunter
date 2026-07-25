@@ -332,6 +332,52 @@ export interface FindsReport {
   denoms: DenomReport[]
 }
 
+// --- Data health (GET /api/doctor, internal/doctor) --------------------------
+// A read-only scan for rows that cannot be true, links that dangle, and links
+// that resolve but do not add up. It reports and never repairs: heuristic repair
+// false-positives on correct data, and a false positive on a ledger is silent,
+// unrecoverable money loss with no undo.
+
+/**
+ * How certain a finding is, in descending order: an invalid row IS wrong, an
+ * orphan link IS broken, a suspect link only LOOKS wrong. They want three
+ * different reactions from the user, so they are never merged into one list.
+ */
+export type DoctorClass = 'invalid' | 'orphan' | 'suspect'
+
+/** One problem, named precisely enough to go find the row in the Edit tab. */
+export interface DoctorFinding {
+  class: DoctorClass
+  table: string
+  row_id: number // 0 for the id-less singletons (spot, settings)
+  label: string // the row in human terms — a product name, a date, a denom
+  field: string
+  value: string
+  /** What is wrong AND what the app is currently doing about it. */
+  detail: string
+}
+
+/**
+ * A table the scan could not read at all — kept separate from findings because
+ * "no problems" from a scan that failed to read half the database is a lie.
+ */
+export interface DoctorTableError {
+  table: string
+  error: string
+}
+
+export interface DoctorReport {
+  findings: DoctorFinding[]
+  unreadable: DoctorTableError[]
+  counts: Record<string, number> // by class
+  scanned: Record<string, number> // rows read, by table
+}
+
+/** Mirrors doctor.Report.Healthy(): BOTH halves, or a half-failed scan reads clean. */
+export function doctorHealthy(r: DoctorReport): boolean {
+  return r.findings.length === 0 && r.unreadable.length === 0
+}
+
 /** Mirrors calc.Report.Verdict() — derived client-side (not serialized). */
 export function verdict(r: Report): string {
   if (r.crh_net_real > 0) return 'PROFITABLE (cash basis)'
