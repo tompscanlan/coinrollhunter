@@ -114,10 +114,13 @@ func (r *Report) Healthy() bool { return len(r.Findings) == 0 && len(r.Unreadabl
 
 // Scan runs the full read-only health scan. It never writes, and it never returns
 // early on a bad table: a database with one unreadable table must still get a
-// report about the other nine.
+// report about the other nine. That is not a nicety — a user reaches for this scan
+// precisely when their database is damaged, so every failure below is CONTAINED,
+// landing on Report.Unreadable rather than blanking the whole report.
 //
-// An error comes back only when the scan could not run at all (a closed database,
-// a cancelled context). Anything else is in the Report.
+// The error return is therefore reserved for a scan that could not run at all. No
+// path produces one today; it is kept so a future check that genuinely cannot be
+// contained has somewhere to go, and so callers already handle it.
 func Scan(ctx context.Context, s *store.Store) (*Report, error) {
 	r := &Report{
 		Findings:   []Finding{}, // non-nil: these serialize as [] not null
@@ -127,12 +130,8 @@ func Scan(ctx context.Context, s *store.Store) (*Report, error) {
 	}
 
 	scanInvalid(s, r)
-	if err := scanOrphans(ctx, s, r); err != nil {
-		return nil, err
-	}
-	if err := scanSuspects(ctx, s, r); err != nil {
-		return nil, err
-	}
+	scanOrphans(ctx, s, r)
+	scanSuspects(ctx, s, r)
 
 	for _, f := range r.Findings {
 		r.Counts[string(f.Class)]++
@@ -365,7 +364,14 @@ var orphanScans = []orphanScan{
 // scanOrphans finds links whose stored uid matches no row. NOT EXISTS rather than a
 // LEFT JOIN ... IS NULL because the whole question is about the stored uid column,
 // which every normal read path has already resolved away to a blank integer.
-func scanOrphans(ctx context.Context, s *store.Store, r *Report) error {
+//
+// A failure in one link is contained to that link, on both halves: the query failing
+// to PREPARE and the query failing PART-WAY THROUGH are the same kind of event to a
+// user (that link went unchecked), and the second is the likelier one on the damaged
+// file this scan exists for — a malformed page surfaces as a mid-iteration rows.Err.
+// Aborting there would cost the user every finding in the other three links and the
+// whole invalid class along with them.
+func scanOrphans(ctx context.Context, s *store.Store, r *Report) {
 	for _, o := range orphanScans {
 		q := fmt.Sprintf(
 			`SELECT c.id, c.%[1]s, %[2]s FROM %[3]s c
@@ -390,10 +396,9 @@ func scanOrphans(ctx context.Context, s *store.Store, r *Report) error {
 			})
 			return nil
 		}); err != nil {
-			return err
+			r.Unreadable = append(r.Unreadable, TableError{Table: o.child + "." + o.link, Error: err.Error()})
 		}
 	}
-	return nil
 }
 
 // --- class: suspect ----------------------------------------------------------
@@ -404,7 +409,7 @@ func scanOrphans(ctx context.Context, s *store.Store, r *Report) error {
 // box left no tombstone. So this cannot prove anything, and both checks are
 // deliberately conservative — each fires only when BOTH sides carry a usable value,
 // so a blank or legacy row is never accused.
-func scanSuspects(ctx context.Context, s *store.Store, r *Report) error {
+func scanSuspects(ctx context.Context, s *store.Store, r *Report) {
 	// (1) A find cannot have been acquired before the box it came out of was bought.
 	// length()=10 keeps the comparison meaningful: yyyy-mm-dd sorts lexically, and a
 	// date that is not that shape is the invalid class's business, not this one.
@@ -459,7 +464,6 @@ func scanSuspects(ctx context.Context, s *store.Store, r *Report) error {
 	if err != nil {
 		r.Unreadable = append(r.Unreadable, TableError{Table: "keepers→roll_txns (denom)", Error: err.Error()})
 	}
-	return nil
 }
 
 // --- plumbing ----------------------------------------------------------------
