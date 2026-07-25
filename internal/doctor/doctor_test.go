@@ -437,3 +437,36 @@ func TestReportSerializesEmptyAsLists(t *testing.T) {
 		}
 	}
 }
+
+// TestFindingsAreNotUnique pins a property that reads like a defect and is not one,
+// so the next consumer does not assume otherwise. spot and settings have no id, so
+// their findings carry RowID 0 and the identity lives entirely in Label — two
+// spot-history rows with the same bad value in the same column therefore differ in
+// NOTHING but the label.
+//
+// This is not hypothetical bookkeeping. The Data-health panel keyed its list on
+// (table, row_id, field, value); Svelte THROWS on a duplicate key, so this exact
+// fixture blanked the panel — the user whose ledger is actually broken got a
+// permanent "Checking…" and nothing else. A consumer that needs a stable identity
+// per finding must include Label, or not key at all.
+func TestFindingsAreNotUnique(t *testing.T) {
+	s := open(t)
+	exec(t, s, `INSERT INTO spot (as_of, gold_usd, silver_usd, platinum_usd, palladium_usd)
+	            VALUES ('2026-01-01', 2000, -1, 900, 900)`)
+	exec(t, s, `INSERT INTO spot (as_of, gold_usd, silver_usd, platinum_usd, palladium_usd)
+	            VALUES ('2026-01-02', 2000, -1, 900, 900)`)
+
+	got := findings(scan(t, s), doctor.ClassInvalid, "spot")
+	if len(got) != 2 {
+		t.Fatalf("got %d spot findings, want 2 (both bad rows must be reported): %+v", len(got), got)
+	}
+	if got[0].RowID != 0 || got[1].RowID != 0 {
+		t.Fatalf("premise changed — spot findings now carry a row id: %+v", got)
+	}
+	if got[0].Field != got[1].Field || got[0].Value != got[1].Value {
+		t.Fatalf("premise changed — the two findings are no longer identical bar the label: %+v", got)
+	}
+	if got[0].Label == got[1].Label {
+		t.Errorf("the label is the ONLY thing separating these two findings, and it did not: %+v", got)
+	}
+}

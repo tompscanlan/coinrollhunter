@@ -494,6 +494,59 @@ try {
   ok('settings modal persists buyback factor', cfg.silver_buyback_factor_90pct === 0.85,
     `90pct ${cfg.silver_buyback_factor_90pct}`)
 
+  // === Data health: the panel RENDERS its findings, and re-checks on close ===
+  // The panel had no browser coverage, and its whole job is to speak to a user whose
+  // ledger is damaged — so a render that dies on a finding fails silently in exactly
+  // the case it exists for (a keyed `each` over non-unique findings did precisely
+  // that: a permanent "Checking…" and nothing else). The suite's page-error gate is
+  // the guard; this block's job is to make the panel actually render a finding.
+  //
+  // Honest limit: the fixture is an ORPHAN, because that is the only finding class
+  // reachable through the API. Invalid rows exist only in databases that went around
+  // the validators, which no HTTP client can do — those are covered in Go
+  // (internal/doctor) and cannot be reproduced from here.
+  const hBox = await apiPost('/roll-txns', {
+    date: '2026-01-07', bank: 'QA Health Bank', action: 'buy',
+    denom: 'dimes', unit: 'box', amount: 1, face_usd: 250,
+  })
+  const hFind = await apiPost('/lots', {
+    item_type_id: (await api('/item-types'))[0].id, roll_txn_id: hBox.id,
+    activity: 'crh', qty: 1, basis_usd: 0.1, face_value_usd: 0.1, acquired: '2026-01-07',
+  })
+  // The everyday correction workflow — delete the box you just entered wrong. The find
+  // now points at a uid no row has, and every read path resolves that to a BLANK box,
+  // which is indistinguishable from a find that never had one. Only this scan can see it.
+  await apiDelete('/roll-txns/' + hBox.id)
+
+  await page.locator('button[title^="Data health"]').click()
+  const health = page.locator('[role="dialog"]')
+  await health.getByRole('heading', { name: 'Data health' }).waitFor({ timeout: 5000 })
+  await health.getByText('These point at something that was deleted', { exact: false })
+    .waitFor({ timeout: 5000 })
+  ok('the data-health panel renders its findings (not a stuck "Checking…")',
+    !(await health.getByText('Checking…', { exact: false }).isVisible()))
+  ok('a finding names the row to go fix, not just a count',
+    await health.getByText(`lots #${hFind.id}`, { exact: false }).isVisible())
+  // No repair affordance, deliberately: heuristic repair false-positives on correct
+  // data, and a false positive on a ledger is unrecoverable money loss with no undo.
+  ok('the panel promises read-only and offers no "fix it" button',
+    (await health.getByText('never changes anything', { exact: false }).count()) > 0 &&
+      (await health.getByRole('button', { name: /fix|repair/i }).count()) === 0)
+
+  await health.getByRole('button', { name: 'Close' }).click()
+  await health.waitFor({ state: 'detached', timeout: 5000 })
+  // Closing re-scans: the user's next move after reading this is to go fix a row, and
+  // a stale dot would tell them their fix did nothing.
+  await page.waitForFunction(
+    () => /\d+ thing/.test(document.querySelector('button[title^="Data health"]')?.title || ''),
+    null, { timeout: 5000 })
+  ok('closing the panel re-checks, so the header dot is not stale',
+    /\d+ thing/.test(await page.locator('button[title^="Data health"]').getAttribute('title')))
+
+  // Isolate: drop the orphan so the later positional lot selections see the lots they
+  // did before this block (same reason as the om-5psc cleanup above).
+  await apiDelete('/lots/' + hFind.id)
+
   // === Roll-txns grid: source-type is inert on 'return' rows (om-kn0f) ===
   await page.getByRole('button', { name: 'Edit' }).click()
   await page.getByRole('button', { name: 'Roll txns', exact: true }).click()

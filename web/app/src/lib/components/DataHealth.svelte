@@ -142,8 +142,16 @@
               {g.title} ({found.length})
             </h4>
             <p class="text-xs text-muted-foreground">{g.blurb}</p>
+            <!-- UNKEYED, deliberately. A finding carries no unique identity: the
+                 id-less tables (spot, settings) report row_id 0, so two spot-history
+                 rows holding the same bad value in the same column are identical in
+                 every field the markup could key on except the label. Svelte THROWS
+                 on a duplicate key, which killed the whole panel — leaving the user
+                 whose data is actually broken staring at "Checking…" forever, the one
+                 case this panel exists for. The list is replaced wholesale on each
+                 scan and never reorders, so a key buys nothing here anyway. -->
             <ul class="space-y-2">
-              {#each found as f (`${f.table}-${f.row_id}-${f.field}-${f.value}`)}
+              {#each found as f}
                 <li class="rounded-lg border bg-muted/20 px-3 py-2 text-sm">
                   <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                     <span class="font-medium text-foreground">{where(f)}</span>
