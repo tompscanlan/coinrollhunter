@@ -99,7 +99,7 @@ data, then serves it; `--reset` regenerates; spot polling off), source-type rend
 'return' roll-txn rows (EditableGrid `enabled` meta, om-kn0f), and web/dist un-committed
 (gitignored build artifact, om-qbmm).
 
-Remaining polish (not yet done): **junk-by-face** entry, **premium** in the Holdings grid,
+Remaining polish (not yet done): **junk-by-face** entry,
 **bars by gross-weight×purity** in the UI (incl. `weight_unit` in ResolveDataset),
 **numismatic/collectible value**, the **keepers-vs-find-face double-count** seam, and
 merchant-of-record monetization wiring. **ADR-004** — stack-over-time vs indexes
@@ -644,5 +644,41 @@ the fastest way to make a health warning into noise nobody reads. Known limitati
 hidden: every `Validate()` returns on its **first** bad field, so a row with two problems
 reports one and fixing it can reveal the next — reporting all of them would mean a second
 implementation of the rules that could disagree with the write path.
+
+Added 2026-08-01 (the premium is actually captured): `premium_usd` has existed since
+**migration 0001**, but `NewBullion` — the quick-entry form most bullion arrives through —
+hardcoded it to `0` behind a comment saying the field was editable in the Holdings grid. It is,
+and almost nobody goes back to do it, so in practice the column recorded **$0 forever** and the
+feature was shipped-but-dead. The form now takes a premium and **prefills** it from the
+acquisition date: the stored spot record on or before that date gives `basis − fine_oz × spot`,
+overridable, and the override is **sticky** — once the user types a number, a later
+recalculation does not silently overwrite it. Three states are **stated rather than quietly
+producing a number**, because a wrong prefill the user does not notice is worse than a blank:
+no spot history at or before that date, a purchase **below melt** (suggests 0, says so), and a
+same-day **manual correction**, which outranks a polled record for valuation.
+
+**The one trap, and it is not obvious: `LatestSpot` is also the poller's freshness gate.** The
+first cut of the manual-correction rule changed `LatestSpot` itself to prefer a same-day manual
+row — correct for valuation, quietly wrong for the poller, because a **date-only** manual row
+parses to **midnight**, so `stale()` saw an ancient "latest" and **re-polled every interval tick
+for the rest of that day**. The two concerns are now split: the poller reads
+**`LatestSpotObservation`** (raw chronological order), while valuation keeps the
+manual-correction preference. If you touch spot ordering, ask which of the two callers you are
+changing — they want different answers from the same table.
+
+**Premium remains math-neutral, and that is the invariant to not "fix".** It is a display memo
+paid over melt at acquisition, **never folded into basis** (`model_test.go`) and **never summed
+into melt/qty/fine oz** (`StackByType.svelte`); the Stack-by-type report surfaces it only ever as
+a *component* of a basis figure (`incl. $225 prem`), never as its own total. `internal/calc` does
+not read it at all — the sole calc reference **validates** it. What it does participate in is
+narrow and deliberate: the **partial-sale carve-out** splits it proportionally alongside basis
+and face (the same hand-enumerated-column trap ADR-009 named), `Validate` holds it finite and
+non-negative, a negative value is a doctor/`Anomalies` **invalid** finding, and it is an export
+column. So capturing it changes **no number the app computes** — the value is the record, not
+the math.
+
+Also folded in: `qa/do-tab.e2e.mjs` was **926 lines**, and split into per-surface modules under
+`qa/e2e/` behind a 39-line runner that **keeps going after a module throws** (one dead scenario
+used to take the whole suite's remaining coverage with it).
 
 The `prototype/` reference is the source of truth for behavior and exact formulas.
