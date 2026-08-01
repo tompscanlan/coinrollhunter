@@ -20,10 +20,12 @@ type Provider interface {
 	Fetch(ctx context.Context) (model.Spot, error)
 }
 
-// Sink is the slice of the store the poller needs: read the latest observation (for the
-// staleness gate) and append a new one. *store.Store satisfies this.
+// Sink is the slice of the store the poller needs: read the chronologically latest
+// stored observation (for the staleness gate) and append a new one. This is distinct
+// from the valuation-facing latest spot, where a same-day manual correction wins.
+// *store.Store satisfies this.
 type Sink interface {
-	LatestSpot() (model.Spot, error)
+	LatestSpotObservation() (model.Spot, error)
 	PutSpot(model.Spot) error
 }
 

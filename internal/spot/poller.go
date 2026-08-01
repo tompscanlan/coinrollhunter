@@ -90,7 +90,7 @@ func (p *Poller) tick(ctx context.Context) bool {
 // stale reports whether the latest stored observation is older than Interval (or missing
 // / unparseable). On a read error it returns true so we still attempt a fetch.
 func (p *Poller) stale() bool {
-	last, err := p.Sink.LatestSpot()
+	last, err := p.Sink.LatestSpotObservation()
 	if err != nil || last.AsOf == "" {
 		return true
 	}

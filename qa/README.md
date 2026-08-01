@@ -7,11 +7,23 @@ records (via the REST API). It fails on **any** browser console/page error — t
 kind of crash that once shipped silently (a Data-tab `columnPinning` throw; an
 empty-DB `box_yields` null) is caught here.
 
-## What it covers (`do-tab.e2e.mjs`)
+## Suite layout
+
+`do-tab.e2e.mjs` is the thin runner. It executes focused, stateful scenarios in
+`e2e/` against one throwaway database:
+
+- `workflows.mjs` — the six Do-tab actions and their accounting effects.
+- `reporting-photos.mjs` — reports, photos/documents, export, and settings.
+- `grid-persistence.mjs` — grid round-trips, merge safety, and autocompletes.
+- `grid-behavior.mjs` — sold-row cues, virtualization, and delete confirmation.
+- `support.mjs` — shared API, navigation, polling, and assertion helpers.
+
+## What it covers
 
 - **Bought a box** → `roll_txn(buy)` + optional Trip; denom×unit face auto-fill.
 - **Logged finds** → CRH Holdings + clad Keepers attributed to their box.
-- **New coin / bullion** → bullion Holding (find-or-create item_type).
+- **New coin / bullion** → bullion Holding (find-or-create item_type), including
+  acquisition-date premium suggestion and a persisted manual override.
 - **Returned to bank** → `roll_txn(return)` against the float.
 - **Reconcile / close out** → record forgotten inventory, then book a loss;
   float → \$0 and CRH net drops by the loss (ADR-005).
@@ -34,6 +46,7 @@ cd qa
 path and point Playwright at it before running:
 
 ```sh
+sudo npx playwright install-deps chromium
 export PLAYWRIGHT_BROWSERS_PATH="$PWD/ms-playwright"
 npx playwright install chromium
 ```
