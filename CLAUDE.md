@@ -584,4 +584,65 @@ so net/http may close the connection rather than deliver the JSON refresh messag
 tab is partway through a large photo upload; the write is still safely rejected, but the browser
 may show a network error and the user must refresh manually.
 
+Added 2026-07-24 (a read-only doctor): three earlier fixes each left the same shape of gap
+behind, and **nothing in the app could see any of them**.
+The write-time validators guard **new writes only**, so a legacy import or a hand edit lands
+whatever it lands and `calc.Compute` sums it raw — a lot with `basis_usd = -100` understates
+`bullion_basis`/`total_basis` by $100, silently (verified at `calc.go:458`/`:473`).
+The stable-uid migration made a deleted parent leave the child's link **dangling**, which
+resolves to blank — the right answer, but blank is **indistinguishable from never-linked**, so
+a find that lost its box looks exactly like a find that never had one. That same migration also
+established that a database re-adopted before the links moved onto uids is frozen wrong and
+**cannot be honestly repaired** — but it *is* reportable. This is the read/report side of all
+three. (The write-side DB-level backstop and how anomalies *render* in the UI are separate
+follow-ups.)
+
+**Two halves, and the split matters.** (1) `calc.Compute` now **FLAGS, DOESN'T CHANGE**
+(`internal/calc/invalid.go`): every total is **bit-identical** to before, and each raw-invalid
+lot emits on the existing additive `Report.Anomalies` (the same surface the classification fix
+added). Each of the three no's is load-bearing — no **refuse** (one bad legacy row must not
+brick the summary, the exact no-CHECK rationale), no **clamp/exclude** (a total that silently disagrees with
+the sum of the rows on screen is wrong AND unauditable, which is worse than merely wrong).
+`TestInvalidBasisIsFlaggedAndStillSummed` pins both halves; if it ever fails because someone
+made Compute skip the row, **revert that, don't update the expectation**. Scope is what Compute
+actually SUMS — a bad date moves no number, so it is doctor's business, not an anomaly. It
+covers **disposed** lots too, which classification deliberately does not: a sold lot's metal
+never reaches spot, but its **basis** reaches `realized_basis` and, for a find, the float via
+`disposed_find_face` → `kept_face` → `to_redeposit`.
+(2) **`internal/doctor`** is the whole-database scan, **read-only, no `--fix`, ever** —
+heuristic repair was proven to false-positive on GOOD data, and a false positive on a ledger
+is silent, unrecoverable money loss with no undo. Three classes in descending
+certainty: **invalid** (fails the row's OWN `model.Validate()` — reused, never restated, so
+doctor cannot drift from what the write path enforces), **orphan** (the four uid links whose
+stored value matches no row; `branch_aliases.branch_id` is correctly absent — it cannot
+orphan), **suspect** (a find dated before its box; a keeper whose denom conflicts with its
+box — each fires only when **BOTH** sides carry a usable value, so the blank/legacy rows that
+dominate a real ledger are never accused).
+
+**Three things worth keeping in your head.** `Report.Unreadable` is **separate from
+Findings on purpose**: "no problems" from a scan that failed to read half the database is a
+lie, and it is exactly the state a user runs doctor in. It is reachable, not theoretical —
+SQLite has **affinity, not types**, so a hand edit can put `'abc'` in `basis_usd` (NOT NULL is
+satisfied, the write succeeds) and the store's scan into a plain `float64` then **fails the
+entire lots query**, killing every list, grid and total over that table with nothing saying
+which cell. Second: **±Inf passes `model.nonNeg`** (`v < 0` is false), poisons every total it
+touches, and — verified live — makes `/api/summary` return **HTTP 200 with a zero-byte body**,
+so the dashboard dies with no error to act on and the anomaly never reaches the browser
+either. That is precisely why the **CLI door is not a convenience**: `coinrollhunter doctor` is
+the surface that still answers when the app cannot. Third: the CLI is read-only
+**structurally**, not by convention — `store.Open` applies pending migrations, so it scans a
+`store.BackupFile` (VACUUM INTO) throwaway snapshot exactly as `export` does; verified the
+source file's checksum is unchanged across a run.
+
+**Surfaces:** one scan, two doors, nothing CLI-only. `GET /api/doctor` backs the **Data health**
+panel (header stethoscope; a dot appears only when there IS something — the scan runs once on
+load for the dot, NOT on every `refresh()`, and the panel re-scans on open so what is read is
+current). `coinrollhunter doctor [--db] [--json]` prints the same scan grouped by class and
+**exits 1** when it finds something. The three classes stay visually separate with three
+framings (wrong / broken / worth a look) for one reason: merging them into a single count is
+the fastest way to make a health warning into noise nobody reads. Known limitation, stated not
+hidden: every `Validate()` returns on its **first** bad field, so a row with two problems
+reports one and fixing it can reveal the next — reporting all of them would mean a second
+implementation of the rules that could disagree with the write path.
+
 The `prototype/` reference is the source of truth for behavior and exact formulas.

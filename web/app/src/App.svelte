@@ -20,8 +20,9 @@
   } from '$lib/grids.svelte'
   import type { Branch } from '$lib/types'
   import SettingsPanel from '$lib/components/SettingsPanel.svelte'
+  import DataHealth from '$lib/components/DataHealth.svelte'
   import CoinDetail from '$lib/components/CoinDetail.svelte'
-  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon, Power } from 'lucide-svelte'
+  import { Moon, Sun, RefreshCw, LayoutDashboard, Table2, Zap, BarChart3, Settings as SettingsIcon, Power, Stethoscope } from 'lucide-svelte'
 
   type View = 'overview' | 'do' | 'insights' | 'edit'
   type DataTab = 'holdings' | 'rolls' | 'trips' | 'branches' | 'supplies' | 'keepers' | 'losses'
@@ -33,8 +34,28 @@
   let error = $state('')
   let dark = $state(false)
   let settingsOpen = $state(false)
+  let healthOpen = $state(false)
   let landed = $state(false)
   let quit = $state(false)
+
+  // Data health. The scan runs ONCE on load purely to decide whether the
+  // button gets a dot — a health check nobody knows to click is not a surface. It is
+  // deliberately not on every refresh: it reads every table, and refresh() fires on
+  // each settings save. The panel re-scans when it opens, so what the user reads is
+  // always current.
+  //
+  // Failures are swallowed on purpose. A background check that cannot run must never
+  // put an error in front of someone who did not ask for it — the button still opens
+  // the panel, and the panel reports the failure properly.
+  let healthFindings = $state(0)
+  async function checkHealth() {
+    try {
+      const r = await api.doctor()
+      healthFindings = r.findings.length + r.unreadable.length
+    } catch {
+      healthFindings = 0
+    }
+  }
 
   // Closing the browser window leaves the server running with no console to
   // Ctrl-C, so it would sit in Task Manager forever. Quitting is a real action
@@ -73,6 +94,7 @@
   }
   $effect(() => {
     refresh()
+    checkHealth()
   })
   $effect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -185,6 +207,22 @@
     <div class="flex items-center gap-2">
       <Button variant="ghost" size="icon" title="Refresh" onclick={refresh}>
         <RefreshCw class={cn('size-4', loading && 'animate-spin')} />
+      </Button>
+      <!-- The dot is the whole discovery story for the health check: a passive panel
+           nobody opens finds nothing. It appears only when there IS something, so it
+           never becomes furniture the eye stops seeing. -->
+      <Button
+        variant="ghost"
+        size="icon"
+        title={healthFindings > 0 ? `Data health — ${healthFindings} thing(s) to look at` : 'Data health'}
+        onclick={() => (healthOpen = true)}
+      >
+        <span class="relative">
+          <Stethoscope class="size-4" />
+          {#if healthFindings > 0}
+            <span class="absolute -right-1 -top-1 size-2 rounded-full bg-destructive"></span>
+          {/if}
+        </span>
       </Button>
       <Button variant="ghost" size="icon" title="Settings" onclick={() => (settingsOpen = true)}>
         <SettingsIcon class="size-4" />
@@ -337,6 +375,17 @@
 
 {#if settingsOpen}
   <SettingsPanel spot={report?.spot} onClose={() => (settingsOpen = false)} onSaved={refresh} />
+{/if}
+
+{#if healthOpen}
+  <!-- Re-check on close: the user's most likely next move after reading this is to
+       go fix a row, and coming back to a stale dot would say their fix did nothing. -->
+  <DataHealth
+    onClose={() => {
+      healthOpen = false
+      checkHealth()
+    }}
+  />
 {/if}
 
 {#if photoRow}

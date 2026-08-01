@@ -74,6 +74,18 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "doctor":
+		// Exit 1 when the scan RAN and found something, so the status carries the
+		// answer as well as the printed report. That is not an error — the report on
+		// stdout is the result — so nothing extra is printed for it.
+		healthy, err := runDoctor(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "doctor:", err)
+			os.Exit(1)
+		}
+		if !healthy {
+			os.Exit(1)
+		}
 	case "version", "-v", "--version":
 		fmt.Printf("coinrollhunter %s\n", version)
 	case "-h", "--help", "help":
@@ -117,6 +129,13 @@ usage:
       folder beside them. That is "leave with your data"; backup is "restore my
       app". DIR must be empty or new; export won't overwrite files already there,
       and if it fails partway it removes only the files it wrote.
+  coinrollhunter doctor [--db crh.db] [--json]
+      Check your data and report what looks wrong: rows that cannot be true and are
+      being added into your totals anyway, finds and keepers whose box was deleted,
+      and links that resolve but do not add up. Reports only — it never changes
+      anything, and it reads a throwaway copy, so it is safe with the app open. The
+      app shows the same check under Data health; this door also works when the app
+      itself will not start. Exits 1 if it finds anything.
   coinrollhunter version
       Print the build version.
 `)

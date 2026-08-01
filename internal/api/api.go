@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tompscanlan/coinrollhunter/internal/calc"
+	"github.com/tompscanlan/coinrollhunter/internal/doctor"
 	"github.com/tompscanlan/coinrollhunter/internal/export"
 	"github.com/tompscanlan/coinrollhunter/internal/model"
 	"github.com/tompscanlan/coinrollhunter/internal/store"
@@ -48,6 +49,22 @@ func Handler(s *store.Store, webFS fs.FS, photosDir, cacheDir string) http.Handl
 			return
 		}
 		writeJSON(w, http.StatusOK, calc.Compute(d))
+	})
+
+	// doctor: the read-only data-health scan. The PRIMARY door onto it —
+	// `coinrollhunter doctor` is the same scan for the support flow and for the case
+	// where the app cannot start at all. Read-only, so it is a GET; it takes no write
+	// lock and never repairs anything (decision (a): heuristic repair false-positives
+	// on correct data, and a false positive on a ledger is unrecoverable money loss).
+	mux.HandleFunc("GET /api/doctor", func(w http.ResponseWriter, r *http.Request) {
+		// The request context flows in, so a user who closes the panel mid-scan
+		// releases the DB connection instead of pinning the pool's only one.
+		rep, err := doctor.Scan(r.Context(), s)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rep)
 	})
 
 	// finds-report: the "1 per face $" hit-rate view, per denom × category × source (ADR-006).
