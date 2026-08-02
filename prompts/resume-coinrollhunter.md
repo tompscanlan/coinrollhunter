@@ -14,7 +14,8 @@ make build        # builds the Svelte UI (web/app -> web/dist) then the Go binar
 ./coinrollhunter serve     # open http://127.0.0.1:8787
 claude            # start Claude Code in the repo root
 ```
-In-container note: Go needs a writable cache — `go env -w GOCACHE=/go/cache`. UI build needs Node 22 + npm.
+In-container note: Go's default cache works — set nothing. (`go env -w GOCACHE=/go/cache` was only
+needed while the scratch devpod left `~/.cache` root-owned; fixed at boot 2026-08-02.) UI build needs Node 22 + npm.
 
 ## 1. Paste this into Claude Code
 

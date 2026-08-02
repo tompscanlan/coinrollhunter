@@ -144,8 +144,11 @@ of `crh.db` can miss commits still in the `-wal` sidecar). It uses `store.Backup
 `Open`+`Backup`, because `Open` applies pending migrations — a backup must not upgrade the
 thing it is preserving.
 
-Build notes: `make build` (UI then Go). In this container, Go needs a writable cache —
-`go env -w GOCACHE=/go/cache`. The UI build needs Node 22 + npm registry access. `web/dist`
+Build notes: `make build` (UI then Go). **Go's default cache just works — set nothing.** (It used
+to need `go env -w GOCACHE=/go/cache` because the scratch devpod left `~/.cache` root-owned, so the
+default `~/.cache/go-build` was unwritable. The pod fixes that at boot as of 2026-08-02; if you hit
+`permission denied` under `~/.cache` on an older box, that fix is missing — repair the box rather
+than pinning GOCACHE here.) The UI build needs Node 22 + npm registry access. `web/dist`
 is a git-ignored build artifact (only its `.gitkeep` is committed, so `go:embed all:dist`
 always resolves) — a bare `go build` without `make ui` first serves an empty UI.
 
