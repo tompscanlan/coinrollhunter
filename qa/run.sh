@@ -8,8 +8,12 @@
 #   SKIP_BUILD=1 ./run.sh    # reuse an existing ../coinrollhunter binary
 #   PORT=8901 ./run.sh       # use a different port
 #
-# Prereqs: Node 22+, a Chromium for Playwright. In this dev container ~/.cache is
-# root-owned, so install browsers to a writable path and point Playwright at it:
+# Prereqs: Node 22+, a Chromium for Playwright. Nothing to do by hand in the scratch
+# devpod — it installs Playwright at boot and exports PLAYWRIGHT_BROWSERS_PATH at a
+# shared, volume-backed browser cache, so the `npx playwright install` below is a no-op
+# and this repo keeps no browsers of its own. (That cache is why qa's playwright pin
+# tracks the pod's: same version, one shared chromium revision, no re-download.)
+# Elsewhere, or on an older box where ~/.cache is root-owned, point it at a writable path:
 #   export PLAYWRIGHT_BROWSERS_PATH=$PWD/ms-playwright
 #   npx playwright install chromium
 set -euo pipefail
